@@ -23,6 +23,22 @@ dependencies:
   cached_network_image: ^3.2.1
   # 上游写的是 ^3.0.0-alpha.3, 那是 Dart 2 时代的 alpha; 3.0.0 正式版要求 >=3.2.0。
   flutter_html: ^3.0.0
+  # 【本 fork 补丁 · 必须钉死, 不能写成 ^0.15.6】
+  # flutter_html 3.0.0 的 lib/src/tree/styled_element.dart:7 直接 import 了
+  # html 包的私有内部文件 `package:html/src/query_selector.dart`, 并在第 31 行调用
+  # 它的顶层函数 `qs.matches(element, selector)`。
+  # 它自己也知道这是隐患, 源码里留着注释:
+  #   //TODO(Sub6Resources): don't use the internal code of the html package as it may change unexpectedly.
+  # 结果这个 TODO 应验了 —— html 0.15.7 (2026-08-28 发布) 把那个顶层 matches() 删了,
+  # 只留下 SelectorEvaluator.matches 这个成员方法, 于是 `flutter build` 报:
+  #   Error: Method not found: 'matches'.   return qs.matches(element, selector);
+  # flutter_html 声明的是 html: ^0.15.5, pub 会解析到最新的 0.15.7 -> 必炸。
+  #
+  # 0.15.6 (2025-04-24) 是最后一个仍带顶层 matches() 的版本 (见其 query_selector.dart 第 10 行),
+  # 且它的 sdk 约束是 ^3.2.0, 兼容当前 Dart 3.11.5。
+  # 已核实: 全部 141 个解析出的依赖里, 只有 flutter_html 依赖 html, 钉版本不会冲突。
+  # 上游 flutter_html 修掉这行 import 之后, 本行即可删除。
+  html: 0.15.6
   webview_flutter: ^4.13.1
   # 已移除 webview_windows: ^0.4.0 —— 唯一版本 0.4.0 的 sdk 约束是
   # >=2.13.0 <3.0.0, 不支持 Dart 3, 而且它只服务 Windows 端。本 fork 只出 Android。
