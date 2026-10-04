@@ -1,13 +1,18 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:webview_windows/webview_windows.dart' as win;
 
 typedef CustomSchemeHandler = Future<void> Function(String url);
 
+/// 跨端 WebView 封装。
+///
+/// 上游原本还接了 Windows 的 `webview_windows`，但那个包唯一版本 0.4.0 的
+/// `environment.sdk` 是 `>=2.13.0 <3.0.0`（Dart 2 专属），会把整个依赖图
+/// 锁死在 Dart 2，导致 `flutter pub get` 直接失败。本 fork 只出 Android，
+/// 因此移除了 Windows 分支；对外 API 保持不变，调用方无需改动。
+///
+/// 如果以后要恢复 Windows 支持，正确做法是「条件导入 + 独立的 win 实现文件」，
+/// 而不是像上游那样无条件 `import`——否则 Android 也会把 Windows 的 Dart 代码
+/// 一起编进 AOT 产物。
 class AdaptiveWebView extends StatefulWidget {
   final String url;
   final bool enableJs;
@@ -30,33 +35,13 @@ class AdaptiveWebView extends StatefulWidget {
 
 class _AdaptiveWebViewState extends State<AdaptiveWebView> {
   WebViewController? _mobileController;
-  win.WebviewController? _windowsController;
-  StreamSubscription? _windowsLoadingSub;
-  StreamSubscription? _windowsMessageSub;
   bool _loading = true;
   String? _error;
-  String? _webView2Version;
-
-  bool get _isWindows => Platform.isWindows;
 
   @override
   void initState() {
     super.initState();
-    if (_isWindows) {
-      _initWindows();
-    } else {
-      _initMobile();
-    }
-  }
-
-  @override
-  void dispose() {
-    _windowsLoadingSub?.cancel();
-    _windowsMessageSub?.cancel();
-    final controller = _windowsController;
-    _windowsController = null;
-    controller?.dispose();
-    super.dispose();
+    _initMobile();
   }
 
   Future<void> _initMobile() async {
@@ -64,7 +49,9 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
       late final WebViewController controller;
       controller = WebViewController()
         ..setJavaScriptMode(
-          widget.enableJs ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
+          widget.enableJs
+              ? JavaScriptMode.unrestricted
+              : JavaScriptMode.disabled,
         )
         ..setNavigationDelegate(
           NavigationDelegate(
@@ -106,115 +93,8 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
     }
   }
 
-  Future<void> _initWindows() async {
-    try {
-      final version = await win.WebviewController.getWebViewVersion();
-      if (version == null) {
-        if (!mounted) return;
-        setState(() {
-          _error = '当前系统未安装 WebView2 Runtime';
-          _loading = false;
-        });
-        return;
-      }
-
-      final controller = win.WebviewController();
-      await controller.initialize();
-      await controller.setPopupWindowPolicy(win.WebviewPopupWindowPolicy.sameWindow);
-
-      final userAgent = widget.headers['User-Agent'] ?? widget.headers['user-agent'];
-      if (userAgent != null && userAgent.isNotEmpty) {
-        await controller.setUserAgent(userAgent);
-      }
-
-      final bridgeScript = _windowsBridgeScript();
-      if (bridgeScript.isNotEmpty) {
-        await controller.addScriptToExecuteOnDocumentCreated(bridgeScript);
-      }
-      if (widget.injectJs != null && widget.injectJs!.isNotEmpty) {
-        await controller.addScriptToExecuteOnDocumentCreated(widget.injectJs!);
-      }
-
-      _windowsLoadingSub = controller.loadingState.listen((state) async {
-        if (!mounted) return;
-        if (state == win.LoadingState.loading) {
-          setState(() => _loading = true);
-        } else if (state == win.LoadingState.navigationCompleted) {
-          setState(() => _loading = false);
-          final js = widget.injectJs;
-          if (js != null && js.isNotEmpty) {
-            try {
-              await controller.executeScript(js);
-            } catch (_) {}
-          }
-        }
-      });
-
-      _windowsMessageSub = controller.webMessage.listen((message) async {
-        final text = message?.toString() ?? '';
-        if (text.isEmpty) return;
-        try {
-          final decoded = jsonDecode(text);
-          if (decoded is Map && decoded['type'] == 'customScheme') {
-            final url = decoded['url']?.toString();
-            if (url != null && _isCustomScheme(url)) {
-              await widget.onCustomScheme?.call(url);
-            }
-          }
-        } catch (_) {}
-      });
-
-      controller.url.listen((url) async {
-        if (_isCustomScheme(url)) {
-          await widget.onCustomScheme?.call(url);
-        }
-      });
-
-      await controller.loadUrl(widget.url);
-
-      if (!mounted) return;
-      setState(() {
-        _windowsController = controller;
-        _webView2Version = version;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _error = e.toString();
-        _loading = false;
-      });
-    }
-  }
-
   bool _isCustomScheme(String url) {
     return url.startsWith('yuedu://') || url.startsWith('legado://');
-  }
-
-  String _windowsBridgeScript() {
-    if (widget.onCustomScheme == null) return '';
-    return '''
-      (function() {
-        document.addEventListener('click', function(event) {
-          var node = event.target;
-          while (node && node.tagName !== 'A') {
-            node = node.parentElement;
-          }
-          if (!node) return;
-          var href = node.getAttribute('href') || '';
-          if (href.startsWith('yuedu://') || href.startsWith('legado://')) {
-            event.preventDefault();
-            if (window.chrome && window.chrome.webview) {
-              window.chrome.webview.postMessage(JSON.stringify({type: 'customScheme', url: href}));
-            }
-          }
-        }, true);
-      })();
-    ''';
-  }
-
-  Future<void> _openWebView2Download() async {
-    final uri = Uri.parse('https://developer.microsoft.com/microsoft-edge/webview2/');
-    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   @override
@@ -223,13 +103,9 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
       return _buildError();
     }
 
-    final body = _isWindows
-        ? (_windowsController == null
-            ? const SizedBox.shrink()
-            : win.Webview(_windowsController!))
-        : (_mobileController == null
-            ? const SizedBox.shrink()
-            : WebViewWidget(controller: _mobileController!));
+    final body = _mobileController == null
+        ? const SizedBox.shrink()
+        : WebViewWidget(controller: _mobileController!);
 
     return Stack(
       children: [
@@ -240,7 +116,6 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
   }
 
   Widget _buildError() {
-    final runtimeMissing = _error == '当前系统未安装 WebView2 Runtime';
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
@@ -254,19 +129,6 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.red),
             ),
-            if (_webView2Version != null) ...[
-              const SizedBox(height: 8),
-              Text(
-                'WebView2: $_webView2Version',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-            ],
-            const SizedBox(height: 16),
-            if (runtimeMissing)
-              ElevatedButton(
-                onPressed: _openWebView2Download,
-                child: const Text('安装 WebView2 Runtime'),
-              ),
           ],
         ),
       ),

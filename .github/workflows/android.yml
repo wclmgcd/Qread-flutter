@@ -1,0 +1,90 @@
+name: Build Android APK
+
+# 上游仓库没有任何 CI, 这里补一套。
+#
+# 触发方式:
+#   1. 手动 (workflow_dispatch) —— 推荐, 可以指定 Flutter 版本重试
+#   2. push 到 main, 且改动落在 lib/ android/ pubspec.yaml 或本文件
+#
+# 为什么默认锁 Flutter 3.41.9:
+#   作者的 android/settings.gradle 用的是 AGP 8.11.1 + Kotlin 2.2.20 + Gradle 8.14,
+#   android/.kotlin/errors 日志时间戳对应 2026-05-05, 那会儿的 stable 正是 3.41.x。
+#   如果这个版本编不过, 直接在 Actions 页面 Run workflow 时填别的版本重跑即可。
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: 'Flutter 版本 (留空则用默认 3.41.9)'
+        required: false
+        default: '3.41.9'
+  push:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'android/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/android.yml'
+
+jobs:
+  apk:
+    name: Build release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ github.event.inputs.flutter_version || '3.41.9' }}
+          channel: stable
+          cache: true
+
+      # 诊断信息: 版本不对时看这里最快
+      - name: Flutter / Dart / Java 版本
+        run: |
+          flutter --version
+          dart --version
+          java -version
+          echo "--- android toolchain ---"
+          flutter doctor -v || true
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # analyze 只做参考, 不阻塞出包
+      - name: flutter analyze (不阻塞)
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
+
+      # release 包用 build.gradle 里配的 debug 签名, 可以直接安装
+      - name: flutter build apk
+        run: flutter build apk --release
+
+      - name: 产物信息
+        run: ls -lh build/app/outputs/flutter-apk/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: qread-apk
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: error
+
+      # 编译失败时把 Gradle 报告也带上, 方便定位
+      - name: Upload 编译报告 (仅失败时)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: |
+            build/app/outputs/logs/
+            android/app/build/reports/
+          if-no-files-found: ignore

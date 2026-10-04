@@ -17,8 +17,9 @@ class ApiService {
   ApiService._() {
     _dio = Dio(BaseOptions(
       baseUrl: AppConstants.apiBase,
-      connectTimeout: 15000,
-      receiveTimeout: 15000,
+      // dio 5 起 connectTimeout / receiveTimeout 的类型从 int 变成 Duration
+      connectTimeout: const Duration(milliseconds: 15000),
+      receiveTimeout: const Duration(milliseconds: 15000),
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     ));
     _dio.interceptors
@@ -733,8 +734,8 @@ class ApiService {
   Future<String> fetchRemoteText(String url,
       {Map<String, String>? headers}) async {
     final resp = await Dio(BaseOptions(
-      connectTimeout: 15000,
-      receiveTimeout: 15000,
+      connectTimeout: const Duration(milliseconds: 15000),
+      receiveTimeout: const Duration(milliseconds: 15000),
       responseType: ResponseType.plain,
       followRedirects: true,
       headers: headers,

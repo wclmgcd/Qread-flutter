@@ -145,7 +145,7 @@ class ControllerOverlay extends StatelessWidget {
           child: SafeArea(
             top: false,
             child: Container(
-              color: Colors.black.withOpacity(0.88),
+              color: Colors.black.withValues(alpha: 0.88),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -180,7 +180,7 @@ class _TopInfoBar extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
         decoration: BoxDecoration(
-          color: Colors.black.withOpacity(0.45),
+          color: Colors.black.withValues(alpha: 0.45),
         ),
         child: Row(
           children: [
@@ -267,11 +267,11 @@ class _FloatingCapsule extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 48),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.72),
+            color: Colors.white.withValues(alpha: 0.72),
             borderRadius: BorderRadius.circular(40),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.15),
+                color: Colors.black.withValues(alpha: 0.15),
                 blurRadius: 12,
                 offset: const Offset(0, 2),
               ),
@@ -426,7 +426,7 @@ class _ProgressStrip extends StatelessWidget {
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
                 activeTrackColor: const Color(0xFF00A88F),
                 thumbColor: const Color(0xFF00A88F),
-                inactiveTrackColor: Colors.grey.withOpacity(0.3),
+                inactiveTrackColor: Colors.grey.withValues(alpha: 0.3),
               ),
               child: Slider(
                 value: (data.chapterSliderValue ?? data.chapterIndex.toDouble())

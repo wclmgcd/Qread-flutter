@@ -924,7 +924,7 @@ class _ReaderPageState extends State<ReaderPage> {
                 Positioned.fill(
                   child: GestureDetector(
                     onTap: _toggleController,
-                    child: Container(color: Colors.black.withOpacity(0.18)),
+                    child: Container(color: Colors.black.withValues(alpha: 0.18)),
                   ),
                 ),
                 ControllerOverlay(
@@ -1804,7 +1804,7 @@ class _ReaderPageState extends State<ReaderPage> {
                       dense: true,
                       selected: isCurrent,
                       selectedTileColor:
-                          const Color(0xFF00A88F).withOpacity(0.10),
+                          const Color(0xFF00A88F).withValues(alpha: 0.10),
                       leading: hasBookmark
                           ? const Icon(Icons.bookmark,
                               size: 16, color: Color(0xFF00A88F))
@@ -1955,7 +1955,7 @@ class _ReaderPageState extends State<ReaderPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
-                          color: Colors.grey.withOpacity(0.3),
+                          color: Colors.grey.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -2119,7 +2119,7 @@ class _ReaderPageState extends State<ReaderPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
-                          color: Colors.grey.withOpacity(0.3),
+                          color: Colors.grey.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -2252,7 +2252,7 @@ class _ReaderPageState extends State<ReaderPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 12),
                         decoration: BoxDecoration(
-                          color: Colors.grey.withOpacity(0.3),
+                          color: Colors.grey.withValues(alpha: 0.3),
                           borderRadius: BorderRadius.circular(2),
                         ),
                       ),
@@ -2813,7 +2813,7 @@ class _ThemeColorDot extends StatelessWidget {
                   ? []
                   : [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.1),
+                        color: Colors.black.withValues(alpha: 0.1),
                         blurRadius: 4,
                         offset: const Offset(0, 2),
                       ),
