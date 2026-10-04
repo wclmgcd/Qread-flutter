@@ -284,16 +284,83 @@ class PaginationEngine {
     return result;
   }
 
+  /// 块级标签的结束标记 —— 转成换行, 保证段落能被切开
+  static final RegExp _blockEndTag = RegExp(
+    r'<\s*/\s*(p|div|h[1-6]|li|tr|blockquote|section|article|pre)\s*>',
+    caseSensitive: false,
+  );
+
+  /// <br> / <br/> / <br />
+  static final RegExp _brTag = RegExp(r'<\s*br\s*/?\s*>', caseSensitive: false);
+
+  /// 其余任意标签
+  static final RegExp _anyTag = RegExp(r'<[^>]*>');
+
+  /// 数字实体 &#12345; / &#x1F600;
+  static final RegExp _numericEntity =
+      RegExp(r'&#(x?)([0-9a-fA-F]+);', caseSensitive: false);
+
+  /// 常用命名实体
+  static const Map<String, String> _namedEntities = {
+    'nbsp': ' ',
+    'ensp': ' ',
+    'emsp': ' ',
+    'thinsp': ' ',
+    'amp': '&',
+    'lt': '<',
+    'gt': '>',
+    'quot': '"',
+    'apos': "'",
+    'ldquo': '\u201C',
+    'rdquo': '\u201D',
+    'lsquo': '\u2018',
+    'rsquo': '\u2019',
+    'hellip': '\u2026',
+    'mdash': '\u2014',
+    'ndash': '\u2013',
+    'middot': '\u00B7',
+    'times': '\u00D7',
+    'divide': '\u00F7',
+    'copy': '\u00A9',
+    'reg': '\u00AE',
+    'laquo': '\u00AB',
+    'raquo': '\u00BB',
+    'bull': '\u2022',
+    'deg': '\u00B0',
+  };
+
+  /// 解码 HTML 实体。
+  ///
+  /// 书源正文里 `&nbsp;` `&#12288;` 之类很常见, 不解码会原样显示成 "&nbsp;"。
+  /// 必须在剥标签之后调用 —— 否则 `&lt;script&gt;` 会先变成真标签再被剥掉。
+  /// 另外 `&amp;` 必须最后解, 否则 `&amp;lt;` 会被错误还原成 "<"。
+  static String _decodeEntities(String input) {
+    if (!input.contains('&')) return input;
+    var out = input.replaceAllMapped(_numericEntity, (m) {
+      final isHex = (m.group(1) ?? '').toLowerCase() == 'x';
+      final code = int.tryParse(m.group(2)!, radix: isHex ? 16 : 10);
+      if (code == null || code <= 0 || code > 0x10FFFF) return m.group(0)!;
+      return String.fromCharCode(code);
+    });
+    for (final entry in _namedEntities.entries) {
+      if (entry.key == 'amp') continue;
+      out = out.replaceAll('&${entry.key};', entry.value);
+    }
+    return out.replaceAll('&amp;', '&');
+  }
+
   /// 将 HTML/混合内容清洗为纯文本段落
   List<ReaderParagraph> _extractParagraphs(
     String content, {
     String? chapterTitle,
   }) {
-    final plain = content
-        .replaceAll(RegExp(r'<br\s*/?>', caseSensitive: false), '\n')
-        .replaceAll(RegExp(r'</p\s*>', caseSensitive: false), '\n')
-        .replaceAll(RegExp(r'<[^>]*>'), ' ')
-        .replaceAll('\r', '');
+    // 标签直接删掉 (原来替换成空格, 会让 "<b>粗</b>体" 变成 "粗 体", 中文正文里
+    // 凭空多出空格); 块级结束标记和 <br> 换成换行, 段落才切得开。
+    final plain = _decodeEntities(content
+        .replaceAll(_brTag, '\n')
+        .replaceAll(_blockEndTag, '\n')
+        .replaceAll(_anyTag, '')
+        .replaceAll('\r', ''));
     final lines = plain
         .split(RegExp(r'\n+'))
         .map((line) => line.replaceAll(RegExp(r'\s+'), ' ').trim())
@@ -342,11 +409,18 @@ class PaginationEngine {
     return pages.length - 1;
   }
 
-  /// 判断是否为 HTML/漫画内容
-  static bool isHtmlContent(String content) {
-    return RegExp(
-      r'<\s*(img|p|div|br|a|span|table|video|source)',
-      caseSensitive: false,
-    ).hasMatch(content);
-  }
+  /// 内容是否必须走 HTML 渲染器 —— 即含有纯文本分页引擎无法呈现的元素
+  /// (图片/视频/音频/iframe/SVG 等)。
+  ///
+  /// 原实现叫 isHtmlContent(), 正则把 `<p> <br> <div> <a> <span>` 也算 HTML,
+  /// 于是绝大多数书源的正文 (几乎都带 `<br>` 或 `<p>`) 都被误判成"漫画",
+  /// 被路由到滚动 ListView 里 —— 分页没了, 字号/行距/间距设置也全部失效。
+  ///
+  /// 但分页引擎的 _extractParagraphs() 本来就会剥标签 (它的注释写得很清楚:
+  /// "将 HTML/混合内容清洗为纯文本段落"), 所以**纯文字 HTML 应该交给分页引擎**,
+  /// 只有含嵌入式媒体的内容才必须用 flutter_html 渲染。
+  static bool needsHtmlRenderer(String content) => RegExp(
+        r'<\s*(img|video|audio|iframe|svg|canvas|picture|embed|object)\b',
+        caseSensitive: false,
+      ).hasMatch(content);
 }

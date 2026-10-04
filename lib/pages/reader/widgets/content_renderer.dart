@@ -135,21 +135,28 @@ class ContentRenderer {
     required double fontSize,
     required double lineHeight,
     required int ttsParagraphIndex,
+    double paragraphSpacing = 10.0,
+    double firstLineIndent = 2.0,
   }) {
     final isHighlighted = paragraph.index == ttsParagraphIndex;
     final isTitle = paragraph.isTitle;
     final effectiveFontSize = isTitle ? fontSize + 4 : fontSize;
     final effectiveLineHeight = isTitle ? 1.45 : lineHeight;
 
+    // 首行缩进 / 段间距改为跟随阅读设置
+    // (原先硬编码成两个全角空格和 10px, 所以"首行空格""段间距"两个滑块在滚动模式下没反应)
+    final indentChars = isTitle ? 0 : firstLineIndent.round();
+    final indentStr = '\u3000' * indentChars;
+
     return Container(
-      margin: const EdgeInsets.only(bottom: 10),
+      margin: EdgeInsets.only(bottom: paragraphSpacing),
       padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
       decoration: BoxDecoration(
         color: isHighlighted ? theme.highlight : Colors.transparent,
         borderRadius: BorderRadius.circular(4),
       ),
       child: Text(
-        isTitle ? paragraph.text : '\u3000\u3000${paragraph.text}',
+        isTitle ? paragraph.text : '$indentStr${paragraph.text}',
         style: TextStyle(
           fontSize: effectiveFontSize,
           color: theme.text,

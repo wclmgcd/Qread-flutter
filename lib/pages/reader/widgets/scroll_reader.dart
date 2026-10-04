@@ -18,6 +18,13 @@ class ScrollReader extends StatelessWidget {
   final String timeLabel;
   final String batteryLabel;
 
+  /// 以下四项原先写死在 build 里 (24/18/10/2), 导致"左右边距""上方边距"
+  /// "段间距""首行空格"四个滑块在滚动模式下完全没反应。
+  final double horizontalPadding;
+  final double topPadding;
+  final double paragraphSpacing;
+  final double firstLineIndent;
+
   const ScrollReader({
     Key? key,
     required this.paragraphs,
@@ -30,6 +37,10 @@ class ScrollReader extends StatelessWidget {
     required this.pageIndicator,
     required this.timeLabel,
     required this.batteryLabel,
+    this.horizontalPadding = 24.0,
+    this.topPadding = 18.0,
+    this.paragraphSpacing = 10.0,
+    this.firstLineIndent = 2.0,
   }) : super(key: key);
 
   @override
@@ -39,7 +50,8 @@ class ScrollReader extends StatelessWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 18, 24, 10),
+      padding: EdgeInsets.fromLTRB(horizontalPadding, topPadding,
+          horizontalPadding, 10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -55,6 +67,8 @@ class ScrollReader extends StatelessWidget {
             fontSize: fontSize,
             lineHeight: lineHeight,
             ttsParagraphIndex: ttsParagraphIndex,
+            paragraphSpacing: paragraphSpacing,
+            firstLineIndent: firstLineIndent,
           ),
           const SizedBox(height: 14),
           Expanded(
@@ -69,6 +83,8 @@ class ScrollReader extends StatelessWidget {
                   fontSize: fontSize,
                   lineHeight: lineHeight,
                   ttsParagraphIndex: ttsParagraphIndex,
+                  paragraphSpacing: paragraphSpacing,
+                  firstLineIndent: firstLineIndent,
                 );
               },
             ),

@@ -1102,7 +1102,7 @@ class _ReaderPageState extends State<ReaderPage> {
                   ),
                 )
               : _state.isComic ||
-                      PaginationEngine.isHtmlContent(_state.displayedContent)
+                      PaginationEngine.needsHtmlRenderer(_state.displayedContent)
                   ? _buildComicContent(provider)
                   : _state.pageAnimType.usesScrollReader
                       ? _buildScrollNovelContent(provider)
@@ -1187,37 +1187,65 @@ class _ReaderPageState extends State<ReaderPage> {
       pageIndicator: _state.pageIndicatorLabel(),
       timeLabel: _state.formatTime(),
       batteryLabel: _state.batteryLabel(),
+      horizontalPadding: _state.horizontalPadding,
+      topPadding: _state.topPadding,
+      paragraphSpacing: _state.paragraphSpacing,
+      firstLineIndent: _state.firstLineIndent,
     );
   }
 
   Widget _buildComicContent(ReaderProvider provider) {
     final isComic = _state.isComic;
     final textColor = _state.currentTheme.text;
+
+    // 【关键】flutter_html 的 _HtmlParserState 只在 didChangeDependencies() 里跑
+    // prepareTree(), 它**没有 didUpdateWidget** —— 也就是说光换 style 参数,
+    // Html 不会重新计算样式, 一直用第一次解析出来的那棵树。
+    // 这就是"字号滑块拖了完全没反应"的直接原因。
+    // 修法: 用 key 把设置值编进去, 设置一变就强制重建整个 Html。
+    // 各滑块的 divisions 已把取值离散化(字号 20 档/段间距 10 档...), 不会每帧换 key。
+    final htmlSettingsKey = ValueKey<String>(
+      'html|${_state.fontSize.toStringAsFixed(1)}'
+      '|${_state.lineHeight.toStringAsFixed(1)}'
+      '|${_state.paragraphSpacing.toStringAsFixed(1)}'
+      '|${_state.theme}',
+    );
+
     return Column(
       children: [
         Expanded(
           child: ListView(
             controller: _comicScrollController,
+            // 左右/上方边距跟随设置 (原先硬编码 16 / 12)
             padding: isComic
                 ? EdgeInsets.zero
-                : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                : EdgeInsets.fromLTRB(_state.horizontalPadding,
+                    _state.topPadding, _state.horizontalPadding, 12),
             children: [
               Html(
+                key: htmlSettingsKey,
                 data: _proxyImages(_state.displayedContent),
                 style: {
                   'body': Style(
                     margin: Margins.zero,
                     padding: HtmlPaddings.zero,
+                    // 字号/行距/颜色挂在 body 上, 由 flutter_html 的
+                    // Style.copyOnlyInherited() 往下继承 (html_parser.dart:324 调用)。
+                    // 原先只设在 'p' 上 —— 正文不是 <p> 包裹时字号就完全不生效。
+                    fontSize: FontSize(_state.fontSize),
+                    lineHeight: LineHeight(_state.lineHeight),
+                    color: textColor,
+                  ),
+                  // 段间距跟随设置 (原先硬编码 10)
+                  'p': Style(
+                    margin: Margins.only(bottom: _state.paragraphSpacing),
+                  ),
+                  'div': Style(
+                    margin: Margins.only(bottom: _state.paragraphSpacing),
                   ),
                   'img': Style(
                     margin: isComic ? Margins.zero : Margins.only(bottom: 8),
                     width: isComic ? Width(double.infinity) : null,
-                  ),
-                  'p': Style(
-                    margin: Margins.only(bottom: 10),
-                    fontSize: FontSize(_state.fontSize),
-                    lineHeight: LineHeight(_state.lineHeight),
-                    color: textColor,
                   ),
                 },
               ),
@@ -1369,7 +1397,7 @@ class _ReaderPageState extends State<ReaderPage> {
     if (_state.pageMode != 'paged' ||
         _state.displayedContent.isEmpty ||
         _state.isComic ||
-        PaginationEngine.isHtmlContent(_state.displayedContent)) {
+        PaginationEngine.needsHtmlRenderer(_state.displayedContent)) {
       return;
     }
 
