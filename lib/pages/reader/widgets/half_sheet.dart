@@ -147,6 +147,11 @@ class HalfSheet extends StatelessWidget {
 /// 以「半截式」底部弹窗打开 [child]。
 ///
 /// - `isScrollControlled: true` + 固定高度，弹窗才会占满 72% 而不是默认的一半；
+/// - **`enableDrag: false`（关键）**：`showModalBottomSheet` 默认会用一个
+///   `GestureDetector` 包住整个弹窗来做「下拖关闭」，它会和里面的
+///   WebView 抢垂直手势 —— 结果是段评内容**滚不动**（往上拖被当成拖弹窗）。
+///   关掉它之后 WebView 自己正常滚动；关闭改用标题栏上的 ✕、
+///   标题栏下拖（HalfSheet 自己的手势）、或点弹窗外。
 /// - 遮罩透明（对齐大灰狼的观感：上方正文不压暗），但点击弹窗外仍会关闭
 ///   （`isDismissible` 默认 true）。
 ///
@@ -161,6 +166,7 @@ Future<void> showHalfSheet(
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
+    enableDrag: false,
     backgroundColor: Colors.transparent,
     barrierColor: Colors.transparent,
     builder: (_) => HalfSheet(ratio: ratio, title: title, child: child),

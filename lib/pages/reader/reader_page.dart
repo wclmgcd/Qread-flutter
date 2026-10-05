@@ -1085,160 +1085,185 @@ class _ReaderPageState extends State<ReaderPage> {
   // 内容构建
   // ============================================================
 
+  /// 给阅读页套一层系统栏样式：底部系统手势条跟阅读背景同色。
+  ///
+  /// 阅读页没有 AppBar，不会自带 `SystemUiOverlayStyle`；全局兜底给的是
+  /// 浅色主题的白，在黑色 / 护眼绿主题下就会露出一条白边。
+  Widget _withReaderSystemBars(Widget child) {
+    final bg = _state.currentTheme.background;
+    final bgBrightness = ThemeData.estimateBrightnessForColor(bg);
+    final iconBrightness = bgBrightness == Brightness.dark
+        ? Brightness.light
+        : Brightness.dark;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: iconBrightness,
+        statusBarBrightness: bgBrightness,
+        systemNavigationBarColor: bg,
+        systemNavigationBarIconBrightness: iconBrightness,
+        systemNavigationBarDividerColor: Colors.transparent,
+      ),
+      child: child,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: _state.currentTheme.background,
-      body: Consumer<ReaderProvider>(
-        builder: (context, provider, _) {
-          if (provider.book == null) {
-            return const Center(child: Text('未选择书籍'));
-          }
-          return Stack(
-            children: [
-              Positioned.fill(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTapUp: (details) => _handleTap(details, provider),
-                  child: _buildContent(provider),
-                ),
-              ),
-              // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区
-              if (_state.dimOpacity > 0)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: ColoredBox(
-                      color: Colors.black.withValues(alpha: _state.dimOpacity),
-                    ),
-                  ),
-                ),
-              if (_state.showController) ...[
+    return _withReaderSystemBars(
+      Scaffold(
+        backgroundColor: _state.currentTheme.background,
+        body: Consumer<ReaderProvider>(
+          builder: (context, provider, _) {
+            if (provider.book == null) {
+              return const Center(child: Text('未选择书籍'));
+            }
+            return Stack(
+              children: [
                 Positioned.fill(
                   child: GestureDetector(
-                    onTap: _toggleController,
-                    child: Container(color: Colors.black.withValues(alpha: 0.18)),
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (details) => _handleTap(details, provider),
+                    child: _buildContent(provider),
                   ),
                 ),
-                ControllerOverlay(
-                  data: ReaderControllerViewData(
-                    bookName: provider.book?.name ?? '',
-                    chapterTitle: _displayedChapter(provider)?.title ?? '',
-                    sourceName: provider.book?.originName ??
-                        provider.book?.origin ??
-                        '未知书源',
-                    hasBookmark: _hasBookmarkAtCurrent(provider),
-                    replaceRuleEnabled: provider.book?.useReplaceRule == true,
-                    themeName: _state.theme,
-                    capsuleMode: _state.capsuleMode,
-                    ttsState: _tts.state,
-                    ttsRate: _tts.rate,
-                    autoPageInterval: _state.autoPageInterval,
-                    chapterIndex: _state.displayedChapterIndex(
-                        provider.book?.durChapterIndex ?? 0),
-                    totalChapters: provider.chapters.length,
-                    chapterSliderValue: _state.chapterSliderValue,
-                    ttsParagraphIndex: _state.ttsParagraphIndex,
-                    totalParagraphs: _state.paragraphs.length,
-                    inBookshelf: _isCurrentBookInShelf(provider),
-                  ),
-                  callbacks: ReaderControllerCallbacks(
-                    onBack: () {
-                      _saveProgress(pos: _getProgress());
-                      Navigator.pop(context);
-                    },
-                    onShowMore: () => _showMorePanel(provider),
-                    onRefresh: _applyReplaceRules,
-                    onToggleBookmark: () => _toggleBookmark(provider),
-                    onStartAutoPage: _startAutoPageMode,
-                    onStartTts: _startTts,
-                    onToggleTheme: _toggleReaderTheme,
-                    onPrevChapter: _goToPreviousChapter,
-                    onNextChapter: _goToNextChapter,
-                    onChapterSliderChanged: (value) {
-                      setState(() => _state.chapterSliderValue = value);
-                    },
-                    onChapterSliderEnd: (value) {
-                      setState(() => _state.chapterSliderValue = null);
-                      final target = value.round();
-                      final ci = _state.displayedChapterIndex(
-                          provider.book?.durChapterIndex ?? 0);
-                      if (target != ci && _token != null) {
-                        _saveProgress(pos: _getProgress());
-                        _openChapter(target, chapterPosition: 0);
-                      }
-                    },
-                    onShowChapterList: () => _showChapterList(provider),
-                    onShowSettings: () => _showReadingSettingsSheet(provider),
-                    onStopTts: _stopTts,
-                    onPauseTts: _pauseTts,
-                    onResumeTts: _resumeTts,
-                    onShowTtsTimer: _showTtsTimerSheet,
-                    onShowTtsSettings: _showTtsSettingsSheet,
-                    onStopAutoPage: _stopAutoPageMode,
-                    onDecreaseAutoPageInterval: () =>
-                        _changeAutoPageInterval(-1),
-                    onIncreaseAutoPageInterval: () =>
-                        _changeAutoPageInterval(1),
-                    onAddToBookshelf: () => _addCurrentBookToShelf(provider),
-                  ),
-                ),
-              ],
-              if (_state.autoPageRunning && _state.showAutoPageControls)
-                Positioned(
-                  left: 12,
-                  right: 12,
-                  bottom: 12,
-                  child: SafeArea(
-                    top: false,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xD91A222B),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Row(
-                        children: [
-                          IconButton(
-                            onPressed: () => _changeAutoPageInterval(-1),
-                            icon: const Icon(Icons.remove, color: Colors.white),
-                          ),
-                          Expanded(
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const Text('自动翻页',
-                                    style: TextStyle(
-                                        color: Colors.white, fontSize: 13)),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '${_state.autoPageInterval.toStringAsFixed(0)} 秒',
-                                  style: const TextStyle(
-                                      color: Colors.white70, fontSize: 11),
-                                ),
-                              ],
-                            ),
-                          ),
-                          IconButton(
-                            onPressed: () => _changeAutoPageInterval(1),
-                            icon: const Icon(Icons.add, color: Colors.white),
-                          ),
-                          const SizedBox(width: 8),
-                          TextButton.icon(
-                            onPressed: _stopAutoPageMode,
-                            icon: const Icon(Icons.stop_circle_outlined),
-                            label: const Text('停止'),
-                            style: TextButton.styleFrom(
-                                foregroundColor: Colors.white),
-                          ),
-                        ],
+                // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区
+                if (_state.dimOpacity > 0)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: ColoredBox(
+                        color: Colors.black.withValues(alpha: _state.dimOpacity),
                       ),
                     ),
                   ),
-                ),
-            ],
-          );
-        },
+                if (_state.showController) ...[
+                  Positioned.fill(
+                    child: GestureDetector(
+                      onTap: _toggleController,
+                      child: Container(color: Colors.black.withValues(alpha: 0.18)),
+                    ),
+                  ),
+                  ControllerOverlay(
+                    data: ReaderControllerViewData(
+                      bookName: provider.book?.name ?? '',
+                      chapterTitle: _displayedChapter(provider)?.title ?? '',
+                      sourceName: provider.book?.originName ??
+                          provider.book?.origin ??
+                          '未知书源',
+                      hasBookmark: _hasBookmarkAtCurrent(provider),
+                      replaceRuleEnabled: provider.book?.useReplaceRule == true,
+                      themeName: _state.theme,
+                      capsuleMode: _state.capsuleMode,
+                      ttsState: _tts.state,
+                      ttsRate: _tts.rate,
+                      autoPageInterval: _state.autoPageInterval,
+                      chapterIndex: _state.displayedChapterIndex(
+                          provider.book?.durChapterIndex ?? 0),
+                      totalChapters: provider.chapters.length,
+                      chapterSliderValue: _state.chapterSliderValue,
+                      ttsParagraphIndex: _state.ttsParagraphIndex,
+                      totalParagraphs: _state.paragraphs.length,
+                      inBookshelf: _isCurrentBookInShelf(provider),
+                    ),
+                    callbacks: ReaderControllerCallbacks(
+                      onBack: () {
+                        _saveProgress(pos: _getProgress());
+                        Navigator.pop(context);
+                      },
+                      onShowMore: () => _showMorePanel(provider),
+                      onRefresh: _applyReplaceRules,
+                      onToggleBookmark: () => _toggleBookmark(provider),
+                      onStartAutoPage: _startAutoPageMode,
+                      onStartTts: _startTts,
+                      onToggleTheme: _toggleReaderTheme,
+                      onPrevChapter: _goToPreviousChapter,
+                      onNextChapter: _goToNextChapter,
+                      onChapterSliderChanged: (value) {
+                        setState(() => _state.chapterSliderValue = value);
+                      },
+                      onChapterSliderEnd: (value) {
+                        setState(() => _state.chapterSliderValue = null);
+                        final target = value.round();
+                        final ci = _state.displayedChapterIndex(
+                            provider.book?.durChapterIndex ?? 0);
+                        if (target != ci && _token != null) {
+                          _saveProgress(pos: _getProgress());
+                          _openChapter(target, chapterPosition: 0);
+                        }
+                      },
+                      onShowChapterList: () => _showChapterList(provider),
+                      onShowSettings: () => _showReadingSettingsSheet(provider),
+                      onStopTts: _stopTts,
+                      onPauseTts: _pauseTts,
+                      onResumeTts: _resumeTts,
+                      onShowTtsTimer: _showTtsTimerSheet,
+                      onShowTtsSettings: _showTtsSettingsSheet,
+                      onStopAutoPage: _stopAutoPageMode,
+                      onDecreaseAutoPageInterval: () =>
+                          _changeAutoPageInterval(-1),
+                      onIncreaseAutoPageInterval: () =>
+                          _changeAutoPageInterval(1),
+                      onAddToBookshelf: () => _addCurrentBookToShelf(provider),
+                    ),
+                  ),
+                ],
+                if (_state.autoPageRunning && _state.showAutoPageControls)
+                  Positioned(
+                    left: 12,
+                    right: 12,
+                    bottom: 12,
+                    child: SafeArea(
+                      top: false,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xD91A222B),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          children: [
+                            IconButton(
+                              onPressed: () => _changeAutoPageInterval(-1),
+                              icon: const Icon(Icons.remove, color: Colors.white),
+                            ),
+                            Expanded(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('自动翻页',
+                                      style: TextStyle(
+                                          color: Colors.white, fontSize: 13)),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${_state.autoPageInterval.toStringAsFixed(0)} 秒',
+                                    style: const TextStyle(
+                                        color: Colors.white70, fontSize: 11),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            IconButton(
+                              onPressed: () => _changeAutoPageInterval(1),
+                              icon: const Icon(Icons.add, color: Colors.white),
+                            ),
+                            const SizedBox(width: 8),
+                            TextButton.icon(
+                              onPressed: _stopAutoPageMode,
+                              icon: const Icon(Icons.stop_circle_outlined),
+                              label: const Text('停止'),
+                              style: TextButton.styleFrom(
+                                  foregroundColor: Colors.white),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
