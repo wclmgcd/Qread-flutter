@@ -40,13 +40,17 @@ class ReaderTheme {
     highlight: Color(0x3300A88F),
   );
 
-  /// 护眼绿
+  /// 护眼绿 —— 默认主题
+  ///
+  /// 【数值来源】直接取自官方客户端（后端 Web 端同款）的截图取色：
+  /// 背景 rgb(209,237,209)、正文 rgb(28,31,28)、次要文字 rgb(144,144,144)。
+  /// 用户要求 App 排版/样式与后端 Web 端统一，所以默认主题就是这一套。
   static const green = ReaderTheme(
     name: 'green',
-    background: Color(0xFFC2D8AA),
-    text: Color(0xFF596C44),
-    secondaryText: Color(0xFF7A9460),
-    divider: Color(0xFFA8C490),
+    background: Color(0xFFD1EDD1),
+    text: Color(0xFF1C1F1C),
+    secondaryText: Color(0xFF909090),
+    divider: Color(0xFFBCD5BC),
     highlight: Color(0x3300A88F),
   );
 
@@ -101,13 +105,15 @@ class ReaderTheme {
   );
 
   // ---- 所有预设主题列表 ----
+  //
+  // 只放 6 个：官方客户端的「背景」一行正好是 6 个圆点，多出来的会换行，
+  // 面板样式就和参考图对不上了。被裁掉的「微信」「淡蓝」两个配色仍然保留
+  // 成常量（老配置还能解析），需要的话可以用面板里的「自定义」取色拿到。
   static const List<ReaderTheme> presets = [
     white,
     light,
     sepia,
     green,
-    wechat,
-    blue,
     purple,
     dark,
   ];
@@ -149,7 +155,7 @@ class ReaderTheme {
         return custom(Color(colorValue));
       }
     }
-    return light;
+    return green;
   }
 
   static String nextTheme(String current) {

@@ -4,31 +4,36 @@ import 'package:flutter/material.dart';
 
 import 'models.dart';
 
-/// 行级分页引擎 v5
+/// 行级分页引擎 v6
 ///
 /// 核心原则：分页引擎的高度计算必须与 Flutter 渲染端完全一致。
 /// Flutter Text 的行框高度 = fontSize * height（TextStyle.height），
 /// 所以分页引擎也用这个公式，而非 TextPainter.computeLineMetrics().height
 /// （后者返回的是 baseline 间距，不包含行框的上下留白）。
 ///
-/// v5 相比 v4 的变化：
-/// 1. 支持 fontFamily / 字重，测量与渲染用同一套字体（换字体后换行才正确）；
-/// 2. 支持书源内联的段评气泡（`data:image/svg+xml` + click JS），
-///    并把气泡高度计入分页，避免最后一页被裁掉；
-/// 3. 修好正文分段：`<p>` 开标签、`<br>` 变体、全角空格缩进、
-///    以及与章节标题重复的首行。
+/// v6 相比 v5 的变化：
+/// 1. 默认排版参数改为与官方客户端（后端 Web 端同款）实测值对齐：
+///    左右边距 0.57em、段间距 0.25em、行距 1.5、首行缩进 2 字符；
+/// 2. 段评气泡按书源 SVG 的真实几何缩放，占位高度随字号变化。
 class PaginationEngine {
   /// 页面布局默认值（不再硬编码，由参数覆盖）
-  static const double defaultHorizontalPadding = 24.0;
-  static const double defaultTopPadding = 18.0;
+  ///
+  /// 【数值来源】官方客户端实测（正文 1 字宽 = 83.5px，屏幕宽 1179px）：
+  /// - 左右边距 51px  → 51 / 83.5 ≈ 0.61em，字号 28 时约 17px
+  /// - 段间距   21px  → 21 / 83.5 ≈ 0.25em，字号 28 时约 7px
+  static const double defaultHorizontalPadding = 16.0;
+  static const double defaultTopPadding = 10.0;
   static const double defaultBottomPadding = 10.0;
-  static const double defaultHeaderBottomSpacing = 14.0;
-  static const double defaultParagraphSpacing = 10.0;
-  static const double defaultLineSpacing = 2.0;
+  static const double defaultHeaderBottomSpacing = 6.0;
+  static const double defaultParagraphSpacing = 7.0;
+  static const double defaultLineSpacing = 1.0;
   static const double defaultFirstLineIndent = 2.0;
 
   /// 章节头样式（与 content_renderer.dart 一致）
-  static const double headerFontSize = 12.0;
+  ///
+  /// 官方客户端里章节标题比正文小得多（约 12.6pt vs 正文 28pt），
+  /// 颜色与正文相同（不是灰色），所以这里只缩字号、不换颜色。
+  static const double headerFontSize = 13.0;
   static const double headerLineHeight = 1.2;
 
   /// 页脚样式（与 content_renderer.dart 一致）
@@ -129,6 +134,9 @@ class PaginationEngine {
       currentHeight = 0.0;
     }
 
+    // 段评气泡的占位高度随字号缩放（见 CommentBubbleMetrics），算一次即可。
+    final commentHeight = CommentBubbleMetrics(fontSize).totalHeight;
+
     for (final paragraph in paragraphs) {
       final lines = _splitParagraphToLines(
         paragraph: paragraph,
@@ -143,16 +151,14 @@ class PaginationEngine {
       for (int i = 0; i < lines.length; i++) {
         final line = lines[i];
         // 行框高度 = fontSize * lineHeight（与 Text widget 渲染一致）
-        // 加上行间距：段内 2px，段尾 10px
         final isLastLine = line.isLastLineOfParagraph;
-        final lineMarginBottom =
-            isLastLine ? paragraphSpacing : defaultLineSpacing;
+        final spacing = isLastLine ? paragraphSpacing : defaultLineSpacing;
         // 段评气泡也占高度，必须算进来，否则末页会被裁
-        final commentHeight = line.comments.isEmpty
-            ? 0.0
-            : kCommentBubbleTotalHeight;
-        final lineTotalHeight =
-            line.height + lineMarginBottom + commentHeight;
+        final bubbleHeight = line.comments.isEmpty ? 0.0 : commentHeight;
+        // 顺序：行框 → 气泡 → 间距。
+        // 官方客户端里气泡是紧贴段末行的，段间距排在气泡**下面**，
+        // 所以间距要加在气泡之后（加在前面会让气泡整体下移一个段间距）。
+        final lineTotalHeight = line.height + bubbleHeight + spacing;
 
         if (currentLines.isNotEmpty &&
             currentHeight + lineTotalHeight > availableHeight) {
@@ -391,13 +397,14 @@ class PaginationEngine {
     return out.replaceAll('&amp;', '&');
   }
 
-  /// 从段评标记里解析出「条数」和「点击 JS」
+  /// 从段评标记里解析出「条数」「点击 JS」以及气泡 SVG 原文
   static ParagraphComment _parseComment(String base64Payload, String jsonStr) {
     var count = '';
+    String? svgSource;
     try {
-      final svg = utf8.decode(base64.decode(base64Payload.trim()));
+      svgSource = utf8.decode(base64.decode(base64Payload.trim()));
       final m = RegExp(r'<text[^>]*>([^<]*)</text>', caseSensitive: false)
-          .firstMatch(svg);
+          .firstMatch(svgSource);
       if (m != null) count = m.group(1)!.trim();
     } catch (_) {}
     var click = '';
@@ -413,6 +420,7 @@ class PaginationEngine {
       count: count.isEmpty ? '·' : count,
       click: click,
       style: style,
+      bubbleSvg: svgSource,
     );
   }
 
@@ -492,19 +500,18 @@ class PaginationEngine {
       }
     }
 
+    // 【重要】不要把章节标题塞进正文段落里。
+    //
+    // 渲染端的 ContentRenderer.buildChapterHeader 已经在正文上方画了一行
+    // 小字标题（官方客户端就是这个位置、这个字号）。如果这里再补一段
+    // isTitle 段落，标题就会被画两遍 —— 一小一大叠在一起，
+    // 正是用户截图里「字体重叠」的观感。
+    //
+    // cleanTitle 仍然有用：上面用它剥掉正文首行重复的标题。
     final paragraphs = <ReaderParagraph>[];
-    if (cleanTitle.isNotEmpty) {
-      paragraphs.add(ReaderParagraph(
-        index: 0,
-        text: cleanTitle,
-        startPosition: 0,
-        endPosition: 0,
-        isTitle: true,
-      ));
-    }
 
     var start = 0;
-    var index = cleanTitle.isNotEmpty ? 1 : 0;
+    var index = 0;
     for (final rawLine in lines) {
       final (drainedText, comments) = _drainComments(rawLine, allComments);
       final text = drainedText.trim();

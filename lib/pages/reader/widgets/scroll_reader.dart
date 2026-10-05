@@ -40,9 +40,9 @@ class ScrollReader extends StatelessWidget {
     required this.pageIndicator,
     required this.timeLabel,
     required this.batteryLabel,
-    this.horizontalPadding = 24.0,
-    this.topPadding = 18.0,
-    this.paragraphSpacing = 10.0,
+    this.horizontalPadding = 16.0,
+    this.topPadding = 10.0,
+    this.paragraphSpacing = 7.0,
     this.firstLineIndent = 2.0,
     this.fontFamily,
     this.fontWeight = FontWeight.normal,
@@ -61,25 +61,15 @@ class ScrollReader extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          ContentRenderer.buildParagraph(
-            paragraph: ReaderParagraph(
-              index: -1,
-              text: chapterTitle,
-              startPosition: 0,
-              endPosition: 0,
-              isTitle: true,
-            ),
-            theme: theme,
-            fontSize: fontSize,
-            lineHeight: lineHeight,
-            ttsParagraphIndex: ttsParagraphIndex,
-            paragraphSpacing: paragraphSpacing,
-            firstLineIndent: firstLineIndent,
-            fontFamily: fontFamily,
-            fontWeight: fontWeight,
-            onCommentTap: onCommentTap,
+          // 章节标题用和分页模式同一套样式（小字、与正文同色），
+          // 不要再走 buildParagraph —— 那会用「正文+4、加粗」画成一大行，
+          // 和分页模式对不上。
+          ContentRenderer.buildChapterHeader(
+            chapterTitle,
+            theme,
+            fontFamily,
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 6),
           Expanded(
             child: ListView.builder(
               controller: scrollController,

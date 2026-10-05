@@ -3,15 +3,45 @@
 /// 层级结构：ChapterLayout → PageSlice → TextLine
 /// 与旧版 Block 模型不同，新版采用行级分页，段落自然在行边界处跨页。
 
-/// 段评气泡的尺寸常量。
+/// 段评气泡的尺寸。
 ///
 /// 【重要】分页引擎算高度、渲染端画气泡，两边的数字必须完全一致，
 /// 否则会出现「最后一页底部被裁掉」或者「每页少排一行」。
 /// 所以这里定义一次，两边都引用。
-const double kCommentBubbleHeight = 24.0;
-const double kCommentBubbleTopSpacing = 6.0;
-const double kCommentBubbleTotalHeight =
-    kCommentBubbleHeight + kCommentBubbleTopSpacing;
+///
+/// 【数值来源】不是拍脑袋定的，而是从官方客户端（后端 Web 端同款）的
+/// 真实排版量出来的：正文 1 个字宽 = 83.5px 时，
+/// - 气泡方框 85×86px  → 方框边长 ≈ 1.02 × 字号
+/// - 方框上沿距上一行行框底 17px  → 上间距 ≈ 0.20 × 字号
+/// - 方框下沿距下一行行框顶 28px  → 下间距 ≈ 0.335 × 字号
+/// 合计占位 1.555 × 字号，与实测的 131px（83.5 字号）吻合。
+///
+/// 气泡宽度不是常量：书源给的 SVG 里，方框左侧还有一条小尾巴，
+/// 尾巴伸出的宽度由 path 本身决定，所以宽度 = 方框 + 尾巴。
+class CommentBubbleMetrics {
+  const CommentBubbleMetrics(this.fontSize);
+
+  /// 正文字号（px / logical px）
+  final double fontSize;
+
+  /// 方框边长（书源 SVG 里方框是 32×32 单位）
+  double get side => fontSize * 1.02;
+
+  /// 方框上方的空隙
+  double get topSpacing => fontSize * 0.20;
+
+  /// 方框下方到下一行的空隙
+  double get bottomSpacing => fontSize * 0.335;
+
+  /// 气泡整体占位高度——分页引擎按这个扣减可用高度
+  double get totalHeight => topSpacing + side + bottomSpacing;
+
+  /// 方框左侧尾巴的宽度（书源 SVG：方框 x 16..48，尾巴最左到 x 8）
+  double get tailWidth => side * (8 / 32);
+
+  /// 气泡整体宽度 = 尾巴 + 方框
+  double get width => side + tailWidth;
+}
 
 /// 段评（段落评论）标记
 ///
@@ -28,6 +58,7 @@ class ParagraphComment {
     required this.count,
     required this.click,
     this.style = 'TEXT',
+    this.bubbleSvg,
   });
 
   /// 气泡上显示的数字（评论条数）
@@ -38,6 +69,12 @@ class ParagraphComment {
 
   /// 书源给的样式标识（TEXT / 其它）
   final String style;
+
+  /// 书源内联的气泡 SVG 源码（base64 已解码）。
+  ///
+  /// 官方客户端就是照这个 SVG 画的，所以渲染端也按它画，
+  /// 形状/比例才和后端 Web 端一致。为 null 时退化成内置形状。
+  final String? bubbleSvg;
 
   bool get isTappable => click.trim().isNotEmpty;
 }

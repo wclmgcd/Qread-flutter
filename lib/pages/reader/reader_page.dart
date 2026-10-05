@@ -53,6 +53,8 @@ class _ReaderPageState extends State<ReaderPage> {
   static const _keyFontFamily = 'reader_font_family';
   static const _keyBoldText = 'reader_bold_text';
   static const _keyShowParagraphComment = 'reader_show_paragraph_comment';
+  /// 老默认排版 → 官方客户端同款排版 的一次性迁移标记
+  static const _keyLayoutMigrated = 'reader_layout_migrated_v2';
 
   late PageController _pageController;
   final PagedReaderController _pagedReaderController = PagedReaderController();
@@ -216,11 +218,16 @@ class _ReaderPageState extends State<ReaderPage> {
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
+    // 老版本（≤ v3.4.5）的默认排版和官方客户端差得比较远
+    // （字号 18 / 行距 1.8 / 边距 24 / 羊皮纸背景）。
+    // 用户要求 App 排版与后端 Web 端统一，所以升级后做一次一次性迁移：
+    // 只有「还停留在老默认值」的项才改写，用户自己调过的值不动。
+    final needMigrate = !(prefs.getBool(_keyLayoutMigrated) ?? false);
     setState(() {
-      _state.fontSize = prefs.getDouble(_keyFontSize) ?? 18.0;
-      _state.lineHeight = prefs.getDouble(_keyLineHeight) ?? 1.8;
+      _state.fontSize = prefs.getDouble(_keyFontSize) ?? 28.0;
+      _state.lineHeight = prefs.getDouble(_keyLineHeight) ?? 1.5;
       _state.autoNext = prefs.getBool(_keyAutoNext) ?? true;
-      _state.theme = prefs.getString(_keyTheme) ?? 'light';
+      _state.theme = prefs.getString(_keyTheme) ?? 'green';
       _state.pageMode = prefs.getString(_keyPageMode) ?? 'paged';
       _state.autoPageInterval = prefs.getDouble(_keyAutoPageInterval) ?? 12.0;
       _state.screenWakelock = prefs.getBool(_keyScreenWakelock) ?? true;
@@ -228,15 +235,23 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.volumeKeyFlip = prefs.getBool(_keyVolumeKeyFlip) ?? false;
       _state.showBottomBar = prefs.getBool(_keyShowBottomBar) ?? true;
       _state.showTopBar = prefs.getBool(_keyShowTopBar) ?? true;
-      _state.paragraphSpacing = prefs.getDouble(_keyParagraphSpacing) ?? 10.0;
+      _state.paragraphSpacing = prefs.getDouble(_keyParagraphSpacing) ?? 7.0;
       _state.firstLineIndent = prefs.getDouble(_keyFirstLineIndent) ?? 2.0;
-      _state.horizontalPadding = prefs.getDouble(_keyHorizontalPadding) ?? 24.0;
-      _state.topPadding = prefs.getDouble(_keyTopPadding) ?? 18.0;
+      _state.horizontalPadding = prefs.getDouble(_keyHorizontalPadding) ?? 16.0;
+      _state.topPadding = prefs.getDouble(_keyTopPadding) ?? 10.0;
       _state.brightness = prefs.getDouble(_keyBrightness) ?? 1.0;
       _state.fontFamily = prefs.getString(_keyFontFamily) ?? 'default';
       _state.boldText = prefs.getBool(_keyBoldText) ?? false;
       _state.showParagraphComment =
           prefs.getBool(_keyShowParagraphComment) ?? true;
+      if (needMigrate) {
+        if (_state.fontSize == 18.0) _state.fontSize = 28.0;
+        if (_state.lineHeight == 1.8) _state.lineHeight = 1.5;
+        if (_state.theme == 'light') _state.theme = 'green';
+        if (_state.paragraphSpacing == 10.0) _state.paragraphSpacing = 7.0;
+        if (_state.horizontalPadding == 24.0) _state.horizontalPadding = 16.0;
+        if (_state.topPadding == 18.0) _state.topPadding = 10.0;
+      }
       final rawAnimType = prefs.get(_keyPageAnimType);
       if (rawAnimType is String) {
         _state.applyPageAnimType(PageAnimType.fromId(rawAnimType));
@@ -248,6 +263,11 @@ class _ReaderPageState extends State<ReaderPage> {
         _state.applyPageAnimType(PageAnimType.cover);
       }
     });
+    if (needMigrate) {
+      // 迁移后的值要落盘，否则下次启动又会从旧值读回来
+      await _saveSettings();
+      await prefs.setBool(_keyLayoutMigrated, true);
+    }
   }
 
   Future<void> _saveSettings() async {
@@ -2092,9 +2112,21 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   void _showReadingSettingsSheet(ReaderProvider provider) {
+    // 面板配色跟随阅读主题：官方客户端的面板底色就是正文背景色，
+    // 只在顶边压一条 1px 分隔线 + 一点向上的阴影，用来和正文区分开。
+    final readerTheme = _state.currentTheme;
+    const accent = Color(0xFFFF9800); // 选中胶囊的橙色
+    const sliderAccent = Color(0xFF7CB7B2); // 亮度滑块的青色
+
+    // 官方客户端里，设置面板一出来，顶部/底部工具条就收起来了。
+    // 不收起的话那条半透明黑底会盖在正文上，正文透过来看着像「字体重叠」。
+    if (_state.showController) {
+      setState(() => _state.showController = false);
+    }
+
     showModalBottomSheet(
       context: context,
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: readerTheme.background,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -2116,72 +2148,78 @@ class _ReaderPageState extends State<ReaderPage> {
               top: false,
               child: SingleChildScrollView(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // 拖拽指示条
-                      Center(
-                        child: Container(
-                          width: 36,
-                          height: 4,
-                          margin: const EdgeInsets.only(bottom: 12),
-                          decoration: BoxDecoration(
-                            color: Colors.grey.withValues(alpha: 0.3),
-                            borderRadius: BorderRadius.circular(2),
+                      // ---- 亮度 ----
+                      _SettingRow(
+                        label: '亮度',
+                        child: SliderTheme(
+                          data: SliderTheme.of(context).copyWith(
+                            activeTrackColor: sliderAccent,
+                            thumbColor: sliderAccent,
+                            inactiveTrackColor: readerTheme.divider,
+                            trackHeight: 5,
+                            thumbShape: const RoundSliderThumbShape(
+                                enabledThumbRadius: 11),
+                            overlayShape: const RoundSliderOverlayShape(
+                                overlayRadius: 20),
+                          ),
+                          child: Slider(
+                            value: _state.brightness.clamp(0.1, 1.0),
+                            min: 0.1,
+                            max: 1.0,
+                            divisions: 18,
+                            onChanged: (v) =>
+                                commit(() => _state.brightness = v),
                           ),
                         ),
                       ),
 
-                      // ---- 亮度 ----
-                      _SettingRow(
-                        label: '亮度',
-                        value: '${(_state.brightness * 100).round()}%',
-                        child: Slider(
-                          value: _state.brightness.clamp(0.1, 1.0),
-                          min: 0.1,
-                          max: 1.0,
-                          divisions: 18,
-                          onChanged: (v) =>
-                              commit(() => _state.brightness = v),
-                        ),
-                      ),
-
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
 
                       // ---- 字号 ----
                       _chipRow('字号', [
-                        _ChoiceChip('A-', false, () {
-                          final next = (_state.fontSize - 2).clamp(12.0, 32.0);
-                          commit(() => _state.fontSize = next,
-                              rebuildPages: true);
-                        }),
-                        _ChoiceChip('A+', false, () {
-                          final next = (_state.fontSize + 2).clamp(12.0, 32.0);
-                          commit(() => _state.fontSize = next,
-                              rebuildPages: true);
-                        }),
+                        _ChoiceChip(
+                          'A-',
+                          false,
+                          () {
+                            final next =
+                                (_state.fontSize - 2).clamp(12.0, 40.0);
+                            commit(() => _state.fontSize = next,
+                                rebuildPages: true);
+                          },
+                          borderColor: readerTheme.divider,
+                          textColor: readerTheme.text,
+                          accentColor: accent,
+                        ),
+                        _ChoiceChip(
+                          'A+',
+                          false,
+                          () {
+                            final next =
+                                (_state.fontSize + 2).clamp(12.0, 40.0);
+                            commit(() => _state.fontSize = next,
+                                rebuildPages: true);
+                          },
+                          borderColor: readerTheme.divider,
+                          textColor: readerTheme.text,
+                          accentColor: accent,
+                        ),
                         _ChoiceChip(
                           _state.boldText ? '粗' : '细',
                           _state.boldText,
                           () => commit(() => _state.boldText = !_state.boldText,
                               rebuildPages: true),
-                        ),
-                        // 当前字号数值，纯展示
-                        Padding(
-                          padding: const EdgeInsets.only(left: 4),
-                          child: Text(
-                            '${_state.fontSize.round()}',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: Colors.grey.shade600,
-                            ),
-                          ),
+                          borderColor: readerTheme.divider,
+                          textColor: readerTheme.text,
+                          accentColor: accent,
                         ),
                       ]),
 
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
 
                       // ---- 字体 ----
                       _chipRow('字体', [
@@ -2192,10 +2230,13 @@ class _ReaderPageState extends State<ReaderPage> {
                             () => commit(
                                 () => _state.fontFamily = font.id,
                                 rebuildPages: true),
+                            borderColor: readerTheme.divider,
+                            textColor: readerTheme.text,
+                            accentColor: accent,
                           ),
                       ]),
 
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
 
                       // ---- 翻页 ----
                       _chipRow('翻页', [
@@ -2206,77 +2247,77 @@ class _ReaderPageState extends State<ReaderPage> {
                             () => commit(() {
                               _state.applyPageAnimType(anim);
                             }, rebuildPages: true),
+                            borderColor: readerTheme.divider,
+                            textColor: readerTheme.text,
+                            accentColor: accent,
                           ),
                       ]),
 
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 4),
 
                       // ---- 背景主题 ----
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 4),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const Text('背景', style: TextStyle(fontSize: 14)),
-                            const SizedBox(height: 8),
-                            Wrap(
-                              spacing: 8,
-                              runSpacing: 8,
-                              children: [
-                                for (final preset in ReaderTheme.presets)
-                                  _ThemeColorDot(
-                                    label: ReaderTheme.displayName(preset.name),
-                                    color: preset.background,
-                                    selected: _state.theme == preset.name,
-                                    onTap: () => commit(
-                                        () => _state.theme = preset.name),
-                                  ),
-                                // 自定义颜色
-                                _ThemeColorDot(
-                                  label: '自定义',
-                                  color: _state.theme.startsWith('custom_')
-                                      ? _state.currentTheme.background
-                                      : Colors.grey.shade300,
-                                  selected: _state.theme.startsWith('custom_'),
-                                  onTap: () async {
-                                    final color = await _showColorPicker(
-                                      _state.currentTheme.background,
-                                    );
-                                    if (color != null) {
-                                      final theme = ReaderTheme.custom(color);
-                                      commit(() => _state.theme = theme.name);
-                                    }
-                                  },
-                                  isCustom: true,
-                                ),
-                              ],
-                            ),
-                          ],
+                      _chipRow('背景', [
+                        for (final preset in ReaderTheme.presets)
+                          _dot(
+                            label: ReaderTheme.displayName(preset.name),
+                            color: preset.background,
+                            selected: _state.theme == preset.name,
+                            borderColor: readerTheme.divider,
+                            onTap: () =>
+                                commit(() => _state.theme = preset.name),
+                          ),
+                        // 自定义颜色
+                        _dot(
+                          label: '自定义',
+                          color: _state.theme.startsWith('custom_')
+                              ? _state.currentTheme.background
+                              : Colors.grey.shade300,
+                          selected: _state.theme.startsWith('custom_'),
+                          borderColor: readerTheme.divider,
+                          isCustom: true,
+                          onTap: () async {
+                            final color = await _showColorPicker(
+                              _state.currentTheme.background,
+                            );
+                            if (color != null) {
+                              final theme = ReaderTheme.custom(color);
+                              commit(() => _state.theme = theme.name);
+                            }
+                          },
                         ),
-                      ),
+                      ]),
 
-                      const Divider(height: 20),
+                      const SizedBox(height: 14),
 
-                      // ---- 间距设置入口 ----
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('间距设置'),
-                        trailing: const Icon(Icons.chevron_right, size: 20),
-                        onTap: () {
-                          Navigator.pop(sheetContext);
-                          _showSpacingSettingsSheet(provider);
-                        },
-                      ),
-
-                      // ---- 更多设置入口 ----
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('更多设置'),
-                        trailing: const Icon(Icons.chevron_right, size: 20),
-                        onTap: () {
-                          Navigator.pop(sheetContext);
-                          _showMoreSettingsSheet(provider);
-                        },
+                      // ---- 间距设置 / 更多设置 ----
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _panelButton(
+                              icon: Icons.format_line_spacing,
+                              label: '间距设置',
+                              textColor: readerTheme.text,
+                              borderColor: readerTheme.divider,
+                              onTap: () {
+                                Navigator.pop(sheetContext);
+                                _showSpacingSettingsSheet(provider);
+                              },
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _panelButton(
+                              icon: Icons.more_horiz,
+                              label: '更多设置',
+                              textColor: readerTheme.text,
+                              borderColor: readerTheme.divider,
+                              onTap: () {
+                                Navigator.pop(sheetContext);
+                                _showMoreSettingsSheet(provider);
+                              },
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -2289,6 +2330,61 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// 面板底部的圆点（背景色选择）
+  ///
+  /// 选中时在圆点外面套一圈橙色描边——注意必须画在圆点**外面**，
+  /// 直接给圆点加 border 会糊在一起，和参考图对不上。
+  Widget _dot({
+    required String label,
+    required Color color,
+    required bool selected,
+    required Color borderColor,
+    required VoidCallback onTap,
+    bool isCustom = false,
+  }) {
+    final dot = _ThemeColorDot(
+      label: label,
+      color: color,
+      selected: selected,
+      onTap: onTap,
+      isCustom: isCustom,
+      borderColor: borderColor,
+    );
+    return selected ? _ThemeColorDotRing(child: dot) : dot;
+  }
+
+  /// 面板底部的宽按钮（间距设置 / 更多设置）
+  Widget _panelButton({
+    required IconData icon,
+    required String label,
+    required Color textColor,
+    required Color borderColor,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderColor, width: 1),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(icon, size: 17, color: textColor),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(fontSize: 15, color: textColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   /// 「标签 + 一行可换行的胶囊按钮」布局
   Widget _chipRow(String label, List<Widget> chips) {
     return Padding(
@@ -2297,10 +2393,10 @@ class _ReaderPageState extends State<ReaderPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 44,
+            width: 52,
             child: Padding(
               padding: const EdgeInsets.only(top: 6),
-              child: Text(label, style: const TextStyle(fontSize: 14)),
+              child: Text(label, style: const TextStyle(fontSize: 15)),
             ),
           ),
           Expanded(
@@ -2315,7 +2411,7 @@ class _ReaderPageState extends State<ReaderPage> {
   void _showSpacingSettingsSheet(ReaderProvider provider) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: _state.currentTheme.background,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -2380,7 +2476,9 @@ class _ReaderPageState extends State<ReaderPage> {
                         value: _state.paragraphSpacing,
                         min: 4,
                         max: 24,
-                        divisions: 10,
+                        // 步长 1px：默认值 7 必须正好落在刻度上，
+                        // 否则滑块一拖就会跳到邻近的偶数上
+                        divisions: 20,
                         label: _state.paragraphSpacing.round().toString(),
                         onChanged: (v) => commit(
                             () => _state.paragraphSpacing = v,
@@ -2428,7 +2526,8 @@ class _ReaderPageState extends State<ReaderPage> {
                         value: _state.topPadding,
                         min: 0,
                         max: 48,
-                        divisions: 12,
+                        // 步长 2px：默认值 10 要正好落在刻度上
+                        divisions: 24,
                         label: _state.topPadding.round().toString(),
                         onChanged: (v) => commit(() => _state.topPadding = v,
                             rebuildPages: true),
@@ -2446,9 +2545,12 @@ class _ReaderPageState extends State<ReaderPage> {
 
   /// 更多设置抽屉
   void _showMoreSettingsSheet(ReaderProvider provider) {
+    final readerTheme = _state.currentTheme;
+    const accent = Color(0xFFFF9800);
+
     showModalBottomSheet(
       context: context,
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+      backgroundColor: readerTheme.background,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -2468,39 +2570,49 @@ class _ReaderPageState extends State<ReaderPage> {
 
             return SafeArea(
               top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 36,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    ),
-                    const Text('更多设置',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 8),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('更多设置',
+                          style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w600,
+                              color: readerTheme.text)),
+                      const SizedBox(height: 12),
 
-                    // ---- 其它翻页模式（滚动 / 无） ----
-                    _chipRow('翻页', [
-                      for (final anim in PageAnimType.extraChoices)
-                        _ChoiceChip(
-                          anim.label,
-                          _state.pageAnimType == anim,
-                          () => commit(() {
-                            _state.applyPageAnimType(anim);
-                          }, rebuildPages: true),
-                        ),
-                    ]),
+                      // ---- 其余字体（主面板放不下的） ----
+                      _chipRow('字体', [
+                        for (final font in ReaderFont.extraPresets)
+                          _ChoiceChip(
+                            font.label,
+                            _state.fontFamily == font.id,
+                            () => commit(
+                                () => _state.fontFamily = font.id,
+                                rebuildPages: true),
+                            borderColor: readerTheme.divider,
+                            textColor: readerTheme.text,
+                            accentColor: accent,
+                          ),
+                      ]),
+
+                      // ---- 其它翻页模式（滚动 / 无） ----
+                      _chipRow('翻页', [
+                        for (final anim in PageAnimType.extraChoices)
+                          _ChoiceChip(
+                            anim.label,
+                            _state.pageAnimType == anim,
+                            () => commit(() {
+                              _state.applyPageAnimType(anim);
+                            }, rebuildPages: true),
+                            borderColor: readerTheme.divider,
+                            textColor: readerTheme.text,
+                            accentColor: accent,
+                          ),
+                      ]),
 
                     // ---- 段评 ----
                     SwitchListTile(
@@ -2587,7 +2699,8 @@ class _ReaderPageState extends State<ReaderPage> {
                               commit(() => _state.autoPageInterval = v),
                         ),
                       ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -2958,8 +3071,8 @@ class _SettingRow extends StatelessWidget {
       child: Row(
         children: [
           SizedBox(
-            width: 64,
-            child: Text(label, style: const TextStyle(fontSize: 14)),
+            width: 52,
+            child: Text(label, style: const TextStyle(fontSize: 15)),
           ),
           Expanded(child: child),
           if (value != null)
@@ -2980,30 +3093,57 @@ class _SettingRow extends StatelessWidget {
   }
 }
 
-/// 选择芯片
+/// 选择胶囊
+///
+/// 外观照官方客户端的设置面板：透明底 + 细描边胶囊，同一行等宽；
+/// 选中态不是填充色块，而是换成橙色描边 + 橙色文字。
 class _ChoiceChip extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
 
-  const _ChoiceChip(this.label, this.selected, this.onTap);
+  /// 未选中时的描边色（跟随阅读主题）
+  final Color borderColor;
+
+  /// 未选中时的文字色
+  final Color textColor;
+
+  /// 选中态强调色
+  final Color accentColor;
+
+  /// 最小宽度——参考图里同一行的胶囊是等宽的
+  final double minWidth;
+
+  const _ChoiceChip(
+    this.label,
+    this.selected,
+    this.onTap, {
+    this.borderColor = const Color(0xFFC1D5C1),
+    this.textColor = const Color(0xFF1C1F1C),
+    this.accentColor = const Color(0xFFFF9800),
+    this.minWidth = 52,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final stroke = selected ? accentColor : borderColor;
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+        constraints: BoxConstraints(minWidth: minWidth),
+        height: 30,
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFF00A88F) : Colors.grey.shade200,
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(color: stroke, width: 1),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 13,
-            color: selected ? Colors.white : Colors.grey.shade700,
-            fontWeight: selected ? FontWeight.w500 : FontWeight.normal,
+            fontSize: 15,
+            height: 1.1,
+            color: selected ? accentColor : textColor,
           ),
         ),
       ),
@@ -3012,6 +3152,8 @@ class _ChoiceChip extends StatelessWidget {
 }
 
 /// 主题颜色圆点选择器
+///
+/// 参考图里只有圆点、没有文字标签；选中时在圆点外面套一圈橙色描边。
 class _ThemeColorDot extends StatelessWidget {
   final String label;
   final Color color;
@@ -3019,60 +3161,68 @@ class _ThemeColorDot extends StatelessWidget {
   final VoidCallback onTap;
   final bool isCustom;
 
+  /// 描边色（未选中时圆点自身的外圈）
+  final Color borderColor;
+
   const _ThemeColorDot({
     required this.label,
     required this.color,
     required this.selected,
     required this.onTap,
     this.isCustom = false,
+    this.borderColor = const Color(0xFFC1D5C1),
   });
+
+  static const double _dotSize = 21;
+  static const double _ringSize = 29;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(
-                color:
-                    selected ? const Color(0xFF00A88F) : Colors.grey.shade400,
-                width: selected ? 3 : 1,
+      child: Tooltip(
+        message: label,
+        child: SizedBox(
+          width: _ringSize,
+          height: _ringSize,
+          child: Center(
+            child: Container(
+              width: _dotSize,
+              height: _dotSize,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: borderColor, width: 1),
               ),
-              boxShadow: isCustom
-                  ? []
-                  : [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.1),
-                        blurRadius: 4,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-            ),
-            child: isCustom
-                ? const Icon(Icons.add, color: Colors.grey, size: 20)
-                : (selected
-                    ? const Icon(Icons.check,
-                        color: Color(0xFF00A88F), size: 16)
-                    : null),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              color: selected ? const Color(0xFF00A88F) : Colors.grey.shade600,
-              fontWeight: selected ? FontWeight.w500 : FontWeight.normal,
+              child: isCustom
+                  ? const Icon(Icons.add, color: Colors.grey, size: 14)
+                  : null,
             ),
           ),
-        ],
+        ),
       ),
+    );
+  }
+}
+
+/// 圆点外面那圈「已选中」的橙色描边。
+///
+/// 单独抽出来是因为它必须画在圆点**外面**（中间留一点空隙），
+/// 而圆点自身的 border 画在里面，两者叠加会糊成一团。
+class _ThemeColorDotRing extends StatelessWidget {
+  final Widget child;
+
+  const _ThemeColorDotRing({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        border: Border.all(color: const Color(0xFFFF9800), width: 2),
+      ),
+      child: child,
     );
   }
 }

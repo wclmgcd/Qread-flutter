@@ -103,11 +103,17 @@ class ReaderState with ChangeNotifier {
   bool initialChapterOpened = false;
 
   // ---- 阅读设置 ----
-  double fontSize = 18.0;
-  double lineHeight = 1.8;
+  //
+  // 【数值来源】官方客户端（后端 Web 端同款）实测：屏幕宽 1179px 时
+  // 1 个字宽 83.5px，即字号 ≈ 屏宽的 7.08%；行距 126/83.5 ≈ 1.5；
+  // 左右边距 51px ≈ 0.61em；段间距 21px ≈ 0.25em。
+  // 按 393pt 宽的常见机型折算：字号 28、边距 16、段间距 7。
+  // 用户要求 App 排版与后端 Web 端统一，所以这些默认值就是照它定的。
+  double fontSize = 28.0;
+  double lineHeight = 1.5;
   double autoPageInterval = 12.0;
   bool autoNext = true;
-  String theme = 'light';
+  String theme = 'green';
   String pageMode = 'paged';
   PageAnimType pageAnimType = PageAnimType.cover;
 
@@ -132,10 +138,10 @@ class ReaderState with ChangeNotifier {
   bool showTopBar = true; // 顶部区域（章节序号/章节名）
 
   // ---- 间距设置 ----
-  double paragraphSpacing = 10.0; // 段间距 (px)
+  double paragraphSpacing = 7.0; // 段间距 (px)
   double firstLineIndent = 2.0; // 首行缩进 (字符数)
-  double horizontalPadding = 24.0; // 左右边距 (px)
-  double topPadding = 18.0; // 上方边距 (px)
+  double horizontalPadding = 16.0; // 左右边距 (px)
+  double topPadding = 10.0; // 上方边距 (px)
 
   // ---- 章节状态 ----
   String displayedContent = '';
