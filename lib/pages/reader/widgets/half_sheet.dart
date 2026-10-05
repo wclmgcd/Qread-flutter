@@ -51,7 +51,7 @@ class HalfSheet extends StatelessWidget {
               // 有标题时标题栏本身就是拖拽区（对齐截图：顶部只有一行「番茄段评」），
               // 没标题才单独画一根把手。
               if (!hasTitle)
-                _buildHandle(theme)
+                _buildHandle(context, theme)
               else ...[
                 GestureDetector(
                   behavior: HitTestBehavior.opaque,
@@ -116,7 +116,9 @@ class HalfSheet extends StatelessWidget {
     );
   }
 
-  Widget _buildHandle(ThemeData theme) {
+  /// 注意：这是 StatelessWidget 的普通方法，**没有** `context` 字段，
+  /// 必须由调用方（build）把 context 传进来。
+  Widget _buildHandle(BuildContext context, ThemeData theme) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onVerticalDragEnd: (details) {
