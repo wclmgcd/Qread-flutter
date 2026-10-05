@@ -1,12 +1,9 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 
 import '../config/routes.dart';
 import '../models/book.dart';
 import '../pages/bookshelf/book_info_page.dart';
-import '../providers/bookshelf_provider.dart';
-import '../providers/user_provider.dart';
 import '../services/api_service.dart';
 import '../services/app_settings.dart';
 
@@ -41,11 +38,13 @@ class BookCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        // 点卡片进「书籍信息」页（对齐官方 3.41），
-        // 而不是像以前那样直接跳进阅读器 —— 那样用户根本看不到书籍信息。
-        onTap: selectionMode ? onSelectionToggle : () => _openInfo(context),
+        // 对齐官方 3.41：
+        //   单击封面 → 直接进阅读器；
+        //   长按封面 → 进「书籍信息」页（删除 / 更换书源 / 改分组等都在这页）。
+        // 之前两个手势都进信息页，导致「点封面进不去阅读」。
+        onTap: selectionMode ? onSelectionToggle : () => _openReader(context),
         onLongPress:
-            selectionMode ? onSelectionToggle : () => _showOptions(context),
+            selectionMode ? onSelectionToggle : () => _openInfo(context),
         child: child,
       ),
     );
@@ -278,172 +277,6 @@ class BookCard extends StatelessWidget {
 
   void _openReader(BuildContext context) {
     Navigator.pushNamed(context, '/reader', arguments: book);
-  }
-
-  void _showOptions(BuildContext context) {
-    final provider = context.read<BookshelfProvider>();
-    final groups = [
-      '未分组',
-      ...provider.groups
-          .map((g) => g.groupName ?? '')
-          .where((name) => name.isNotEmpty),
-    ];
-
-    showModalBottomSheet(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.auto_stories),
-              title: Text(book.name ?? '未知书名'),
-              subtitle: Text(book.author ?? ''),
-            ),
-            const Divider(height: 1),
-            ListTile(
-              leading: const Icon(Icons.play_arrow),
-              title: const Text('继续阅读'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _openReader(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.refresh),
-              title: const Text('更新'),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                final token = context.read<UserProvider>().token;
-                final provider = context.read<BookshelfProvider>();
-                if (token != null) {
-                  try {
-                    await ApiService.instance
-                        .refreshBook(token, book.bookUrl ?? '');
-                    if (!context.mounted) return;
-                    provider.loadBookshelf(token, refresh: true);
-                  } catch (_) {
-                    // Keep behavior consistent with existing implementation.
-                  }
-                }
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.category),
-              title: const Text('修改类型'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _showChangeTypeDialog(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder),
-              title: const Text('设置分组'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _showGroupPicker(context, groups);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete_outline, color: Colors.red),
-              title: const Text('移出书架', style: TextStyle(color: Colors.red)),
-              onTap: () async {
-                Navigator.pop(sheetContext);
-                final token = context.read<UserProvider>().token;
-                final provider = context.read<BookshelfProvider>();
-                if (token != null) {
-                  await provider.removeBook(token, book);
-                }
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  void _showChangeTypeDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => SimpleDialog(
-        title: const Text('修改类型'),
-        children: [
-          SimpleDialogOption(
-            child: const Text('小说'),
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              _changeType(context, 0);
-            },
-          ),
-          SimpleDialogOption(
-            child: const Text('有声书'),
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              _changeType(context, 1);
-            },
-          ),
-          SimpleDialogOption(
-            child: const Text('漫画'),
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              _changeType(context, 2);
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _changeType(BuildContext context, int type) async {
-    final token = context.read<UserProvider>().token;
-    final provider = context.read<BookshelfProvider>();
-    if (token != null) {
-      try {
-        await ApiService.instance
-            .changeBookType(token, book.bookUrl ?? '', type);
-        if (!context.mounted) return;
-        provider.loadBookshelf(token, refresh: true);
-      } catch (_) {
-        // Keep behavior consistent with existing implementation.
-      }
-    }
-  }
-
-  void _showGroupPicker(BuildContext context, List<String> groups) {
-    showModalBottomSheet(
-      context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Text(
-                '选择分组',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-              ),
-            ),
-            const Divider(height: 1),
-            ...groups.map(
-              (group) => ListTile(
-                title: Text(group),
-                onTap: () async {
-                  Navigator.pop(sheetContext);
-                  final token = context.read<UserProvider>().token;
-                  if (token != null) {
-                    await context.read<BookshelfProvider>().setBookGroup(
-                          token,
-                          group,
-                          book.bookUrl ?? '',
-                        );
-                  }
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
   }
 }
 

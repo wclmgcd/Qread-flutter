@@ -35,6 +35,10 @@ class ReaderControllerViewData {
   final int ttsParagraphIndex;
   final int totalParagraphs;
 
+  /// 当前书是否已在书架。不在时中间胶囊会多一个「+ 书架」按钮
+  /// （对齐 3.41：点开控制栏能看到加号，已在书架的书就没有）。
+  final bool inBookshelf;
+
   const ReaderControllerViewData({
     required this.bookName,
     required this.chapterTitle,
@@ -51,6 +55,7 @@ class ReaderControllerViewData {
     this.chapterSliderValue,
     this.ttsParagraphIndex = -1,
     this.totalParagraphs = 0,
+    this.inBookshelf = true,
   });
 }
 
@@ -78,6 +83,9 @@ class ReaderControllerCallbacks {
   final VoidCallback onDecreaseAutoPageInterval;
   final VoidCallback onIncreaseAutoPageInterval;
 
+  /// 点中间胶囊的「+ 书架」（书不在书架时才显示）
+  final VoidCallback onAddToBookshelf;
+
   const ReaderControllerCallbacks({
     required this.onBack,
     required this.onShowMore,
@@ -100,6 +108,7 @@ class ReaderControllerCallbacks {
     required this.onStopAutoPage,
     required this.onDecreaseAutoPageInterval,
     required this.onIncreaseAutoPageInterval,
+    required this.onAddToBookshelf,
   });
 }
 
@@ -295,6 +304,7 @@ class _FloatingCapsule extends StatelessWidget {
   }
 
   /// 普通模式：自动翻页 / 朗读 / 深浅切换
+  /// （书不在书架时，末尾多一个「+ 书架」）
   Widget _buildNormalCapsule() {
     final isLight = data.themeName == 'light';
     return Row(
@@ -317,6 +327,15 @@ class _FloatingCapsule extends StatelessWidget {
           label: isLight ? '深色' : '浅色',
           onTap: callbacks.onToggleTheme,
         ),
+        // 已在书架的书不显示加号（对齐 3.41）
+        if (!data.inBookshelf) ...[
+          _CapsuleDivider(),
+          _CapsuleButton(
+            icon: Icons.add_circle_outline,
+            label: '书架',
+            onTap: callbacks.onAddToBookshelf,
+          ),
+        ],
       ],
     );
   }

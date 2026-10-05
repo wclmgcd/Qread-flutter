@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
@@ -828,19 +829,33 @@ class _BookshelfPageState extends State<BookshelfPage>
     final provider = context.watch<BookshelfProvider>();
 
     if (!userProvider.isLoggedIn) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.menu_book, size: 64, color: Colors.grey),
-            const SizedBox(height: 16),
-            const Text('请先登录'),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: () => Navigator.pushNamed(context, '/login'),
-              child: const Text('去登录'),
+      // 对齐官方 3.41：未登录时也进书架页（标题「书架(0)」+ 搜索入口），
+      // 而不是甩一个全屏「请先登录」把整个界面挡掉。
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('书架(0)'),
+          actions: [
+            IconButton(
+              tooltip: '搜索',
+              icon: const Icon(Icons.search),
+              onPressed: () => Navigator.pushNamed(context, AppRoutes.search),
             ),
           ],
+        ),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.menu_book, size: 64, color: Colors.grey),
+              const SizedBox(height: 16),
+              const Text('登录后端可多端同步'),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => Navigator.pushNamed(context, AppRoutes.login),
+                child: const Text('去登录'),
+              ),
+            ],
+          ),
         ),
       );
     }

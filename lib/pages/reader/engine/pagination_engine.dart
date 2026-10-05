@@ -496,13 +496,32 @@ class PaginationEngine {
     String content, {
     String? chapterTitle,
   }) {
-    // 0. 先把段评标记摘出来，替换成占位符，稍后再按段落归位。
+    // 0. 先把段评摘出来换成占位符，稍后再按段落归位。
+    //
+    // 【致命坑·段评一条都不显示的原因】段评标记是**内联在 `<img src="...">`
+    // 的 src 属性里**的：
+    //     ...正文。<img src="data:image/svg+xml;base64,<b64>,{json}">
+    // 如果只把 `base64,{json}` 这一段换成占位符，占位符就落在 `<img ...>`
+    // 标签**内部**；紧接着「删掉所有标签」那一步用的 `<[^>]*>` 会一路匹配到
+    // 标签结尾的 `>`，把整个 `<img>` 连同占位符一起吃掉 —— 段评于是永远
+    // 挂不到任何段落上，一条都渲染不出来。
+    // 所以必须**先把整个 `<img ...段评...>` 标签换成占位符**（在删标签之前）。
     final allComments = <ParagraphComment>[];
-    final withPlaceholders = content.replaceAllMapped(_dpMarker, (m) {
-      final comment = _parseComment(m.group(1)!, m.group(2)!);
+    String placeholderOf(String b64, String json) {
       final idx = allComments.length;
-      allComments.add(comment);
+      allComments.add(_parseComment(b64, json));
       return '$_dpStart$idx$_dpEnd';
+    }
+
+    var withPlaceholders = content.replaceAllMapped(_dpWholeTag, (m) {
+      final inner = _dpMarker.firstMatch(m.group(0)!);
+      if (inner == null) return '';
+      return placeholderOf(inner.group(1)!, inner.group(2)!);
+    });
+    // 兜底：万一有书源把段评标记裸放在正文里（没有外层 `<img>` 包装），
+    // 这里再扫一遍剩下的裸标记，避免整章段评丢失。
+    withPlaceholders = withPlaceholders.replaceAllMapped(_dpMarker, (m) {
+      return placeholderOf(m.group(1)!, m.group(2)!);
     });
 
     // 1. 标签处理：

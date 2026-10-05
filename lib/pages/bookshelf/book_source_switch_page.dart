@@ -92,7 +92,18 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
       // 搜索线程数来自「阅读偏好 → 其他设置 → 搜索线程」
       final maxConcurrent =
           AppSettings.instance.searchThreadCount.clamp(1, 32);
-      final targets = enabled.take(maxConcurrent * 2).toList();
+      // 【换源搜不到的坑】这里原来写的是 `enabled.take(maxConcurrent * 2)`，
+      // 即只搜前 8~16 个源。用户装了几十个源时，目标源（比如「大灰狼 5.30」）
+      // 往往排在列表后面，根本没被搜到，于是显示「没有找到其它来源的同名书籍」。
+      // 现在改成：**所有已启用源都搜**，只靠 maxConcurrent 控制并发批次。
+      final targets = List<BookSource>.of(enabled);
+      // 同系源优先搜（当前源名/地址与候选源名有共同词，如「大灰狼」），
+      // 这样最可能的候选会最先冒出来，用户不必等全部跑完。
+      final affinityKey = '${_norm(_book.originName)}${_norm(_book.origin)}';
+      if (affinityKey.isNotEmpty) {
+        targets.sort((x, y) => _affinity(y, affinityKey)
+            .compareTo(_affinity(x, affinityKey)));
+      }
       setState(() => _total = targets.length);
 
       final keyword = _keywordCtrl.text.trim();
@@ -123,7 +134,7 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
           if (mounted) {
             setState(() {
               _done += batch.length;
-              _results = merged.values.toList();
+              _results = _sortCandidates(merged.values.toList());
             });
           }
         });
@@ -144,14 +155,66 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
     }
   }
 
-  /// 候选是否「像同一本书」：书名相同，或作者相同
+  /// 候选是否「像同一本书」。
+  ///
+  /// 原来要求书名**完全相同**，但不同书源的书名常带细微差异
+  /// （「冷却时代」vs「冷却时代（完本）」、「书名 · 第X卷」等），
+  /// 于是一堆本该可用的候选被过滤掉，用户看到的就是「换源搜不到」。
+  /// 现在放宽为：完全同名 / 一方包含另一方且长度接近 / 同作者且书名有交集。
   bool _looksSameBook(SearchResult r) {
     final a = _norm(_book.name);
     final b = _norm(r.name);
-    if (a.isNotEmpty && b.isNotEmpty && a == b) return true;
+    if (a.isEmpty || b.isEmpty) return false;
+    if (a == b) return true;
+    if (_containsClose(a, b)) return true;
     final aa = _norm(_book.author);
     final ba = _norm(r.author);
-    return aa.isNotEmpty && aa == ba && b.contains(a);
+    if (aa.isNotEmpty && aa == ba) {
+      return b.contains(a) || a.contains(b);
+    }
+    return false;
+  }
+
+  /// 一方包含另一方，且长度差不大（避免「武道」命中「武道至尊天下第一」）
+  bool _containsClose(String a, String b) {
+    if (!a.contains(b) && !b.contains(a)) return false;
+    return (a.length - b.length).abs() <= 4;
+  }
+
+  /// 源名/地址与当前源的「亲和度」：公共子串越多越像同系源。
+  /// 用来把「大灰狼」这类同系源排到最前面先搜。
+  int _affinity(BookSource s, String key) {
+    final n = '${_norm(s.bookSourceName)}${_norm(s.bookSourceUrl)}';
+    if (n.isEmpty || key.isEmpty) return 0;
+    var score = 0;
+    for (var len = 2; len <= 3; len++) {
+      for (var i = 0; i + len <= key.length; i++) {
+        if (n.contains(key.substring(i, i + len))) score += len * len;
+      }
+    }
+    return score;
+  }
+
+  /// 候选排序：书名完全一致的排最前，其次书名相近的，最后是其它。
+  List<SearchResult> _sortCandidates(List<SearchResult> list) {
+    final a = _norm(_book.name);
+    int rank(SearchResult r) {
+      final b = _norm(r.name);
+      if (b == a) return 0;
+      if (_containsClose(a, b)) return 1;
+      return 2;
+    }
+
+    final indexed = <int, SearchResult>{};
+    for (var i = 0; i < list.length; i++) {
+      indexed[i] = list[i];
+    }
+    final keys = indexed.keys.toList()
+      ..sort((i, j) {
+        final d = rank(indexed[i]!).compareTo(rank(indexed[j]!));
+        return d != 0 ? d : i.compareTo(j);
+      });
+    return [for (final k in keys) indexed[k]!];
   }
 
   String _norm(String? s) =>

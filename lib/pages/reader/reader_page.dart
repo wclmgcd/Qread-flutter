@@ -14,6 +14,7 @@ import '../../models/book.dart';
 import '../../models/bookmark.dart';
 import '../../models/chapter.dart';
 import '../../pages/bookshelf/book_source_switch_page.dart';
+import '../../providers/bookshelf_provider.dart';
 import '../../providers/reader_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
@@ -1117,6 +1118,7 @@ class _ReaderPageState extends State<ReaderPage> {
                     chapterSliderValue: _state.chapterSliderValue,
                     ttsParagraphIndex: _state.ttsParagraphIndex,
                     totalParagraphs: _state.paragraphs.length,
+                    inBookshelf: _isCurrentBookInShelf(provider),
                   ),
                   callbacks: ReaderControllerCallbacks(
                     onBack: () {
@@ -1156,6 +1158,7 @@ class _ReaderPageState extends State<ReaderPage> {
                         _changeAutoPageInterval(-1),
                     onIncreaseAutoPageInterval: () =>
                         _changeAutoPageInterval(1),
+                    onAddToBookshelf: () => _addCurrentBookToShelf(provider),
                   ),
                 ),
               ],
@@ -3107,6 +3110,34 @@ class _ReaderPageState extends State<ReaderPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
+  }
+
+  /// 当前书是否已在书架（决定中间胶囊要不要显示「+ 书架」）
+  bool _isCurrentBookInShelf(ReaderProvider provider) {
+    final url = provider.book?.bookUrl;
+    if (url == null || url.isEmpty) return true;
+    final books = context.watch<BookshelfProvider>().books;
+    return books.any((b) => b.bookUrl == url);
+  }
+
+  /// 把当前正在读的书加入书架（对齐 3.41 中间胶囊的加号）
+  Future<void> _addCurrentBookToShelf(ReaderProvider provider) async {
+    final book = provider.book;
+    final token = _token;
+    if (book == null || token == null || token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    try {
+      await ApiService.instance.saveBook(token, book);
+      if (!mounted) return;
+      await context
+          .read<BookshelfProvider>()
+          .loadBookshelf(token, refresh: true);
+      _toast('已加入书架');
+    } catch (e) {
+      _toast('加入失败：$e');
+    }
   }
 
   void _showChangeTypeDialog(ReaderProvider provider) {

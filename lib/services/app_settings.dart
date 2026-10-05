@@ -306,12 +306,12 @@ class AppSettings extends ChangeNotifier {
       case BookshelfSort.readTime:
         // 最近读的排最前；从没读过（null / 0）的沉底，用更新时间兜底
         list.sort((a, b) => _cmpTime(
-              readTimeOf(b) ?? updateTimeOf(b),
               readTimeOf(a) ?? updateTimeOf(a),
+              readTimeOf(b) ?? updateTimeOf(b),
             ));
         break;
       case BookshelfSort.updateTime:
-        list.sort((a, b) => _cmpTime(updateTimeOf(b), updateTimeOf(a)));
+        list.sort((a, b) => _cmpTime(updateTimeOf(a), updateTimeOf(b)));
         break;
       case BookshelfSort.name:
         list.sort((a, b) => _cmpText(nameOf(a), nameOf(b)));
@@ -330,6 +330,10 @@ class AppSettings extends ChangeNotifier {
     return list;
   }
 
+  /// 时间比较器（**降序**语义：时间较新的 a 排在前面）。
+  ///
+  /// 调用时按 `_cmpTime(a的值, b的值)` 自然顺序传入即可。
+  /// 注意不要把参数反过来 —— 反了就变成「最旧的排最前」。
   static int _cmpTime(int? a, int? b) {
     final va = (a == null || a <= 0) ? -1 : a;
     final vb = (b == null || b <= 0) ? -1 : b;

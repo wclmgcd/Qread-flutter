@@ -289,6 +289,8 @@ class _BookInfoPageState extends State<BookInfoPage> {
 
   Widget _buildBottomBar() {
     final theme = Theme.of(context);
+    // 从书架进来的书 → 左键是「删除」；从搜索/发现进来的 → 左键是「加入书架」
+    final inShelf = widget.args.fromBookshelf;
     return SafeArea(
       top: false,
       child: Padding(
@@ -297,7 +299,8 @@ class _BookInfoPageState extends State<BookInfoPage> {
           children: [
             Expanded(
               child: OutlinedButton(
-                onPressed: _busy ? null : _deleteBook,
+                onPressed:
+                    _busy ? null : (inShelf ? _deleteBook : _addToBookshelf),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: const Color(0xFFE05B57),
                   side: const BorderSide(color: Color(0xFFE05B57)),
@@ -306,7 +309,7 @@ class _BookInfoPageState extends State<BookInfoPage> {
                     borderRadius: BorderRadius.circular(22),
                   ),
                 ),
-                child: const Text('删除'),
+                child: Text(inShelf ? '删除' : '加入书架'),
               ),
             ),
             const SizedBox(width: 14),
@@ -367,6 +370,28 @@ class _BookInfoPageState extends State<BookInfoPage> {
     // 项目里没有独立的目录页，阅读器本身就带目录面板，
     // 直接进阅读器再让用户点目录，是当前最接近官方的做法。
     Navigator.pushNamed(context, AppRoutes.reader, arguments: _book);
+  }
+
+  /// 加入书架（从搜索 / 发现页进来时，底部左键走这里）
+  Future<void> _addToBookshelf() async {
+    if (_token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await ApiService.instance.saveBook(_token, _book);
+      if (!mounted) return;
+      await context
+          .read<BookshelfProvider>()
+          .loadBookshelf(_token, refresh: true);
+      _toast('已加入书架');
+      Navigator.pop(context, true);
+    } catch (e) {
+      _toast('加入失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   void _toast(String msg) {
