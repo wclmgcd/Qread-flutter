@@ -1,0 +1,50 @@
+# 上游仓库漏了 Podfile，iOS 端从未构建过。这里按 Flutter 3.41 的模板补一份，
+# 唯一改动是**去掉了模板里的 RunnerTests 子 target** —— 本仓库没有 RunnerTests
+# target，留着它 pod install 会直接报：
+#   Unable to find a target named `RunnerTests`
+#
+# 最低 iOS 版本。Flutter 3.41.5 的官方支持区间是 iOS 13 ~ 26（12 及更早不支持），
+# 且 webview_flutter 4.x / battery_plus 6.x 都要求 iOS 12+。
+# 这个值必须与下面两处保持一致，三处不同步会在 pod install 或 archive 阶段报错：
+#   - ios/Flutter/AppFrameworkInfo.plist  → MinimumOSVersion
+#   - ios/Runner.xcodeproj/project.pbxproj → IPHONEOS_DEPLOYMENT_TARGET
+platform :ios, '13.0'
+
+# CocoaPods 的统计上报是同步网络请求，会明显拖慢 flutter build。
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks!
+  use_modular_headers!
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+  end
+end
