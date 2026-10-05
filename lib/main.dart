@@ -12,6 +12,7 @@ import 'providers/replace_rule_provider.dart';
 import 'providers/source_manage_provider.dart';
 import 'providers/theme_provider.dart';
 import 'services/api_service.dart';
+import 'services/app_settings.dart';
 import 'services/storage_service.dart';
 
 void main() async {
@@ -22,6 +23,9 @@ void main() async {
     AppConstants.baseUrl = savedBaseUrl;
     ApiService.instance.setBaseUrl(savedBaseUrl);
   }
+  // 阅读偏好（书架排序 / 夜间模式 / 简繁转换 …）要先读出来，
+  // 否则书架首帧会按默认顺序闪一下再重排。
+  await AppSettings.instance.load();
   runApp(const QreadApp());
 }
 
@@ -41,6 +45,8 @@ class QreadApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SourceManageProvider()),
         ChangeNotifierProvider(create: (_) => ReplaceRuleProvider()),
         ChangeNotifierProvider(create: (_) => ThemeProvider()..init()),
+        // 阅读偏好：书架排序 / 夜间模式 / 简繁转换 / 段评样式 …
+        ChangeNotifierProvider.value(value: AppSettings.instance),
       ],
       child: const App(),
     );

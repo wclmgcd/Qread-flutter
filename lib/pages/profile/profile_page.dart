@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/constants.dart';
+import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../providers/theme_provider.dart';
 import '../../providers/user_provider.dart';
@@ -197,19 +198,20 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
           const SizedBox(width: 12),
           Expanded(
             child: _QuickActionCard(
-              icon: Icons.tune_rounded,
+              icon: Icons.menu_book_rounded,
               accent: const Color(0xFF58C06A),
-              title: '常规设置',
-              onTap: () => Navigator.pushNamed(context, '/settings/general'),
+              title: '阅读偏好',
+              onTap: () =>
+                  Navigator.pushNamed(context, AppRoutes.readingPreference),
             ),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: _QuickActionCard(
-              icon: Icons.system_update_alt_rounded,
+              icon: Icons.tune_rounded,
               accent: const Color(0xFFFFB84F),
-              title: '检查更新',
-              onTap: _showUpdatePlaceholder,
+              title: '常规设置',
+              onTap: () => Navigator.pushNamed(context, '/settings/general'),
             ),
           ),
         ],
@@ -349,12 +351,6 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
           ),
         ),
       ),
-    );
-  }
-
-  void _showUpdatePlaceholder() {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('检查更新功能稍后接入')),
     );
   }
 }

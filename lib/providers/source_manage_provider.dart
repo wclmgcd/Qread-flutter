@@ -17,7 +17,14 @@ class SourceManageProvider extends ChangeNotifier {
   String _searchQuery = '';
   String _filterGroup = '';
 
+  /// null = 不限；true = 只看已启用；false = 只看已禁用
+  bool? _filterEnabledOnly;
+  bool _filterExploreOnly = false;
+
   String get filterGroup => _filterGroup;
+  String get searchQuery => _searchQuery;
+  bool? get filterEnabledOnly => _filterEnabledOnly;
+  bool get filterExploreOnly => _filterExploreOnly;
 
   List<BookSource> get sources => _sources;
   bool get loading => _loading;
@@ -42,6 +49,13 @@ class SourceManageProvider extends ChangeNotifier {
     }
     if (_filterGroup.isNotEmpty) {
       list = list.where((s) => s.bookSourceGroup == _filterGroup).toList();
+    }
+    if (_filterEnabledOnly != null) {
+      final want = _filterEnabledOnly!;
+      list = list.where((s) => (s.enabled == true) == want).toList();
+    }
+    if (_filterExploreOnly) {
+      list = list.where((s) => s.enabledExplore == true).toList();
     }
     return list;
   }
@@ -78,6 +92,25 @@ class SourceManageProvider extends ChangeNotifier {
 
   void setFilterGroup(String group) {
     _filterGroup = group == _filterGroup ? '' : group;
+    notifyListeners();
+  }
+
+  /// 只看已启用 / 只看已禁用
+  void setFilterEnabledOnly(bool onlyEnabled) {
+    _filterEnabledOnly = onlyEnabled;
+    notifyListeners();
+  }
+
+  void toggleFilterExploreOnly() {
+    _filterExploreOnly = !_filterExploreOnly;
+    notifyListeners();
+  }
+
+  /// 清掉所有筛选条件（分组 / 启用状态 / 发现）
+  void clearFilters() {
+    _filterGroup = '';
+    _filterEnabledOnly = null;
+    _filterExploreOnly = false;
     notifyListeners();
   }
 

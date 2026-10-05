@@ -1,10 +1,15 @@
+import 'dart:convert';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../models/book.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/app_settings.dart';
 import '../../services/storage_service.dart';
 import '../../widgets/book_card.dart';
 
@@ -25,6 +30,9 @@ class _BookshelfPageState extends State<BookshelfPage>
   bool _dataLoaded = false;
   bool _selectionMode = false;
   bool _loadedViewMode = false;
+
+  /// 导入/导出/添加网址等异步操作期间置位，避免重复触发
+  bool _busy = false;
   final Set<String> _selectedBookUrls = <String>{};
   final List<String> _actionLogs = <String>[];
   BookCardDisplayMode _displayMode = BookCardDisplayMode.compact;
@@ -287,13 +295,279 @@ class _BookshelfPageState extends State<BookshelfPage>
           message: '当前仓库还没有接入本地书籍导入和本地阅读链路，这个入口先保留在书架菜单里。',
         );
         break;
+      case 'backup_import':
+        await _importShelfBackup();
+        break;
+      case 'export_shelf':
+        await _exportShelf();
+        break;
+      case 'add_url':
+        await _addBookByUrl();
+        break;
       case 'groups':
         _showGroupManager();
+        break;
+      case 'default_cover':
+        await _toggleDefaultCover();
         break;
       case 'logs':
         _showActionLogs();
         break;
     }
+  }
+
+  // ============================================================
+  // 书架菜单新增项（对齐 3.41）
+  // ============================================================
+
+  /// 备份导入：从备份文件 / 粘贴 JSON 恢复书架
+  Future<void> _importShelfBackup() async {
+    final token = context.read<UserProvider>().token;
+    if (token == null) return;
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 14),
+              child: Text('备份导入',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.folder_open),
+              title: const Text('从文件选择'),
+              onTap: () => Navigator.pop(ctx, 'file'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.content_paste),
+              title: const Text('粘贴备份 JSON'),
+              onTap: () => Navigator.pop(ctx, 'paste'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    String? content;
+    if (choice == 'file') {
+      try {
+        final file = await openFile();
+        if (file == null) return;
+        content = await file.readAsString();
+      } catch (e) {
+        if (mounted) _toast('读取文件失败：$e');
+        return;
+      }
+    } else {
+      content = await _promptForJson(
+        title: '粘贴备份 JSON',
+        hint: '把书架备份文件的全部内容粘到这里',
+      );
+    }
+    if (content == null || content.trim().isEmpty) return;
+
+    try {
+      jsonDecode(content);
+    } catch (_) {
+      if (mounted) _toast('内容不是合法的 JSON');
+      return;
+    }
+    if (!mounted) return;
+    setState(() => _busy = true);
+    try {
+      final resp = await ApiService.instance.saveBooks(token, content);
+      if (resp['isSuccess'] == false) {
+        _toast('导入失败：${resp['errorMsg'] ?? '未知错误'}');
+        return;
+      }
+      _addLog('备份导入成功');
+      _toast('导入成功');
+      await _refreshBookshelf();
+    } catch (e) {
+      _toast('导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 导出书架：把当前书架导出成 JSON，可保存文件或复制到剪贴板
+  Future<void> _exportShelf() async {
+    final provider = context.read<BookshelfProvider>();
+    final books = provider.allBooks;
+    if (books.isEmpty) {
+      _toast('书架是空的');
+      return;
+    }
+    final text = const JsonEncoder.withIndent('  ')
+        .convert(books.map((b) => b.toJson()).toList());
+
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              child: Text('导出书架（${books.length} 本）',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w600)),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('保存到文件'),
+              onTap: () => Navigator.pop(ctx, 'file'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('复制到剪贴板'),
+              onTap: () => Navigator.pop(ctx, 'clip'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (choice == null || !mounted) return;
+
+    if (choice == 'clip') {
+      await Clipboard.setData(ClipboardData(text: text));
+      _toast('已复制 ${books.length} 本书到剪贴板');
+      return;
+    }
+    try {
+      final loc = await getSaveLocation(
+        suggestedName: 'qread_bookshelf_backup.json',
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'JSON', extensions: ['json']),
+        ],
+      );
+      if (loc == null) return;
+      final f = XFile.fromData(
+        utf8.encode(text),
+        mimeType: 'application/json',
+        name: 'qread_bookshelf_backup.json',
+      );
+      await f.saveTo(loc.path);
+      _addLog('导出书架 ${books.length} 本');
+      _toast('已导出到 ${loc.path}');
+    } catch (e) {
+      _toast('导出失败：$e');
+    }
+  }
+
+  /// 添加网址：直接按书籍详情页地址加入书架
+  Future<void> _addBookByUrl() async {
+    final token = context.read<UserProvider>().token;
+    if (token == null) return;
+    final ctl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加网址'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLines: 3,
+          minLines: 1,
+          decoration: const InputDecoration(
+            hintText: '粘贴书籍详情页网址',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('添加'),
+          ),
+        ],
+      ),
+    );
+    final url = ctl.text.trim();
+    ctl.dispose();
+    if (ok != true || url.isEmpty) return;
+
+    setState(() => _busy = true);
+    try {
+      final resp = await ApiService.instance.urlSaveBook(token, url);
+      if (resp['isSuccess'] == false) {
+        _toast('添加失败：${resp['errorMsg'] ?? '未知错误'}');
+        return;
+      }
+      _addLog('通过网址添加书籍');
+      _toast('已加入书架');
+      await _refreshBookshelf();
+    } catch (e) {
+      _toast('添加失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 默认封面：书架卡片统一用占位封面（书源封面常常加载不出来）
+  Future<void> _toggleDefaultCover() async {
+    final settings = context.read<AppSettings>();
+    final next = !settings.useDefaultCover;
+    await settings.setDefaultCover(next);
+    if (!mounted) return;
+    _addLog(next ? '开启默认封面' : '关闭默认封面');
+    _toast(next ? '已开启默认封面' : '已关闭默认封面');
+  }
+
+  Future<String?> _promptForJson({
+    required String title,
+    required String hint,
+  }) async {
+    final ctl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: TextField(
+            controller: ctl,
+            autofocus: true,
+            maxLines: 10,
+            minLines: 5,
+            decoration: InputDecoration(
+              hintText: hint,
+              border: const OutlineInputBorder(),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    final text = ctl.text;
+    ctl.dispose();
+    return ok == true ? text : null;
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   Future<void> _showRenameGroupDialog(String currentName) async {
@@ -636,11 +910,16 @@ class _BookshelfPageState extends State<BookshelfPage>
         ),
         PopupMenuButton<String>(
           onSelected: (action) => _handleMenuAction(action),
+          // 菜单项与官方 3.41 一致（顺序也照抄）
           itemBuilder: (context) => const [
             PopupMenuItem(value: 'refresh', child: Text('更新书架')),
             PopupMenuItem(value: 'refresh_all', child: Text('一键刷新')),
             PopupMenuItem(value: 'add_local', child: Text('添加本地')),
+            PopupMenuItem(value: 'backup_import', child: Text('备份导入')),
+            PopupMenuItem(value: 'export_shelf', child: Text('导出书架')),
+            PopupMenuItem(value: 'add_url', child: Text('添加网址')),
             PopupMenuItem(value: 'groups', child: Text('分组管理')),
+            PopupMenuItem(value: 'default_cover', child: Text('默认封面')),
             PopupMenuItem(value: 'logs', child: Text('查看日志')),
           ],
         ),

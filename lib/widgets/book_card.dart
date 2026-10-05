@@ -2,10 +2,13 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../config/routes.dart';
 import '../models/book.dart';
+import '../pages/bookshelf/book_info_page.dart';
 import '../providers/bookshelf_provider.dart';
 import '../providers/user_provider.dart';
 import '../services/api_service.dart';
+import '../services/app_settings.dart';
 
 enum BookCardDisplayMode {
   compact,
@@ -38,11 +41,22 @@ class BookCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
-        onTap: selectionMode ? onSelectionToggle : () => _openReader(context),
+        // 点卡片进「书籍信息」页（对齐官方 3.41），
+        // 而不是像以前那样直接跳进阅读器 —— 那样用户根本看不到书籍信息。
+        onTap: selectionMode ? onSelectionToggle : () => _openInfo(context),
         onLongPress:
             selectionMode ? onSelectionToggle : () => _showOptions(context),
         child: child,
       ),
+    );
+  }
+
+  /// 打开书籍信息页
+  void _openInfo(BuildContext context) {
+    Navigator.pushNamed(
+      context,
+      AppRoutes.bookInfo,
+      arguments: BookInfoPageArgs(book: book),
     );
   }
 
@@ -214,6 +228,11 @@ class BookCard extends StatelessWidget {
       ),
     );
 
+    // 书架菜单「默认封面」：开启后所有卡片都用占位封面。
+    // 书源封面经常 403/超时，统一占位反而更整齐。
+    if (AppSettings.instance.useDefaultCover) {
+      return placeholder;
+    }
     if (coverUrl == null || coverUrl.isEmpty) {
       return placeholder;
     }

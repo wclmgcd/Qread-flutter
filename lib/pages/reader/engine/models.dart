@@ -41,6 +41,16 @@ class CommentBubbleMetrics {
 
   /// 气泡整体宽度 = 尾巴 + 方框
   double get width => side + tailWidth;
+
+  /// 「神评论」横幅（书源 style=FULL）的高度。
+  ///
+  /// 书源下发的横幅 SVG 是 1000×108，按页面可用宽度铺满后高度约为
+  /// 1.45 × 字号。这里刻意用「字号」而不是「页宽」来表达，是因为分页
+  /// 引擎算占位时拿不到页宽 —— 两端用同一个公式才能对齐。
+  double get bannerHeight => fontSize * 1.45;
+
+  /// 横幅整体占位高度（分页引擎按这个扣减可用高度）
+  double get bannerTotalHeight => topSpacing + bannerHeight + bottomSpacing;
 }
 
 /// 段评（段落评论）标记
@@ -53,12 +63,26 @@ class CommentBubbleMetrics {
 /// - 气泡 SVG 里的 `<text>` 就是评论条数；
 /// - `click` 是点击时要交给后端执行的 JS，后端执行后通过 WebSocket
 ///   推送 `startBrowser` / `startBrowserdp`，客户端再打开段评页。
+///
+/// 【书源差异】同一个功能，不同书源写法不一样，两边都得兼容：
+/// | | 起点（段评）系 | 番茄 / 大灰狼聚合系 |
+/// |---|---|---|
+/// | JS 键名 | `click` | `js` |
+/// | style 值 | `TEXT` | `text` / `FULL` |
+/// | 气泡 SVG | viewBox 45×36，尾巴在左 | viewBox 25×17，尾巴在左下 |
+/// 只认 `click` 会让番茄系段评「点不动」（click 为空 → 不可点）。
+///
+/// style 为 `FULL` 时不是气泡，而是一整条「神评论」横幅：
+/// SVG 里有两个 `<text>`，第一个是红色标签文字（神评论），
+/// 第二个是评论正文，需要单独排版。
 class ParagraphComment {
   const ParagraphComment({
     required this.count,
     required this.click,
     this.style = 'TEXT',
     this.bubbleSvg,
+    this.bannerTag,
+    this.bannerText,
   });
 
   /// 气泡上显示的数字（评论条数）
@@ -75,6 +99,16 @@ class ParagraphComment {
   /// 官方客户端就是照这个 SVG 画的，所以渲染端也按它画，
   /// 形状/比例才和后端 Web 端一致。为 null 时退化成内置形状。
   final String? bubbleSvg;
+
+  /// 「神评论」横幅上的标签文字（style=FULL），通常是「神评论」。
+  final String? bannerTag;
+
+  /// 「神评论」横幅上的评论正文（style=FULL）。
+  final String? bannerText;
+
+  /// 是否是「神评论」横幅（而不是小气泡）
+  bool get isBanner =>
+      style.toUpperCase() == 'FULL' && (bannerText?.trim().isNotEmpty ?? false);
 
   bool get isTappable => click.trim().isNotEmpty;
 }

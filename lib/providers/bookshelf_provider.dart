@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/book_group.dart';
 import '../services/api_service.dart';
+import '../services/app_settings.dart';
 import '../services/local_cache_service.dart';
 
 class BookshelfProvider extends ChangeNotifier {
@@ -52,6 +53,37 @@ class BookshelfProvider extends ChangeNotifier {
   void selectGroup(String? groupName) {
     _selectedGroup = groupName;
     notifyListeners();
+  }
+
+  /// 按「阅读偏好 → 书架排序」重排当前列表（不通知，由调用方决定时机）
+  void _sortInPlace() {
+    if (_books.length < 2) return;
+    _books = AppSettings.instance.sortBooks<Book>(
+      _books,
+      nameOf: (b) => b.name,
+      authorOf: (b) => b.author,
+      readTimeOf: (b) => b.durChapterTime,
+      updateTimeOf: (b) => b.lastCheckTime,
+      orderOf: (b) => b.order,
+    );
+  }
+
+  /// 排序方式变了以后由 UI 调用，立刻重排并刷新
+  void applySort() {
+    _sortInPlace();
+    notifyListeners();
+  }
+
+  /// 只从本地列表里摘掉一本书（删除接口已经在别处调过了）
+  ///
+  /// 书籍信息页删书时用：先调 `/deleteBook`，成功后把本地这条摘掉，
+  /// 避免为了刷新再拉一遍整页书架。
+  void removeBookLocally(Book book) {
+    final before = _books.length;
+    _books = _books
+        .where((b) => !(b.bookUrl == book.bookUrl && b.origin == book.origin))
+        .toList();
+    if (_books.length != before) notifyListeners();
   }
 
   String _cacheScope(String accessToken) =>
@@ -111,6 +143,9 @@ class BookshelfProvider extends ChangeNotifier {
       } else {
         _books.addAll(newBooks);
       }
+      // 后端返回顺序不是「最近阅读」顺序，必须自己排 —— 否则用户刚看完的
+      // 书不会出现在最前面（见 AppSettings.sortBooks）。
+      _sortInPlace();
       _hasMore = _currentPage < _totalPages;
       _currentPage++;
       await _saveLocalCache(accessToken);
@@ -132,6 +167,7 @@ class BookshelfProvider extends ChangeNotifier {
           .whereType<Map>()
           .map((e) => Book.fromJson(Map<String, dynamic>.from(e)))
           .toList();
+      _sortInPlace();
       notifyListeners();
     }
     if (groupsJson != null && _groups.isEmpty) {

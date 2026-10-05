@@ -1310,6 +1310,108 @@ class ApiService {
     return resp.data;
   }
 
+  // ============ 换源 / 书籍详情 ============
+
+  /// 换源：把书架里 [bookUrl] 这本书切到 [newUrl]。
+  ///
+  /// 对应后端 `/setBookSource`（ReadController）。后端会拿新 url 重新抓
+  /// 书籍信息、覆盖书架记录，并通过 WebSocket 广播通知其它端刷新。
+  Future<Map<String, dynamic>> setBookSource(
+    String accessToken, {
+    required String bookUrl,
+    required String newUrl,
+    required String bookSourceUrl,
+  }) async {
+    final resp = await _dio.get('/setBookSource', queryParameters: {
+      'accessToken': accessToken,
+      'bookUrl': bookUrl,
+      'newUrl': newUrl,
+      'bookSourceUrl': bookSourceUrl,
+    });
+    return resp.data;
+  }
+
+  /// 按 url 取书籍详情（后端 `/getBookinfo2`）
+  ///
+  /// 注意：另一个 `/getBookinfo` 要求把整个 SearchBook 作为 body 传，
+  /// 参数不全时后端直接抛 NOT_BANK，所以这里用按 url 的那个。
+  Future<Map<String, dynamic>> getBookInfoByUrl(
+      String accessToken, String url) async {
+    final resp = await _dio.get('/getBookinfo2', queryParameters: {
+      'accessToken': accessToken,
+      'url': url,
+    });
+    return resp.data;
+  }
+
+  /// 导入书架备份（书架菜单「备份导入」）
+  ///
+  /// 后端 `/saveBooks` 的 body 就是备份文件的原始 JSON 文本。
+  Future<Map<String, dynamic>> saveBooks(
+      String accessToken, String content) async {
+    final resp = await _dio.post(
+      '/saveBooks',
+      queryParameters: {'accessToken': accessToken},
+      data: content,
+      options: Options(contentType: Headers.jsonContentType),
+    );
+    return resp.data;
+  }
+
+  /// 通过网址直接添加书籍（书架菜单「添加网址」）
+  Future<Map<String, dynamic>> urlSaveBook(
+      String accessToken, String url) async {
+    final resp = await _dio.get('/urlsaveBook', queryParameters: {
+      'accessToken': accessToken,
+      'url': url,
+    });
+    return resp.data;
+  }
+
+  // ============ cookie / cache 清理 ============
+
+  /// 清理所有书源 cookie（书源管理 ⋮ 菜单）
+  Future<Map<String, dynamic>> cleanCookies(String accessToken) async {
+    final resp = await _dio
+        .get('/cleancookies', queryParameters: {'accessToken': accessToken});
+    return resp.data;
+  }
+
+  /// 清理所有书源缓存（书源管理 ⋮ 菜单）
+  Future<Map<String, dynamic>> cleanCaches(String accessToken) async {
+    final resp = await _dio
+        .get('/cleancaches', queryParameters: {'accessToken': accessToken});
+    return resp.data;
+  }
+
+  /// 某本书是否可清缓存（书籍信息页「清除缓存」）
+  Future<Map<String, dynamic>> getCanCache(
+      String accessToken, String url) async {
+    final resp = await _dio.get('/getcancache', queryParameters: {
+      'accessToken': accessToken,
+      'url': url,
+    });
+    return resp.data;
+  }
+
+  /// 本地缓存条目列表（书籍信息页「本地缓存」）
+  Future<List<Map<String, dynamic>>> getCanCacheList(
+      String accessToken) async {
+    final resp = await _dio
+        .get('/getcancachelist', queryParameters: {'accessToken': accessToken});
+    final data = resp.data['data'];
+    if (data is List) return data.cast<Map<String, dynamic>>();
+    return [];
+  }
+
+  Future<Map<String, dynamic>> delCache(String accessToken, String id) async {
+    final resp = await _dio.get('/delCache', queryParameters: {
+      'accessToken': accessToken,
+      'id': id,
+    });
+    return resp.data;
+  }
+
   // ============ 封面代理 ============
 
   String getCoverProxyUrl(String? coverUrl, {String? sourceUrl}) {

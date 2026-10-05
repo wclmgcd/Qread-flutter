@@ -1,18 +1,23 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:battery_plus/battery_plus.dart' as bp;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../config/constants.dart';
+import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
 import '../../models/chapter.dart';
+import '../../pages/bookshelf/book_source_switch_page.dart';
 import '../../providers/reader_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/app_log.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
@@ -159,7 +164,12 @@ class _ReaderPageState extends State<ReaderPage> {
   Future<void> _openParagraphComment(ParagraphComment comment) async {
     final token = _token;
     if (token == null) return;
-    if (!comment.isTappable) return;
+    if (!comment.isTappable) {
+      // 书源没给 JS 就点不动。不同书源的键名不一样
+      // （起点系 `click`、番茄/大灰狼系 `js`），这里记一笔方便排查。
+      AppLog.add('段评不可点：标记里没有 click/js（style=${comment.style}）');
+      return;
+    }
     if (_openingCommentPage) return;
     final provider = context.read<ReaderProvider>();
     final source = provider.book?.origin ?? provider.book?.originName ?? '';
@@ -167,6 +177,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
     _openingCommentPage = true;
     try {
+      AppLog.add('打开段评：${comment.click.substring(0, comment.click.length.clamp(0, 60))}');
       final resolved = await ApiService.instance.getOpenUrl(
         token,
         bookSourceUrl: source,
@@ -179,6 +190,7 @@ class _ReaderPageState extends State<ReaderPage> {
       final usable = resolved.startsWith('http') && !resolved.endsWith('/null');
       if (usable && _openingCommentPage) {
         _openingCommentPage = false;
+        AppLog.add('段评兜底直开：$resolved');
         Navigator.of(context).push(
           MaterialPageRoute(
             builder: (_) => ParagraphCommentPage(
@@ -193,6 +205,7 @@ class _ReaderPageState extends State<ReaderPage> {
       // 没拿到可用地址，且 WebSocket 也没推（_openingCommentPage 仍为 true）
       if (_openingCommentPage) {
         _openingCommentPage = false;
+        AppLog.add('段评打开失败：后端未返回可用地址（$resolved）');
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -203,6 +216,7 @@ class _ReaderPageState extends State<ReaderPage> {
       }
     } catch (e) {
       _openingCommentPage = false;
+      AppLog.add('段评异常：$e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2856,7 +2870,7 @@ class _ReaderPageState extends State<ReaderPage> {
             children: [
               ListTile(
                 leading: const Icon(Icons.bookmark_outline),
-                title: const Text('书签'),
+                title: const Text('添加书签'),
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _showBookmarkList();
@@ -2864,16 +2878,14 @@ class _ReaderPageState extends State<ReaderPage> {
               ),
               ListTile(
                 leading: const Icon(Icons.travel_explore_outlined),
-                title: const Text('换源'),
+                title: const Text('更换书源'),
                 subtitle: Text(
                   provider.book?.originName ?? '当前书源',
                   style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
                 onTap: () {
                   Navigator.pop(sheetContext);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('换源搜索入口待接入')),
-                  );
+                  _changeBookSource(provider);
                 },
               ),
               ListTile(
@@ -2901,10 +2913,199 @@ class _ReaderPageState extends State<ReaderPage> {
                   _showChangeTypeDialog(provider);
                 },
               ),
+              ListTile(
+                leading: const Icon(Icons.backup_outlined),
+                title: const Text('备份设置'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _backupReaderSettings();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.restore_outlined),
+                title: const Text('恢复设置'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _restoreReaderSettings();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.bug_report_outlined),
+                title: const Text('显示日志'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _showAppLog();
+                },
+              ),
             ],
           ),
         ),
       ),
+    );
+  }
+
+  /// 换源：跳到换源页，成功后重载当前章节
+  Future<void> _changeBookSource(ReaderProvider provider) async {
+    final book = provider.book;
+    if (book == null) return;
+    AppLog.add('打开换源：${book.name}（当前来源 ${book.originName ?? book.origin}）');
+    final changed = await Navigator.pushNamed(
+      context,
+      AppRoutes.bookSourceSwitch,
+      arguments: BookSourceSwitchArgs(book: book),
+    );
+    if (changed != true || !mounted) return;
+    AppLog.add('换源成功 → ${book.originName ?? book.origin}');
+    // 换源后章节列表 / 正文全变了：重设书籍、重拉章节、允许重新定位初始章节
+    provider.setBook(book);
+    _bookUrl = book.bookUrl;
+    _state.initialChapterOpened = false;
+    final token = _token;
+    if (token != null) {
+      await provider.loadChapters(token, loadInitialContent: false);
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已换源到「${book.originName ?? book.origin}」'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// 把阅读器的排版设置导出到剪贴板
+  Future<void> _backupReaderSettings() async {
+    final data = <String, dynamic>{
+      'fontSize': _state.fontSize,
+      'lineHeight': _state.lineHeight,
+      'theme': _state.theme,
+      'fontFamily': _state.fontFamily,
+      'boldText': _state.boldText,
+      'paragraphSpacing': _state.paragraphSpacing,
+      'firstLineIndent': _state.firstLineIndent,
+      'horizontalPadding': _state.horizontalPadding,
+      'topPadding': _state.topPadding,
+      'pageAnimType': _state.pageAnimType.id,
+      'showTopBar': _state.showTopBar,
+      'showBottomBar': _state.showBottomBar,
+      'showPageNumber': _state.showPageNumber,
+      'showParagraphComment': _state.showParagraphComment,
+      'brightness': _state.brightness,
+      'autoNext': _state.autoNext,
+      'autoPageInterval': _state.autoPageInterval,
+    };
+    final text = const JsonEncoder.withIndent('  ').convert(data);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('阅读设置已复制到剪贴板'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// 从剪贴板恢复阅读设置
+  Future<void> _restoreReaderSettings() async {
+    final clip = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = clip?.text?.trim() ?? '';
+    if (text.isEmpty) {
+      _toast('剪贴板是空的');
+      return;
+    }
+    Map<String, dynamic> data;
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is! Map) throw const FormatException('不是对象');
+      data = Map<String, dynamic>.from(decoded);
+    } catch (_) {
+      _toast('剪贴板内容不是阅读设置 JSON');
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      double? d(Object? v) => v is num ? v.toDouble() : null;
+      bool? b(Object? v) => v is bool ? v : null;
+      _state.fontSize = d(data['fontSize']) ?? _state.fontSize;
+      _state.lineHeight = d(data['lineHeight']) ?? _state.lineHeight;
+      _state.theme = (data['theme'] ?? _state.theme).toString();
+      _state.fontFamily = (data['fontFamily'] ?? _state.fontFamily).toString();
+      _state.boldText = b(data['boldText']) ?? _state.boldText;
+      _state.paragraphSpacing =
+          d(data['paragraphSpacing']) ?? _state.paragraphSpacing;
+      _state.firstLineIndent =
+          d(data['firstLineIndent']) ?? _state.firstLineIndent;
+      _state.horizontalPadding =
+          d(data['horizontalPadding']) ?? _state.horizontalPadding;
+      _state.topPadding = d(data['topPadding']) ?? _state.topPadding;
+      _state.pageAnimType =
+          PageAnimType.fromId(data['pageAnimType']?.toString()) ??
+              _state.pageAnimType;
+      _state.showTopBar = b(data['showTopBar']) ?? _state.showTopBar;
+      _state.showBottomBar = b(data['showBottomBar']) ?? _state.showBottomBar;
+      _state.showPageNumber =
+          b(data['showPageNumber']) ?? _state.showPageNumber;
+      _state.showParagraphComment =
+          b(data['showParagraphComment']) ?? _state.showParagraphComment;
+      _state.brightness = d(data['brightness']) ?? _state.brightness;
+      _state.autoNext = b(data['autoNext']) ?? _state.autoNext;
+      _state.autoPageInterval =
+          d(data['autoPageInterval']) ?? _state.autoPageInterval;
+    });
+    await _saveSettings();
+    if (!mounted) return;
+    _toast('阅读设置已恢复');
+  }
+
+  /// 显示运行日志（段评打不开 / 换源失败等都会记在这里）
+  void _showAppLog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('运行日志'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 360,
+          child: AppLog.isEmpty
+              ? const Center(child: Text('暂无日志'))
+              : ListView.builder(
+                  itemCount: AppLog.entries.length,
+                  itemBuilder: (_, i) {
+                    final lines = AppLog.entries.reversed.toList();
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        lines[i],
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              AppLog.clear();
+              Navigator.pop(ctx);
+            },
+            child: const Text('清空'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
     );
   }
 

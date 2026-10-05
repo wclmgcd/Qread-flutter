@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import '../pages/bookshelf/bookshelf_page.dart';
+import '../pages/bookshelf/book_info_page.dart';
+import '../pages/bookshelf/book_source_switch_page.dart';
 import '../pages/discover/discover_page.dart';
 import '../pages/rss/rss_page.dart';
 import '../pages/profile/profile_page.dart';
+import '../pages/profile/reading_preference_page.dart';
 import '../pages/replace/replace_rule_editor_page.dart';
 import '../pages/replace/replace_rule_page.dart';
 import '../pages/reader/reader_page.dart';
@@ -20,6 +24,7 @@ import '../pages/rss/rss_source_debug_page.dart';
 import '../pages/discover/explore_books_page.dart';
 import '../pages/rss/rss_article_list_page.dart';
 import '../pages/rss/rss_article_detail_page.dart';
+import '../services/app_settings.dart';
 
 class AppRoutes {
   static const String home = '/';
@@ -37,6 +42,9 @@ class AppRoutes {
   static const String replaceRules = '/replaceRules';
   static const String replaceRuleEditor = '/replaceRules/editor';
   static const String generalSettings = '/settings/general';
+  static const String readingPreference = '/settings/reading';
+  static const String bookInfo = '/book/info';
+  static const String bookSourceSwitch = '/book/switchSource';
   static const String discoverExplore = '/discover/explore';
   static const String rssArticles = '/rss/articles';
   static const String rssArticleDetail = '/rss/article';
@@ -46,6 +54,7 @@ class AppRoutes {
     login: (_) => const LoginPage(),
     search: (_) => const SearchPage(),
     generalSettings: (_) => const GeneralSettingsPage(),
+    readingPreference: (_) => const ReadingPreferencePage(),
     sourceManage: (_) => const SourceManagePage(),
     rssSource: (_) => const RssSourcePage(),
     replaceRules: (_) => const ReplaceRulePage(),
@@ -56,6 +65,20 @@ class AppRoutes {
       return MaterialPageRoute(
         settings: settings, // pass settings to preserve arguments
         builder: (_) => const ReaderPage(),
+      );
+    }
+    if (settings.name == bookInfo) {
+      final args = settings.arguments as BookInfoPageArgs;
+      return MaterialPageRoute(
+        settings: settings,
+        builder: (_) => BookInfoPage(args: args),
+      );
+    }
+    if (settings.name == bookSourceSwitch) {
+      final args = settings.arguments as BookSourceSwitchArgs;
+      return MaterialPageRoute(
+        settings: settings,
+        builder: (_) => BookSourceSwitchPage(args: args),
       );
     }
     if (settings.name == discoverExplore) {
@@ -142,45 +165,53 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
 
-  final List<Widget> _pages = const [
-    BookshelfPage(),
-    DiscoverPage(),
-    RssPage(),
-    ProfilePage(),
-  ];
-
   @override
   Widget build(BuildContext context) {
+    // 「显示发现 / 显示订阅」来自阅读偏好设置（对齐 3.41 的
+    // 「其他设置 → 显示订阅 / 显示发现」）。书架和「我的」始终保留。
+    final settings = context.watch<AppSettings>();
+    final pages = <Widget>[
+      const BookshelfPage(),
+      if (settings.showDiscover) const DiscoverPage(),
+      if (settings.showSubscribe) const RssPage(),
+      const ProfilePage(),
+    ];
+    final items = <BottomNavigationBarItem>[
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.book_outlined),
+        activeIcon: Icon(Icons.book),
+        label: '书架',
+      ),
+      if (settings.showDiscover)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.explore_outlined),
+          activeIcon: Icon(Icons.explore),
+          label: '发现',
+        ),
+      if (settings.showSubscribe)
+        const BottomNavigationBarItem(
+          icon: Icon(Icons.rss_feed_outlined),
+          activeIcon: Icon(Icons.rss_feed),
+          label: '订阅',
+        ),
+      const BottomNavigationBarItem(
+        icon: Icon(Icons.person_outline),
+        activeIcon: Icon(Icons.person),
+        label: '我的',
+      ),
+    ];
+    // 关掉某个 tab 后旧的下标可能越界（比如原来停在「订阅」）
+    final index = _currentIndex.clamp(0, pages.length - 1);
+
     return Scaffold(
       body: IndexedStack(
-        index: _currentIndex,
-        children: _pages,
+        index: index,
+        children: pages,
       ),
       bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _currentIndex,
-        onTap: (index) => setState(() => _currentIndex = index),
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.book_outlined),
-            activeIcon: Icon(Icons.book),
-            label: '书架',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.explore_outlined),
-            activeIcon: Icon(Icons.explore),
-            label: '发现',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.rss_feed_outlined),
-            activeIcon: Icon(Icons.rss_feed),
-            label: '订阅',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            activeIcon: Icon(Icons.person),
-            label: '我的',
-          ),
-        ],
+        currentIndex: index,
+        onTap: (i) => setState(() => _currentIndex = i),
+        items: items,
       ),
     );
   }

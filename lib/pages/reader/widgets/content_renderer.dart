@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../engine/models.dart';
@@ -66,7 +68,12 @@ class _BubbleGeometry {
   }
 
   static _BubbleGeometry? _parse(String svg) {
-    final pathMatch = RegExp(r'<path[^>]*\sd="([^"]+)"').firstMatch(svg);
+    // 【书源差异】SVG 的引号风格不统一：
+    //   - 起点 / 番茄系：双引号  <path d="M44 48 ...">
+    //   - 晋江段评版等：单引号  <path d='M224 149 ...'>
+    // 只认双引号会让晋江系解析不到 path → 退化成兜底方框、数字位置也错。
+    final pathMatch =
+        RegExp(r'''<path[^>]*\sd\s*=\s*["']([^"']+)["']''').firstMatch(svg);
     if (pathMatch == null) return null;
 
     final textMatch = RegExp(r'<text([^>]*)>', caseSensitive: false)
@@ -79,18 +86,87 @@ class _BubbleGeometry {
       ts = _attr(attrs, 'font-size');
     }
 
+    // 部分书源把图形包在 <g transform="rotate(90 512 512) scale(1 1.2)"> 里
+    // （晋江段评版的竖版气泡图标）。不处理的话气泡会画成躺倒/拉伸错误的形状。
+    final matrix = _parseTransform(svg);
+
     return _build(
       pathMatch.group(1)!,
       textX: tx,
       textY: ty,
       textSize: ts,
+      matrix: matrix,
     );
   }
 
   static double? _attr(String attrs, String name) {
-    final m = RegExp('$name\\s*=\\s*"([^"]+)"').firstMatch(attrs);
+    final m = RegExp('$name\\s*=\\s*["\']([^"\']+)["\']').firstMatch(attrs);
     if (m == null) return null;
     return double.tryParse(m.group(1)!.trim());
+  }
+
+  /// 解析 `<g transform="...">` 的变换矩阵（SVG 语义：从左到右依次应用）。
+  ///
+  /// 只支持段评气泡里实际会出现的 translate / scale / rotate / matrix，
+  /// 遇到不认识的函数就跳过；一个都解析不到时返回 null（调用方不做变换）。
+  static Matrix4? _parseTransform(String svg) {
+    final g = RegExp(
+      r'''<g[^>]*\btransform\s*=\s*["']([^"']+)["']''',
+      caseSensitive: false,
+    ).firstMatch(svg);
+    if (g == null) return null;
+
+    final m = Matrix4.identity();
+    var applied = false;
+    final fnRe = RegExp(r'([A-Za-z]+)\s*\(([^)]*)\)');
+    for (final match in fnRe.allMatches(g.group(1)!)) {
+      final fn = match.group(1)!.toLowerCase();
+      final args = match
+          .group(2)!
+          .split(RegExp(r'[\s,]+'))
+          .where((s) => s.isNotEmpty)
+          .map((s) => double.tryParse(s) ?? 0.0)
+          .toList();
+      final step = Matrix4.identity();
+      switch (fn) {
+        case 'translate':
+          step.translate(
+            args.isNotEmpty ? args[0] : 0.0,
+            args.length > 1 ? args[1] : 0.0,
+          );
+          break;
+        case 'scale':
+          final sx = args.isNotEmpty ? args[0] : 1.0;
+          step.scale(sx, args.length > 1 ? args[1] : sx);
+          break;
+        case 'rotate':
+          final rad = (args.isNotEmpty ? args[0] : 0.0) * math.pi / 180.0;
+          if (args.length >= 3) {
+            final cx = args[1], cy = args[2];
+            step.translate(cx, cy);
+            step.rotateZ(rad);
+            step.translate(-cx, -cy);
+          } else {
+            step.rotateZ(rad);
+          }
+          break;
+        case 'matrix':
+          if (args.length >= 6) {
+            step.setEntry(0, 0, args[0]);
+            step.setEntry(0, 1, args[2]);
+            step.setEntry(0, 3, args[4]);
+            step.setEntry(1, 0, args[1]);
+            step.setEntry(1, 1, args[3]);
+            step.setEntry(1, 3, args[5]);
+          }
+          break;
+        default:
+          continue;
+      }
+      m.multiply(step);
+      applied = true;
+    }
+    return applied ? m : null;
   }
 
   static _BubbleGeometry _build(
@@ -98,8 +174,9 @@ class _BubbleGeometry {
     double? textX,
     double? textY,
     double? textSize,
+    Matrix4? matrix,
   }) {
-    final path = SvgPathParser.parse(pathData);
+    var path = SvgPathParser.parse(pathData);
     if (path == null) {
       // 解析失败：退回兜底 path；兜底也失败就用一个空 Path（调用方有保护）
       final fb = SvgPathParser.parse(fallbackPathData);
@@ -113,6 +190,10 @@ class _BubbleGeometry {
         textY: textY,
         textSize: textSize,
       );
+    }
+    // 把 <g transform> 烘焙进 path 本身，后面的包围盒/绘制就无需再关心它
+    if (matrix != null) {
+      path = path.transform(matrix.storage);
     }
     var bounds = path.getBounds();
     if (bounds.width <= 0 || bounds.height <= 0) {
@@ -131,6 +212,14 @@ class _BubbleGeometry {
       tx = bodyLeft + bounds.height / 2;
       // SVG 的 y 是文字基线；方框垂直居中 ≈ 基线在中心下方 0.35em
       ty = bounds.top + bounds.height / 2 + ts * 0.35;
+    } else if (matrix != null) {
+      // 文字锚点与字号也要跟着变换，否则数字会飘到气泡外
+      final s = matrix.storage;
+      final nx = s[0] * tx + s[4] * ty + s[12];
+      final ny = s[1] * tx + s[5] * ty + s[13];
+      tx = nx;
+      ty = ny;
+      ts = ts * matrix.getMaxScaleOnAxis();
     }
 
     return _BubbleGeometry(
@@ -168,6 +257,9 @@ class CommentBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final m = CommentBubbleMetrics(fontSize);
+    // style=FULL 不是小气泡，而是一整条「神评论」横幅（书源 SVG 1000×108）
+    if (comment.isBanner) return _buildBanner(m);
+
     final geo = _BubbleGeometry.of(comment.bubbleSvg);
 
     // 把 path 的紧包围盒等比缩放到「方框边长 = m.side」
@@ -202,6 +294,83 @@ class CommentBubble extends StatelessWidget {
             ),
           ),
           // 余下的下间距用 Spacer 吃掉，避免浮点误差导致 Column 溢出
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  /// 「神评论」横幅（书源 style=FULL）
+  ///
+  /// 书源给的 SVG 是 1000×108：一个半透明白底圆角条，
+  /// 左边一块红色圆角标签（神评论），右边是评论正文。
+  /// 这里按同一比例用 Widget 还原 —— 直接画 SVG 的话，
+  /// 里面的 `<text>` 是写死内容的位图式排版，长评论会被裁掉。
+  Widget _buildBanner(CommentBubbleMetrics m) {
+    // 按书源 SVG 的 108 高做等比换算
+    final s = m.bannerHeight / 108;
+    final tag = comment.bannerTag?.trim();
+    final body = comment.bannerText?.trim() ?? '';
+    // 浅色主题用半透明白（和官方一致）；深色主题下白色会刺眼，改成轻微提亮
+    final isDark = theme.background.computeLuminance() < 0.5;
+    final bg = Colors.white.withValues(alpha: isDark ? 0.10 : 0.55);
+
+    return SizedBox(
+      height: m.bannerTotalHeight,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(height: m.topSpacing),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onTap,
+            child: Container(
+              height: m.bannerHeight,
+              width: double.infinity,
+              padding: EdgeInsets.symmetric(horizontal: 35 * s),
+              decoration: BoxDecoration(
+                color: bg,
+                borderRadius: BorderRadius.circular(30 * s),
+              ),
+              child: Row(
+                children: [
+                  if (tag != null && tag.isNotEmpty) ...[
+                    Container(
+                      height: 52 * s,
+                      padding: EdgeInsets.symmetric(horizontal: 14 * s),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF06260),
+                        borderRadius: BorderRadius.circular(16 * s),
+                      ),
+                      child: Text(
+                        tag,
+                        style: TextStyle(
+                          fontSize: 32 * s,
+                          height: 1.0,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    SizedBox(width: 40 * s),
+                  ],
+                  Expanded(
+                    child: Text(
+                      body,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 38 * s,
+                        height: 1.2,
+                        color: theme.text,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
           const Spacer(),
         ],
       ),

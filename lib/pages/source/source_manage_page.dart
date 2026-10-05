@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -6,6 +7,7 @@ import '../../config/routes.dart';
 import '../../models/book_source.dart';
 import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
+import '../../services/api_service.dart';
 import '../login/source_login_page.dart';
 import '../login/webview_login_page.dart';
 import 'book_source_editor_page.dart';
@@ -19,13 +21,38 @@ class SourceManagePage extends StatefulWidget {
 
 class _SourceManagePageState extends State<SourceManagePage> {
   bool _dataLoaded = false;
-  bool _showSearch = false;
+
+  /// A-Z 排序开关（3.41 书源管理 AppBar 上的 A-Z 按钮）
+  bool _sortAZ = false;
+
+  /// 导入 / 清理进行中，避免重复点击
+  bool _importing = false;
+
   final _searchController = TextEditingController();
 
   @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
+  }
+
+  void _showUnavailableDialog({
+    required String title,
+    required String message,
+  }) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -81,47 +108,103 @@ class _SourceManagePageState extends State<SourceManagePage> {
       );
     }
 
+    // 常驻搜索框（对齐官方 3.41：标题位置就是搜索框，不用先点放大镜）
     return AppBar(
-      title: _showSearch
-          ? TextField(
-              controller: _searchController,
-              autofocus: true,
-              decoration: const InputDecoration(
-                hintText: '搜索书源名称/URL/分组...',
-                border: InputBorder.none,
-              ),
-              onChanged: (v) => provider.setSearchQuery(v),
-            )
-          : const Text('书源管理'),
-      actions: [
-        IconButton(
-          icon: Icon(_showSearch ? Icons.close : Icons.search),
-          tooltip: '搜索',
-          onPressed: () {
-            setState(() {
-              _showSearch = !_showSearch;
-              if (!_showSearch) {
-                _searchController.clear();
-                provider.setSearchQuery('');
-              }
-            });
-          },
+      titleSpacing: 8,
+      title: TextField(
+        controller: _searchController,
+        textInputAction: TextInputAction.search,
+        decoration: InputDecoration(
+          isDense: true,
+          hintText: '搜索书源',
+          prefixIcon: const Icon(Icons.search, size: 20),
+          suffixIcon: provider.searchQuery.isEmpty
+              ? null
+              : IconButton(
+                  icon: const Icon(Icons.clear, size: 18),
+                  onPressed: () {
+                    _searchController.clear();
+                    provider.setSearchQuery('');
+                    setState(() {});
+                  },
+                ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
         ),
-        if (!_showSearch) ...[
-          IconButton(
-            icon: const Icon(Icons.checklist),
-            tooltip: '批量管理',
-            onPressed: () => provider.toggleSelectMode(),
+        onChanged: (v) {
+          provider.setSearchQuery(v);
+          setState(() {});
+        },
+      ),
+      actions: [
+        if (_importing)
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 14),
+            child: Center(
+              child: SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ),
           ),
-          PopupMenuButton<String>(
-            onSelected: (action) => _handleMenuAction(action),
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'import', child: Text('导入书源')),
-              const PopupMenuItem(value: 'export_all', child: Text('导出全部')),
-              const PopupMenuItem(value: 'refresh', child: Text('刷新')),
-            ],
-          ),
-        ],
+        IconButton(
+          icon: const Icon(Icons.sort_by_alpha),
+          tooltip: _sortAZ ? '取消 A-Z 排序' : 'A-Z 排序',
+          color: _sortAZ ? const Color(0xFF009688) : null,
+          onPressed: () => setState(() => _sortAZ = !_sortAZ),
+        ),
+        PopupMenuButton<String>(
+          icon: const Icon(Icons.filter_list),
+          tooltip: '筛选',
+          onSelected: (v) {
+            switch (v) {
+              case 'all':
+                provider.clearFilters();
+                break;
+              case 'enabled':
+                provider.setFilterEnabledOnly(true);
+                break;
+              case 'disabled':
+                provider.setFilterEnabledOnly(false);
+                break;
+              case 'explore':
+                provider.toggleFilterExploreOnly();
+                break;
+            }
+          },
+          itemBuilder: (ctx) => [
+            const PopupMenuItem(value: 'all', child: Text('全部分组')),
+            const PopupMenuItem(value: 'enabled', child: Text('只看已启用')),
+            const PopupMenuItem(value: 'disabled', child: Text('只看已禁用')),
+            CheckedPopupMenuItem(
+              value: 'explore',
+              checked: provider.filterExploreOnly,
+              child: const Text('只看已开发现'),
+            ),
+          ],
+        ),
+        IconButton(
+          icon: const Icon(Icons.checklist),
+          tooltip: '批量管理',
+          onPressed: () => provider.toggleSelectMode(),
+        ),
+        PopupMenuButton<String>(
+          onSelected: (action) => _handleMenuAction(action),
+          // 菜单项与官方 3.41 一致
+          itemBuilder: (context) => const [
+            PopupMenuItem(value: 'refresh', child: Text('刷新书源')),
+            PopupMenuItem(value: 'create', child: Text('新建书源')),
+            PopupMenuItem(value: 'import_local', child: Text('本地导入')),
+            PopupMenuItem(value: 'import_net', child: Text('网络导入')),
+            PopupMenuItem(value: 'import_qr', child: Text('扫码导入')),
+            PopupMenuItem(value: 'clear_cache', child: Text('清理cache')),
+            PopupMenuItem(value: 'clear_cookie', child: Text('清理cookie')),
+            PopupMenuItem(value: 'import', child: Text('粘贴导入')),
+            PopupMenuItem(value: 'export_all', child: Text('导出全部')),
+          ],
+        ),
       ],
     );
   }
@@ -131,6 +214,24 @@ class _SourceManagePageState extends State<SourceManagePage> {
       case 'import':
         _showImportDialog();
         break;
+      case 'create':
+        _openCreateEditor();
+        break;
+      case 'import_local':
+        _importFromLocalFile();
+        break;
+      case 'import_net':
+        _importFromNetwork();
+        break;
+      case 'import_qr':
+        _importFromQr();
+        break;
+      case 'clear_cache':
+        _confirmClear(cache: true);
+        break;
+      case 'clear_cookie':
+        _confirmClear(cache: false);
+        break;
       case 'export_all':
         _exportAll();
         break;
@@ -139,6 +240,164 @@ class _SourceManagePageState extends State<SourceManagePage> {
         _loadSources();
         break;
     }
+  }
+
+  // ============================================================
+  // 导入 / 清理（对齐 3.41 书源管理 ⋮ 菜单）
+  // ============================================================
+
+  /// 本地导入：选一个 JSON 文件导入书源
+  Future<void> _importFromLocalFile() async {
+    try {
+      final file = await openFile(
+        acceptedTypeGroups: const [
+          XTypeGroup(label: 'JSON', extensions: ['json', 'txt']),
+        ],
+      );
+      if (file == null) return;
+      final content = await file.readAsString();
+      await _importContent(content, label: file.name);
+    } catch (e) {
+      _toast('导入失败：$e');
+    }
+  }
+
+  /// 网络导入：输入 URL，把远端 JSON 当书源导入
+  Future<void> _importFromNetwork() async {
+    final ctl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('网络导入'),
+        content: TextField(
+          controller: ctl,
+          autofocus: true,
+          maxLines: 3,
+          minLines: 1,
+          decoration: const InputDecoration(
+            hintText: '书源 JSON 的下载地址（http/https）',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('导入'),
+          ),
+        ],
+      ),
+    );
+    final url = ctl.text.trim();
+    ctl.dispose();
+    if (ok != true || url.isEmpty) return;
+
+    setState(() => _importing = true);
+    try {
+      final content = await ApiService.instance.fetchRemoteText(url);
+      await _importContent(content, label: url);
+    } catch (e) {
+      _toast('网络导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  /// 扫码导入：扫到的内容如果是 http 链接就走网络导入，否则当 JSON 处理
+  Future<void> _importFromQr() async {
+    _showUnavailableDialog(
+      title: '扫码导入',
+      message: '当前仓库还没有接入二维码扫描（需要额外的相机权限与扫码库）。\n'
+          '可以先用「网络导入」把书源 JSON 的链接粘进来，效果是一样的。',
+    );
+  }
+
+  /// 清理 cache / cookie
+  Future<void> _confirmClear({required bool cache}) async {
+    final token = _token();
+    if (token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(cache ? '清理 cache' : '清理 cookie'),
+        content: Text(cache
+            ? '会清空后端为所有书源缓存的章节/搜索数据，确定继续吗？'
+            : '会清空所有书源的登录 cookie，需要重新登录的书源要再登一次，确定继续吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _importing = true);
+    try {
+      if (cache) {
+        await ApiService.instance.cleanCaches(token);
+      } else {
+        await ApiService.instance.cleanCookies(token);
+      }
+      _toast(cache ? '已清理 cache' : '已清理 cookie');
+    } catch (e) {
+      _toast('清理失败：$e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  /// 把一段书源 JSON 文本交给后端导入
+  Future<void> _importContent(String content, {required String label}) async {
+    final token = _token();
+    if (token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    final trimmed = content.trim();
+    if (trimmed.isEmpty) {
+      _toast('内容为空');
+      return;
+    }
+    try {
+      jsonDecode(trimmed);
+    } catch (_) {
+      _toast('内容不是合法的 JSON');
+      return;
+    }
+    setState(() => _importing = true);
+    try {
+      final resp = await ApiService.instance.saveBookSources(token, trimmed);
+      if (resp['isSuccess'] == false) {
+        _toast('导入失败：${resp['errorMsg'] ?? '未知错误'}');
+        return;
+      }
+      _toast('导入成功（$label）');
+      _dataLoaded = false;
+      await _loadSources();
+    } catch (e) {
+      _toast('导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+    );
   }
 
   Widget _buildBody(UserProvider userProvider, SourceManageProvider provider) {
@@ -274,11 +533,23 @@ class _SourceManagePageState extends State<SourceManagePage> {
       return const Center(child: Text('无匹配结果'));
     }
 
+    // A-Z 排序：组内按书源名排序（官方 3.41 AppBar 上的 A-Z 按钮）
+    final entries = grouped.entries.map((e) {
+      if (!_sortAZ) return MapEntry(e.key, e.value);
+      final list = List<BookSource>.of(e.value)
+        ..sort((a, b) =>
+            (a.bookSourceName ?? '').compareTo(b.bookSourceName ?? ''));
+      return MapEntry(e.key, list);
+    }).toList();
+    if (_sortAZ) {
+      entries.sort((a, b) => a.key.compareTo(b.key));
+    }
+
     return RefreshIndicator(
       onRefresh: _loadSources,
       child: ListView(
         padding: const EdgeInsets.fromLTRB(12, 0, 12, 80),
-        children: grouped.entries.map((entry) {
+        children: entries.map((entry) {
           return _SourceGroupSection(
             title: entry.key,
             sources: entry.value,
@@ -834,6 +1105,16 @@ class _SourceTile extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
+                  // 行内开关（对齐官方 3.41：每行右侧直接一个启用开关，
+                  // 不用先点 ⋮ 再选「启用/禁用」）
+                  if (!selectMode && canEdit)
+                    Transform.scale(
+                      scale: 0.78,
+                      child: Switch(
+                        value: source.enabled == true,
+                        onChanged: (_) => onToggleEnabled(),
+                      ),
+                    ),
                   if (!selectMode && canEdit)
                     PopupMenuButton<String>(
                       padding: EdgeInsets.zero,

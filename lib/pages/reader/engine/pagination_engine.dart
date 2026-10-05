@@ -134,8 +134,9 @@ class PaginationEngine {
       currentHeight = 0.0;
     }
 
-    // 段评气泡的占位高度随字号缩放（见 CommentBubbleMetrics），算一次即可。
-    final commentHeight = CommentBubbleMetrics(fontSize).totalHeight;
+    // 段评占位高度随字号缩放（见 CommentBubbleMetrics），算一次即可。
+    // 「神评论」横幅（style=FULL）比小气泡高一截，要分开算。
+    final bubbleMetrics = CommentBubbleMetrics(fontSize);
 
     for (final paragraph in paragraphs) {
       final lines = _splitParagraphToLines(
@@ -153,8 +154,15 @@ class PaginationEngine {
         // 行框高度 = fontSize * lineHeight（与 Text widget 渲染一致）
         final isLastLine = line.isLastLineOfParagraph;
         final spacing = isLastLine ? paragraphSpacing : defaultLineSpacing;
-        // 段评气泡也占高度，必须算进来，否则末页会被裁
-        final bubbleHeight = line.comments.isEmpty ? 0.0 : commentHeight;
+        // 段评也占高度，必须算进来，否则末页会被裁
+        final bubbleHeight = line.comments.fold<double>(
+          0.0,
+          (sum, c) =>
+              sum +
+              (c.isBanner
+                  ? bubbleMetrics.bannerTotalHeight
+                  : bubbleMetrics.totalHeight),
+        );
         // 顺序：行框 → 气泡 → 间距。
         // 官方客户端里气泡是紧贴段末行的，段间距排在气泡**下面**，
         // 所以间距要加在气泡之后（加在前面会让气泡整体下移一个段间距）。
@@ -334,6 +342,16 @@ class PaginationEngine {
     caseSensitive: false,
   );
 
+  /// 段评标记**连同外层 `<img ...>` 包装**的整块匹配。
+  ///
+  /// 只给 [needsHtmlRenderer] 用：判断「是不是图片流」时必须把段评整块
+  /// 摘掉，否则 base64 SVG 的字符量和 `<img>` 计数会把正常小说正文
+  /// 误判成图集（详见 needsHtmlRenderer 的注释）。
+  static final RegExp _dpWholeTag = RegExp(
+    r'<img\b[^>]*?data:image/svg\+xml;base64,[A-Za-z0-9+/=]+,\{[^}]*\}[^>]*>',
+    caseSensitive: false,
+  );
+
   /// 段评占位符（私用区字符，正文里不会出现）
   static const String _dpStart = '\uE000';
   static const String _dpEnd = '\uE001';
@@ -400,19 +418,32 @@ class PaginationEngine {
   /// 从段评标记里解析出「条数」「点击 JS」以及气泡 SVG 原文
   static ParagraphComment _parseComment(String base64Payload, String jsonStr) {
     var count = '';
+    var bannerTag = '';
+    var bannerText = '';
     String? svgSource;
     try {
       svgSource = utf8.decode(base64.decode(base64Payload.trim()));
-      final m = RegExp(r'<text[^>]*>([^<]*)</text>', caseSensitive: false)
-          .firstMatch(svgSource);
-      if (m != null) count = m.group(1)!.trim();
+      final texts = RegExp(r'<text[^>]*>([^<]*)</text>', caseSensitive: false)
+          .allMatches(svgSource)
+          .map((m) => m.group(1)!.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      if (texts.isNotEmpty) count = texts.first;
+      // style=FULL 的横幅 SVG 有两个 <text>：标签 + 评论正文
+      if (texts.length >= 2) {
+        bannerTag = texts[0];
+        bannerText = texts[1];
+      }
     } catch (_) {}
     var click = '';
     var style = 'TEXT';
     try {
       final obj = jsonDecode(jsonStr);
       if (obj is Map) {
-        click = (obj['click'] ?? '').toString();
+        // 【书源差异】「起点（段评）」类书源把要执行的 JS 放在 `click` 里，
+        // 「番茄 / 大灰狼聚合」类书源放在 `js` 里。
+        // 只读 click 会让番茄系段评点击无效（click 为空 → isTappable=false）。
+        click = (obj['click'] ?? obj['js'] ?? obj['url'] ?? '').toString();
         style = (obj['style'] ?? 'TEXT').toString();
       }
     } catch (_) {}
@@ -421,6 +452,8 @@ class PaginationEngine {
       click: click,
       style: style,
       bubbleSvg: svgSource,
+      bannerTag: bannerTag.isEmpty ? null : bannerTag,
+      bannerText: bannerText.isEmpty ? null : bannerText,
     );
   }
 
@@ -556,23 +589,29 @@ class PaginationEngine {
   /// 内容是否必须走 HTML 渲染器 —— 即「几乎没有正文、以图片/媒体为主」的内容
   /// （真正的漫画、图集、图片站）。
   ///
-  /// 【历史坑】原实现只要正文里出现 `<img>` 就返回 true，于是：
-  /// - 带段评气泡的书源（段评是内联 `<img>`）被误判成漫画；
-  /// - 正文被交给 flutter_html 的滚动 ListView 渲染；
-  /// - HTML 语义把 `\n` 折叠成空格 → 段落全部拼成一段、首行缩进消失；
-  /// - 而且只能上下滚动，翻页 / 字号 / 行距全部失效。
+  /// 【历史坑 1】原实现只要正文里出现 `<img>` 就返回 true，于是带段评气泡的
+  /// 书源（段评是内联 `<img>`）被误判成漫画，正文被交给 flutter_html 渲染：
+  /// `\n` 被 HTML 语义折叠成空格 → 段落全拼成一段、首行缩进消失，
+  /// 而且只能上下滚动，翻页 / 字号 / 行距全部失效。
   ///
-  /// 所以判据改成「文字量」而不是「有没有图片」：只有文字少到不构成正文时，
-  /// 才认为是图片流。段评气泡已经在上游被摘掉了，不会影响这里的判断。
+  /// 【历史坑 2】改成按「文字量 vs 媒体数」判断后仍然误判：段评标记是
+  /// **内联 base64 SVG，一个就上千字符**（番茄/大灰狼系一章 40+ 个，
+  /// 合计四五万字符），把 textOnly 挤到很小、同时把 mediaCount 抬得很高，
+  /// 于是一章正常的 2300 字小说被算成「图片流」——段评和分页又全没了。
+  /// 所以必须先**整块**摘掉段评标记（连同外层 `<img ...>`），再统计。
   static bool needsHtmlRenderer(String content) {
     if (!_mediaTag.hasMatch(content)) return false;
-    final textOnly = content
+    // 连外层 <img ...> 一起摘掉。只摘 base64 部分的话，剩下的
+    // `<img src="">` 壳子仍会被 _mediaTag 数进去，mediaCount 照样虚高。
+    final stripped = content.replaceAll(_dpWholeTag, '');
+    final textOnly = stripped
         .replaceAll(_anyTag, '')
         .replaceAll(RegExp(r'&[a-zA-Z#0-9]+;'), ' ')
         .replaceAll(_whitespace, '');
     // 正文太短 → 基本可以断定是图片流
     if (textOnly.length < 200) return true;
-    final mediaCount = _mediaTag.allMatches(content).length;
+    final mediaCount = _mediaTag.allMatches(stripped).length;
+    if (mediaCount == 0) return false;
     // 媒体元素远多于文字 → 也是图片流
     return mediaCount >= 5 && textOnly.length < mediaCount * 60;
   }

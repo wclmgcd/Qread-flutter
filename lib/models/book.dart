@@ -62,6 +62,25 @@ class Book {
   @JsonKey(name: 'durChapterPos')
   int? durChapterPos;
 
+  /// 最后一次阅读这本书的时间（毫秒时间戳）。
+  ///
+  /// 后端 `getBookshelfNew` 一直在返回这个字段，但模型里以前没有它，
+  /// 于是书架没法按「最近阅读」排序 —— 用户反馈「刚看完的没排在最前面」
+  /// 就是这个原因。
+  @JsonKey(name: 'durChapterTime')
+  int? durChapterTime;
+
+  /// 字数（后端给的是带单位的字符串，如 "344.02万字"）
+  @JsonKey(name: 'wordCount')
+  String? wordCount;
+
+  /// 分类标签串，如 "连载,都市,娱乐明星"
+  @JsonKey(name: 'kind')
+  String? kind;
+
+  @JsonKey(name: 'imageDecode')
+  bool? imageDecode;
+
   @JsonKey(name: 'canUpdate')
   bool? canUpdate;
 
@@ -94,6 +113,10 @@ class Book {
     this.durChapterTitle,
     this.durChapterIndex,
     this.durChapterPos,
+    this.durChapterTime,
+    this.wordCount,
+    this.kind,
+    this.imageDecode,
     this.canUpdate,
     this.order,
     this.useReplaceRule,
@@ -120,6 +143,10 @@ class Book {
         durChapterTitle: toStringVal(json['durChapterTitle']),
         durChapterIndex: toInt(json['durChapterIndex']),
         durChapterPos: toInt(json['durChapterPos']),
+        durChapterTime: toInt(json['durChapterTime']),
+        wordCount: toStringVal(json['wordCount']),
+        kind: toStringVal(json['kind']),
+        imageDecode: toBool(json['imageDecode']),
         canUpdate: toBool(json['canUpdate']),
         order: toInt(json['order']),
         useReplaceRule: toBool(json['useReplaceRule']),
