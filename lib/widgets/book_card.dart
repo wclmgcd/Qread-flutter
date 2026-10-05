@@ -60,6 +60,8 @@ class BookCard extends StatelessWidget {
   }
 
   Widget _buildCompactCard(BuildContext context) {
+    // 系统字号放大时，书名两行的高度要跟着放大，否则文字会被裁
+    final titleScaler = MediaQuery.textScalerOf(context).scale(1.0);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -83,14 +85,22 @@ class BookCard extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 8),
-        Text(
-          book.name ?? '',
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          textAlign: TextAlign.center,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+        // 【封面大小不一致的原因】书名原来直接跟在封面下面，1 行书名占 1 行、
+        // 2 行书名占 2 行，而上面的封面是 Expanded —— 书名多占一行，封面就被
+        // 压缩一行，于是同一屏里封面高矮不一。这里把书名区域**固定成两行高**，
+        // 封面高度就恒定了。
+        SizedBox(
+          height: 38 * titleScaler,
+          child: Text(
+            book.name ?? '',
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w600,
+                  height: 1.25,
+                ),
+          ),
         ),
       ],
     );

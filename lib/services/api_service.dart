@@ -9,6 +9,7 @@ import '../models/search_result.dart';
 import '../models/chapter.dart';
 import '../models/book_group.dart';
 import '../models/replace_rule.dart';
+import '../models/tts_engine.dart';
 
 class ApiService {
   static ApiService? _instance;
@@ -1356,6 +1357,87 @@ class ApiService {
       options: Options(contentType: Headers.jsonContentType),
     );
     return resp.data;
+  }
+
+  // ==================== 朗读引擎（TTS） ====================
+
+  /// 全部朗读引擎
+  Future<List<TtsEngine>> getAllTts(String accessToken) async {
+    final resp = await _dio.get('/getalltts', queryParameters: {
+      'accessToken': accessToken,
+    });
+    final json = resp.data;
+    if (json['isSuccess'] == true && json['data'] is List) {
+      return (json['data'] as List)
+          .map((e) => TtsEngine.fromJson(Map<String, dynamic>.from(e as Map)))
+          .toList();
+    }
+    return [];
+  }
+
+  /// 新增 / 更新一个朗读引擎（带 id 即更新，后端 `addtts` 按此分流）
+  Future<Map<String, dynamic>> addTts(
+      String accessToken, TtsEngine engine) async {
+    final resp = await _dio.post(
+      '/addtts',
+      queryParameters: {'accessToken': accessToken},
+      data: engine.toJson(),
+      options: _jsonBodyOptions(),
+    );
+    return Map<String, dynamic>.from(resp.data as Map);
+  }
+
+  /// 删除一个朗读引擎
+  Future<Map<String, dynamic>> delTts(String accessToken, String id) async {
+    final resp = await _dio.get('/deltts', queryParameters: {
+      'accessToken': accessToken,
+      'id': id,
+    });
+    return Map<String, dynamic>.from(resp.data as Map);
+  }
+
+  /// 批量导入朗读引擎（content 是 JSON 数组字符串）
+  ///
+  /// 后端 `savettss(@Body content: String)` 收的是**原始文本**，所以要按
+  /// 项目里同类接口（`/saveBookSources`）的范式用 text/plain 发，
+  /// 不能用 application/json —— 那样 Solon 会尝试反序列化而不是直接取字符串。
+  Future<Map<String, dynamic>> saveTtsList(
+      String accessToken, String content) async {
+    final resp = await _dio.post(
+      '/savettss',
+      queryParameters: {'accessToken': accessToken},
+      data: content,
+      options: _plainTextBodyOptions(),
+    );
+    return Map<String, dynamic>.from(resp.data as Map);
+  }
+
+  /// 服务端配置里的默认朗读引擎
+  Future<String?> getDefaultTts(String accessToken) async {
+    final resp = await _dio.get('/getdefaulttts', queryParameters: {
+      'accessToken': accessToken,
+    });
+    final data = resp.data['data'];
+    return data?.toString();
+  }
+
+  /// 服务端合成的音频地址。
+  ///
+  /// 后端 `/tts` 会按 id 取出引擎、把 `{{speakText}}` / `{{speakSpeed}}`
+  /// 等模板替换好、再流式返回音频，所以客户端不用自己拼引擎 URL。
+  String ttsAudioUrl(
+    String accessToken,
+    String id,
+    String text, {
+    double rate = 5,
+  }) {
+    final params = {
+      'accessToken': accessToken,
+      'id': id,
+      'speakText': text,
+      'speechRate': rate.toString(),
+    };
+    return '${AppConstants.apiBase}/tts?${_encodeParams(params)}';
   }
 
   /// 通过网址直接添加书籍（书架菜单「添加网址」）

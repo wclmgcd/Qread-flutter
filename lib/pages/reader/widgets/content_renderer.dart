@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../engine/models.dart';
+import '../engine/pagination_engine.dart';
 import '../engine/svg_path.dart';
 import 'reader_theme.dart';
 
@@ -378,6 +379,55 @@ class CommentBubble extends StatelessWidget {
   }
 }
 
+/// 行内段评气泡 —— 紧跟在前面的文字后面，**不单独占一行**
+///
+/// 与 [CommentBubble] 的区别：没有上下留白、没有 Spacer，
+/// 高度就是方框边长（1.02×字号），所以能直接塞进 `WidgetSpan`，
+/// 让气泡像官方 3.41 那样贴着段末文字显示。
+class InlineCommentBubble extends StatelessWidget {
+  final ParagraphComment comment;
+  final ReaderTheme theme;
+  final double fontSize;
+  final VoidCallback? onTap;
+
+  const InlineCommentBubble({
+    Key? key,
+    required this.comment,
+    required this.theme,
+    required this.fontSize,
+    this.onTap,
+  }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    final m = CommentBubbleMetrics(fontSize);
+    final geo = _BubbleGeometry.of(comment.bubbleSvg);
+    final scale = m.side / geo.bounds.height;
+    final inkWidth = geo.bounds.width * scale;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        // 气泡与前面文字的间距（官方约 0.3em）
+        padding: EdgeInsets.only(left: fontSize * 0.30),
+        child: SizedBox(
+          width: inkWidth,
+          height: m.side,
+          child: CustomPaint(
+            painter: _BubblePainter(
+              geometry: geo,
+              scale: scale,
+              color: theme.secondaryText,
+              label: comment.count,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _BubblePainter extends CustomPainter {
   _BubblePainter({
     required this.geometry,
@@ -492,8 +542,12 @@ class ContentRenderer {
                         firstLineIndent: firstLineIndent,
                         fontFamily: fontFamily,
                         fontWeight: fontWeight,
+                        onCommentTap: onCommentTap,
                       ),
-                      for (final comment in line.comments)
+                      // 小气泡已经嵌在文字行内（见 _buildTextLine），
+                      // 这里只把「神评论」横幅单独排在行下方。
+                      for (final comment
+                          in line.comments.where((c) => c.isBanner))
                         CommentBubble(
                           comment: comment,
                           theme: theme,
@@ -502,9 +556,9 @@ class ContentRenderer {
                               ? null
                               : () => onCommentTap(comment),
                         ),
-                      // 有段评时，间距排在气泡**下面**（见分页引擎里的同款注释），
-                      // 否则气泡会比官方客户端低一个段间距
-                      if (line.comments.isNotEmpty)
+                      // 有横幅时，间距排在横幅**下面**（见分页引擎里的同款注释），
+                      // 否则横幅会比官方客户端低一个段间距
+                      if (line.comments.any((c) => c.isBanner))
                         SizedBox(
                             height: line.isLastLineOfParagraph
                                 ? paragraphSpacing
@@ -563,12 +617,17 @@ class ContentRenderer {
     double firstLineIndent = 2.0,
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
+    ValueChanged<ParagraphComment>? onCommentTap,
   }) {
     final isHighlighted = line.paragraphIndex == ttsParagraphIndex;
     final isTitle = line.isTitle;
-    final effectiveFontSize = isTitle ? fontSize + 4 : fontSize;
-    final effectiveLineHeight = isTitle ? 1.45 : lineHeight;
-    final effectiveWeight = isTitle ? FontWeight.w600 : fontWeight;
+    // 标题样式必须和分页引擎用同一组常量，否则行高算错会串页。
+    final effectiveFontSize =
+        isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize;
+    final effectiveLineHeight =
+        isTitle ? PaginationEngine.titleLineHeight : lineHeight;
+    final effectiveWeight =
+        isTitle ? PaginationEngine.titleFontWeight : fontWeight;
     final effectiveColor = isHighlighted ? theme.highlight : theme.text;
 
     // 首行缩进
@@ -580,18 +639,52 @@ class ContentRenderer {
     // 段落间距：段尾行用 paragraphSpacing，段内行 1px
     final marginBottom = line.isLastLineOfParagraph ? paragraphSpacing : 1.0;
 
+    final style = TextStyle(
+      fontSize: effectiveFontSize,
+      color: effectiveColor,
+      height: effectiveLineHeight,
+      fontWeight: effectiveWeight,
+      fontFamily: fontFamily,
+    );
+
+    // 小气泡**行内跟随**：直接嵌在文字流末尾（和 3.41 一样紧贴前面的内容）。
+    // 「神评论」横幅（style=FULL）是整行宽的条，由调用方单独排在行下方。
+    final inlineComments =
+        line.comments.where((c) => !c.isBanner).toList(growable: false);
+
+    final content = inlineComments.isEmpty
+        ? Text(
+            displayText,
+            style: style,
+            textAlign: isTitle ? TextAlign.center : null,
+          )
+        : Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(text: displayText),
+                for (final c in inlineComments)
+                  WidgetSpan(
+                    // 气泡高度（1.02×字号）小于行框高度，不会把行撑开
+                    alignment: PlaceholderAlignment.middle,
+                    child: InlineCommentBubble(
+                      comment: c,
+                      theme: theme,
+                      fontSize: effectiveFontSize,
+                      onTap:
+                          onCommentTap == null ? null : () => onCommentTap(c),
+                    ),
+                  ),
+              ],
+            ),
+            style: style,
+            textAlign: isTitle ? TextAlign.center : null,
+          );
+
     return Container(
       margin: EdgeInsets.only(bottom: marginBottom),
-      child: Text(
-        displayText,
-        style: TextStyle(
-          fontSize: effectiveFontSize,
-          color: effectiveColor,
-          height: effectiveLineHeight,
-          fontWeight: effectiveWeight,
-          fontFamily: fontFamily,
-        ),
-      ),
+      // 标题要居中，Text 必须先撑满一行宽度，否则只会按内容宽度收缩。
+      width: isTitle ? double.infinity : null,
+      child: content,
     );
   }
 
@@ -610,9 +703,13 @@ class ContentRenderer {
   }) {
     final isHighlighted = paragraph.index == ttsParagraphIndex;
     final isTitle = paragraph.isTitle;
-    final effectiveFontSize = isTitle ? fontSize + 4 : fontSize;
-    final effectiveLineHeight = isTitle ? 1.45 : lineHeight;
-    final effectiveWeight = isTitle ? FontWeight.w600 : fontWeight;
+    // 与分页引擎共用同一组标题常量（见 PaginationEngine.titleFontSizeDelta）
+    final effectiveFontSize =
+        isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize;
+    final effectiveLineHeight =
+        isTitle ? PaginationEngine.titleLineHeight : lineHeight;
+    final effectiveWeight =
+        isTitle ? PaginationEngine.titleFontWeight : fontWeight;
 
     // 首行缩进 / 段间距改为跟随阅读设置
     final indentChars = isTitle ? 0 : firstLineIndent.round();
@@ -624,12 +721,37 @@ class ContentRenderer {
         Container(
           margin: EdgeInsets.only(bottom: paragraphSpacing),
           padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+          // 标题居中：先撑满一行宽度，textAlign 才有居中效果
+          width: isTitle ? double.infinity : null,
           decoration: BoxDecoration(
             color: isHighlighted ? theme.highlight : Colors.transparent,
             borderRadius: BorderRadius.circular(4),
           ),
-          child: Text(
-            isTitle ? paragraph.text : '$indentStr${paragraph.text}',
+          child: Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: isTitle
+                      ? paragraph.text
+                      : '$indentStr${paragraph.text}',
+                ),
+                // 小气泡行内跟随（和 3.41 一致）
+                for (final c
+                    in paragraph.comments.where((c) => !c.isBanner))
+                  WidgetSpan(
+                    alignment: PlaceholderAlignment.middle,
+                    child: InlineCommentBubble(
+                      comment: c,
+                      theme: theme,
+                      fontSize: effectiveFontSize,
+                      onTap: onCommentTap == null
+                          ? null
+                          : () => onCommentTap(c),
+                    ),
+                  ),
+              ],
+            ),
+            textAlign: isTitle ? TextAlign.center : null,
             style: TextStyle(
               fontSize: effectiveFontSize,
               color: theme.text,
@@ -639,7 +761,8 @@ class ContentRenderer {
             ),
           ),
         ),
-        for (final comment in paragraph.comments)
+        // 只有「神评论」横幅单独占一行
+        for (final comment in paragraph.comments.where((c) => c.isBanner))
           CommentBubble(
             comment: comment,
             theme: theme,

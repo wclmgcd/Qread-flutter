@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'pagination_engine.dart';
+
 /// 文本测量工具
 ///
 /// 封装 TextPainter，提供文本高度测量和行级信息获取。
@@ -107,10 +109,12 @@ class TextMeasurer {
         isTitle ? text : '${isContinuation ? '' : '\u3000\u3000'}$text';
     return measureHeight(
       displayText,
-      fontSize: isTitle ? fontSize + 4 : fontSize,
-      lineHeight: isTitle ? 1.45 : lineHeight,
+      // 标题样式统一走 PaginationEngine 的常量，别在这里写死，
+      // 否则分页端/渲染端/测量端三处会各自漂移。
+      fontSize: isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize,
+      lineHeight: isTitle ? PaginationEngine.titleLineHeight : lineHeight,
       maxWidth: maxWidth,
-      fontWeight: isTitle ? FontWeight.w600 : FontWeight.normal,
+      fontWeight: isTitle ? PaginationEngine.titleFontWeight : FontWeight.normal,
     );
   }
 }

@@ -23,6 +23,7 @@ class ParagraphCommentPage extends StatefulWidget {
     this.headers = const {},
     this.requestId,
     this.token,
+    this.embedded = false,
   }) : super(key: key);
 
   final String url;
@@ -32,6 +33,12 @@ class ParagraphCommentPage extends StatefulWidget {
   /// 后端推送消息里的 id，用于回执
   final String? requestId;
   final String? token;
+
+  /// true = 只渲染 WebView 本身，不套 Scaffold / AppBar。
+  ///
+  /// 用于「半截式底部弹出」：圆角容器、标题栏、关闭按钮、背景遮罩都由调用方
+  /// （reader_page._openWebPage → showHalfSheet）提供，这里只负责内容和关闭回执。
+  final bool embedded;
 
   @override
   State<ParagraphCommentPage> createState() => _ParagraphCommentPageState();
@@ -59,15 +66,20 @@ class _ParagraphCommentPageState extends State<ParagraphCommentPage> {
 
   @override
   Widget build(BuildContext context) {
+    final webView = AdaptiveWebView(
+      url: widget.url,
+      enableJs: true,
+      headers: widget.headers,
+    );
+
+    // 半截式弹窗：容器由调用方给，这里不要 Scaffold / AppBar
+    if (widget.embedded) return webView;
+
     return Scaffold(
       appBar: AppBar(
         title: Text(widget.title.isEmpty ? '段评' : widget.title),
       ),
-      body: AdaptiveWebView(
-        url: widget.url,
-        enableJs: true,
-        headers: widget.headers,
-      ),
+      body: webView,
     );
   }
 }

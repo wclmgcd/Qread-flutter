@@ -7,6 +7,7 @@ import '../pages/discover/discover_page.dart';
 import '../pages/rss/rss_page.dart';
 import '../pages/profile/profile_page.dart';
 import '../pages/profile/reading_preference_page.dart';
+import '../pages/profile/tts_engine_page.dart';
 import '../pages/replace/replace_rule_editor_page.dart';
 import '../pages/replace/replace_rule_page.dart';
 import '../pages/reader/reader_page.dart';
@@ -43,6 +44,7 @@ class AppRoutes {
   static const String replaceRuleEditor = '/replaceRules/editor';
   static const String generalSettings = '/settings/general';
   static const String readingPreference = '/settings/reading';
+  static const String ttsEngines = '/settings/tts';
   static const String bookInfo = '/book/info';
   static const String bookSourceSwitch = '/book/switchSource';
   static const String discoverExplore = '/discover/explore';
@@ -55,6 +57,7 @@ class AppRoutes {
     search: (_) => const SearchPage(),
     generalSettings: (_) => const GeneralSettingsPage(),
     readingPreference: (_) => const ReadingPreferencePage(),
+    ttsEngines: (_) => const TtsEnginePage(),
     sourceManage: (_) => const SourceManagePage(),
     rssSource: (_) => const RssSourcePage(),
     replaceRules: (_) => const ReplaceRulePage(),

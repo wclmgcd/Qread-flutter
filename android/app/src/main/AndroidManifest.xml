@@ -5,7 +5,13 @@
    <application
         android:label="Qread"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="true">
+        <!-- 【必须开启明文 HTTP】Android 9(P) 起默认 usesCleartextTraffic=false，
+             会拦截所有 http:// 请求。而书源给的段评接口、正文图片、发现页地址
+             大量是明文 http（例如段评 http://219.154.201.122:5006/get_para_review），
+             关着就会报 net::ERR_CLEARTEXT_NOT_PERMITTED、网页无法打开。
+             打开后 WebView / 图片 / 接口的 http 都能正常走。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"

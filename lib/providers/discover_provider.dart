@@ -55,8 +55,13 @@ class DiscoverProvider extends ChangeNotifier {
         allSources = await ApiService.instance.getBookSources(accessToken);
       }
 
-      _exploreSources =
-          allSources.where((s) => s.enabledExplore == true).toList();
+      // 只保留「既启用、又开了发现」的源。
+      // 【修复】原来只判 `enabledExplore`，于是书源被禁用后，
+      // 它的「发现」仍然留在发现页里 —— 用户看到的就是
+      //「书源管理里明明已禁用，发现页还能刷出它的内容」。
+      _exploreSources = allSources
+          .where((s) => s.enabled == true && s.enabledExplore == true)
+          .toList();
       await _saveLocalCache(accessToken);
     } catch (e) {
       _error = e.toString();

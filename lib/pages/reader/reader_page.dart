@@ -144,17 +144,46 @@ class _ReaderPageState extends State<ReaderPage> {
     // 段评页用「段评」标题，其它（登录页/验证码）用后端给的标题
     final title = message.title.trim().isEmpty ? '段评' : message.title.trim();
     _openingCommentPage = false;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ParagraphCommentPage(
-          url: message.url,
-          title: title,
-          headers: message.headerMap,
-          requestId: message.id,
-          token: _token,
-        ),
-      ),
+    // 段评统一用「半截式底部弹出」（对齐大灰狼书源）。
+    // 后端 startBrowserdp 是段评专用通道，startBrowser 是通用通道
+    // （登录 / 验证码 / 购买），但用户要求段评一律半截式，所以两者都走弹窗。
+    _openWebPage(
+      url: message.url,
+      title: title,
+      headers: message.headerMap,
+      requestId: message.id,
+      asSheet: true,
     );
+  }
+
+  /// 打开后端推来的网页。
+  ///
+  /// [asSheet] = true → 「半截式底部弹出」（段评的观感，上方露出正文）；
+  /// false → 整页路由（需要整屏的表单，比如登录 / 验证码）。
+  void _openWebPage({
+    required String url,
+    required String title,
+    Map<String, String> headers = const {},
+    String? requestId,
+    bool asSheet = true,
+  }) {
+    if (!mounted) return;
+    final page = ParagraphCommentPage(
+      url: url,
+      title: title,
+      headers: headers,
+      requestId: requestId,
+      token: _token,
+      embedded: asSheet,
+    );
+
+    if (!asSheet) {
+      Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
+      return;
+    }
+
+    // 弹窗本身就是一个路由，关闭时 page 的 dispose() 会触发 → 回执照发。
+    unawaited(showHalfSheet(context, child: page, title: title));
   }
 
   /// 点击正文里的段评气泡
@@ -186,21 +215,13 @@ class _ReaderPageState extends State<ReaderPage> {
         bookurl: bookUrl,
       );
       if (!mounted) return;
-      // 正常情况下后端已经通过 WebSocket 推了 startBrowser，
-      // 这里只做兜底：拿到可用的 http(s) 地址就直接打开。
+      // 正常情况下后端已经通过 WebSocket 推了 startBrowserdp，
+      // 这里只做兜底：拿到可用的 http(s) 地址就直接打开（同样是半截式）。
       final usable = resolved.startsWith('http') && !resolved.endsWith('/null');
       if (usable && _openingCommentPage) {
         _openingCommentPage = false;
         AppLog.add('段评兜底直开：$resolved');
-        Navigator.of(context).push(
-          MaterialPageRoute(
-            builder: (_) => ParagraphCommentPage(
-              url: resolved,
-              title: '段评',
-              token: token,
-            ),
-          ),
-        );
+        _openWebPage(url: resolved, title: '段评', asSheet: true);
         return;
       }
       // 没拿到可用地址，且 WebSocket 也没推（_openingCommentPage 仍为 true）

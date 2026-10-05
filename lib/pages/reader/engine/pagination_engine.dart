@@ -40,6 +40,17 @@ class PaginationEngine {
   static const double footerFontSize = 11.0;
   static const double footerLineHeight = 1.2;
 
+  /// 正文里的「章标题」样式（每章第一页顶部，居中加粗）
+  ///
+  /// 注意和 [headerFontSize] 区分：那个是**页眉**那行小字，每页都有、左对齐；
+  /// 这个是**正文首段**的标题，只在本章第一页出现一次、居中加粗。
+  /// 两者位置和字号都不同，所以不会像旧版本那样叠在一起。
+  ///
+  /// 分页端和渲染端必须用同一组常量，否则行高算错会串页。
+  static const double titleFontSizeDelta = 6.0;
+  static const double titleLineHeight = 1.45;
+  static const FontWeight titleFontWeight = FontWeight.bold;
+
   /// 计算章节的完整分页布局
   ChapterLayout paginate({
     required String content,
@@ -154,18 +165,18 @@ class PaginationEngine {
         // 行框高度 = fontSize * lineHeight（与 Text widget 渲染一致）
         final isLastLine = line.isLastLineOfParagraph;
         final spacing = isLastLine ? paragraphSpacing : defaultLineSpacing;
-        // 段评也占高度，必须算进来，否则末页会被裁
+        // 段评占位高度：
+        //   - 小气泡（style=TEXT）现在是**行内跟随**（紧贴段末文字后面，和 3.41 一致）。
+        //     它的高度只有 1.02×字号，小于行框高度（字号×行距），不会把行撑高，
+        //     所以**不再**额外占位 —— 再加一次会让行与行之间多出一条空白。
+        //   - 「神评论」横幅（style=FULL）是铺满整行宽的条，仍然单独占一行，要算高度。
         final bubbleHeight = line.comments.fold<double>(
           0.0,
           (sum, c) =>
-              sum +
-              (c.isBanner
-                  ? bubbleMetrics.bannerTotalHeight
-                  : bubbleMetrics.totalHeight),
+              sum + (c.isBanner ? bubbleMetrics.bannerTotalHeight : 0.0),
         );
-        // 顺序：行框 → 气泡 → 间距。
-        // 官方客户端里气泡是紧贴段末行的，段间距排在气泡**下面**，
-        // 所以间距要加在气泡之后（加在前面会让气泡整体下移一个段间距）。
+        // 顺序：行框 → 横幅 → 间距。
+        // 官方客户端里横幅是紧贴段末行的，段间距排在横幅**下面**。
         final lineTotalHeight = line.height + bubbleHeight + spacing;
 
         if (currentLines.isNotEmpty &&
@@ -203,9 +214,10 @@ class PaginationEngine {
     FontWeight fontWeight = FontWeight.normal,
   }) {
     final isTitle = paragraph.isTitle;
-    final effectiveFontSize = isTitle ? fontSize + 4 : fontSize;
-    final effectiveLineHeight = isTitle ? 1.45 : lineHeight;
-    final effectiveWeight = isTitle ? FontWeight.w600 : fontWeight;
+    final effectiveFontSize =
+        isTitle ? fontSize + titleFontSizeDelta : fontSize;
+    final effectiveLineHeight = isTitle ? titleLineHeight : lineHeight;
+    final effectiveWeight = isTitle ? titleFontWeight : fontWeight;
     // 行框高度 = fontSize * lineHeight（与 Text widget 一致）
     final lineBoxHeight = effectiveFontSize * effectiveLineHeight;
 
@@ -266,10 +278,15 @@ class PaginationEngine {
         continue;
       }
 
-      final originalStart =
-          (lineStart - indentLength).clamp(0, paragraph.text.length);
-      final originalEnd =
-          (lineEnd - indentLength).clamp(0, paragraph.text.length);
+      // 章标题是排版时补进去的、不属于原文任何字符区间，所以它的
+      // start/end 一律记 0 —— 否则标题字数会被算进「本页覆盖到的正文位置」，
+      // 污染阅读进度的区间计算。
+      final originalStart = isTitle
+          ? 0
+          : (lineStart - indentLength).clamp(0, paragraph.text.length);
+      final originalEnd = isTitle
+          ? 0
+          : (lineEnd - indentLength).clamp(0, paragraph.text.length);
 
       String displayText;
       if (isTitle) {
@@ -552,18 +569,27 @@ class PaginationEngine {
       }
     }
 
-    // 【重要】不要把章节标题塞进正文段落里。
+    // 【章标题】每章第一页的正文顶部，居中加粗显示本章标题（对齐官方客户端）。
     //
-    // 渲染端的 ContentRenderer.buildChapterHeader 已经在正文上方画了一行
-    // 小字标题（官方客户端就是这个位置、这个字号）。如果这里再补一段
-    // isTitle 段落，标题就会被画两遍 —— 一小一大叠在一起，
-    // 正是用户截图里「字体重叠」的观感。
+    // 和页眉不冲突：ContentRenderer.buildChapterHeader 画的是**页眉**那行小字
+    // （每页都有、左对齐、13px）；这里补的是**正文里的标题段**，只在本章第一页
+    // 出现一次、居中加粗（字号 + titleFontSizeDelta）。两者位置和字号都不同。
     //
-    // cleanTitle 仍然有用：上面用它剥掉正文首行重复的标题。
+    // 位置用 (0, 0)：标题不属于原文任何字符区间，这样正文各段的
+    // startPosition/endPosition 保持和以前完全一致，阅读进度不会跳。
     final paragraphs = <ReaderParagraph>[];
+    var index = 0;
+    if (cleanTitle.isNotEmpty) {
+      paragraphs.add(ReaderParagraph(
+        index: index++,
+        text: cleanTitle,
+        startPosition: 0,
+        endPosition: 0,
+        isTitle: true,
+      ));
+    }
 
     var start = 0;
-    var index = 0;
     for (final rawLine in lines) {
       final (drainedText, comments) = _drainComments(rawLine, allComments);
       final text = drainedText.trim();

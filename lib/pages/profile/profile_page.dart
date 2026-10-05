@@ -239,6 +239,20 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
           ),
           _ProfileMenuTile(
             item: _ProfileMenuItem(
+              icon: Icons.record_voice_over_outlined,
+              accent: const Color(0xFF4FC3C7),
+              title: '朗读引擎',
+              onTap: () => Navigator.pushNamed(context, AppRoutes.ttsEngines),
+            ),
+          ),
+          Divider(
+            height: 1,
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
+            indent: 84,
+            endIndent: 20,
+          ),
+          _ProfileMenuTile(
+            item: _ProfileMenuItem(
               icon: Icons.cleaning_services_outlined,
               accent: const Color(0xFFAC7CFF),
               title: '替换净化',
