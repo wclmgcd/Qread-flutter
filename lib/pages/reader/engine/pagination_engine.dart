@@ -23,7 +23,10 @@ class PaginationEngine {
   /// - 段间距   21px  → 21 / 83.5 ≈ 0.25em，字号 28 时约 7px
   static const double defaultHorizontalPadding = 16.0;
   static const double defaultTopPadding = 10.0;
-  static const double defaultBottomPadding = 10.0;
+
+  /// 底部留白。原来 10，反馈「页脚的时间/电量再往下一点」所以收到 6。
+  /// 注意这是**安全区之内**的额外留白，再小下去会被系统手势条压住。
+  static const double defaultBottomPadding = 6.0;
   static const double defaultHeaderBottomSpacing = 6.0;
   static const double defaultParagraphSpacing = 7.0;
   static const double defaultLineSpacing = 1.0;
@@ -47,9 +50,23 @@ class PaginationEngine {
   /// 两者位置和字号都不同，所以不会像旧版本那样叠在一起。
   ///
   /// 分页端和渲染端必须用同一组常量，否则行高算错会串页。
-  static const double titleFontSizeDelta = 6.0;
+  ///
+  /// 【字号差为什么收敛到 2】原来给到 6，标题比正文大出一大截，长章节名还会
+  /// 被拆成两三行，观感很跳。反馈是「比正文加粗 1 点就够了」，所以只留 2px，
+  /// 「轻微加粗」改由 [titleBoldShadowOffset] 的描边实现。
+  static const double titleFontSizeDelta = 2.0;
   static const double titleLineHeight = 1.45;
-  static const FontWeight titleFontWeight = FontWeight.bold;
+
+  /// 标题的「轻微加粗」用同色偏移阴影模拟，**不走 FontWeight**。
+  ///
+  /// 原因：assets/fonts 下每个字族只有 400 / 700 两档（见 pubspec.yaml），
+  /// Flutter 的字重匹配只能在两档里挑最近的 ——
+  ///   w500 → 落到 400（完全不加粗）
+  ///   w600 → 落到 700（和 bold 一样粗）
+  /// 没有中间态，所以「比正文粗一点」只能绕开字重来做。
+  /// 给文字叠一层偏移 0.4px 的同色副本，笔画会略微变粗，观感接近 Medium；
+  /// 关键是 **Shadow 不计入排版宽度**，所以测量端无需跟着改。
+  static const Offset titleBoldShadowOffset = Offset(0.4, 0);
 
   /// 计算章节的完整分页布局
   ChapterLayout paginate({
@@ -70,6 +87,7 @@ class PaginationEngine {
     bool showBottomBar = true,
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
     // 1. 提取段落
     final paragraphs = _extractParagraphs(content, chapterTitle: chapterTitle);
@@ -88,13 +106,20 @@ class PaginationEngine {
     final availableWidth = viewportSize.width - horizontalPadding * 2;
 
     // 章节头高度：12 * 1.2 = 14.4
+    //
+    // 【必须乘 textScaler】页眉和页脚是 Text widget 渲染的，而 Text 默认会应用
+    // MediaQuery.textScalerOf(context)（也就是系统的「字体大小」设置）。
+    // 这里不跟着缩放的话，系统字体调大后页眉/页脚的实际高度比预算的高，
+    // 正文可用高度被高估 → 每页塞进过多行 → 正文溢出压到页脚的时间/电量上。
     final headerHeight = (showTopBar && chapterTitle?.isNotEmpty == true)
-        ? headerFontSize * headerLineHeight
+        ? textScaler.scale(headerFontSize) * headerLineHeight
         : 0.0;
     final headerSpacing =
         (showTopBar && headerHeight > 0) ? defaultHeaderBottomSpacing : 0.0;
     // 页脚高度：11 * 1.2 = 13.2
-    final footerHeight = showBottomBar ? footerFontSize * footerLineHeight : 0.0;
+    final footerHeight = showBottomBar
+        ? textScaler.scale(footerFontSize) * footerLineHeight
+        : 0.0;
     final bottomPadding = showBottomBar ? defaultBottomPadding : 0.0;
 
     final availableHeight = viewportSize.height -
@@ -158,11 +183,13 @@ class PaginationEngine {
         firstLineIndent: firstLineIndent,
         fontFamily: fontFamily,
         fontWeight: fontWeight,
+        textScaler: textScaler,
       );
 
       for (int i = 0; i < lines.length; i++) {
         final line = lines[i];
-        // 行框高度 = fontSize * lineHeight（与 Text widget 渲染一致）
+        // 行框高度来自 _splitParagraphToLines（已按 textScaler 缩放），
+        // 与 Text widget 的实际渲染高度一致。
         final isLastLine = line.isLastLineOfParagraph;
         final spacing = isLastLine ? paragraphSpacing : defaultLineSpacing;
         // 段评占位高度：
@@ -212,14 +239,25 @@ class PaginationEngine {
     double firstLineIndent = 2.0,
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
     final isTitle = paragraph.isTitle;
     final effectiveFontSize =
         isTitle ? fontSize + titleFontSizeDelta : fontSize;
     final effectiveLineHeight = isTitle ? titleLineHeight : lineHeight;
-    final effectiveWeight = isTitle ? titleFontWeight : fontWeight;
-    // 行框高度 = fontSize * lineHeight（与 Text widget 一致）
-    final lineBoxHeight = effectiveFontSize * effectiveLineHeight;
+    // 标题不再单独提字重（字体只有 400/700 两档，中间档拿不到），
+    // 「比正文粗一点」交给 content_renderer 里的 titleBoldShadowOffset 描边。
+    final effectiveWeight = fontWeight;
+    // 行框高度 = 缩放后的字号 * lineHeight（与 Text widget 一致）
+    //
+    // 【关键】Text widget 会用 MediaQuery.textScalerOf(context) 放大字号，行框
+    // 高度随之变大；而 TextPainter 默认不缩放。两边不一致的后果有两个：
+    //   1. 行拆分按未缩放字号算 → 一行塞进的字比实际放得下的多 →
+    //      渲染时每行被二次换行截断，正文出现「忽长忽短」的断行；
+    //   2. 行高被低估 → 每页塞进行数过多 → 正文溢出，压住页脚的时间/电量。
+    // 所以测量和高度都必须乘 textScaler。
+    final lineBoxHeight =
+        textScaler.scale(effectiveFontSize) * effectiveLineHeight;
 
     // 首行缩进：根据 firstLineIndent 生成对应数量的全角空格
     final indentChars = isTitle ? 0 : firstLineIndent.round();
@@ -241,6 +279,8 @@ class PaginationEngine {
       ),
       textDirection: TextDirection.ltr,
       maxLines: null,
+      // 必须与渲染端 Text widget 保持一致（Text 默认用 MediaQuery.textScalerOf）
+      textScaler: textScaler,
     )..layout(maxWidth: maxWidth);
 
     final lineMetrics = painter.computeLineMetrics();

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../services/tts_service.dart';
+import 'reader_theme.dart';
 
 /// 阅读器控制面板覆盖层 v2
 ///
@@ -120,10 +121,20 @@ class ControllerOverlay extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
 
+  /// 阅读主题 —— 控制栏的底色与文字色全部跟随它。
+  ///
+  /// 【为什么必须跟随主题】原来顶部和底部用的是写死的黑色半透明
+  /// （0.45 / 0.88）。在护眼绿、羊皮纸这类浅色主题下，黑条会糊住正文，
+  /// 观感就是「有遮挡、颜色也不好」；而且色块和正文之间有一道硬分界，
+  /// 看起来像「上面和底部各留了一条空隙」。
+  /// 改成跟阅读背景同色之后，控制栏与正文融为一体，两个问题一起消失。
+  final ReaderTheme theme;
+
   const ControllerOverlay({
     Key? key,
     required this.data,
     required this.callbacks,
+    required this.theme,
   }) : super(key: key);
 
   @override
@@ -135,7 +146,7 @@ class ControllerOverlay extends StatelessWidget {
           top: 0,
           left: 0,
           right: 0,
-          child: _TopInfoBar(data: data, callbacks: callbacks),
+          child: _TopInfoBar(data: data, callbacks: callbacks, theme: theme),
         ),
 
         // 中部悬浮胶囊
@@ -143,25 +154,33 @@ class ControllerOverlay extends StatelessWidget {
           left: 0,
           right: 0,
           bottom: 136,
-          child: _FloatingCapsule(data: data, callbacks: callbacks),
+          child:
+              _FloatingCapsule(data: data, callbacks: callbacks, theme: theme),
         ),
 
-        // 底部区域：进度条 + 功能栏（几乎不透明）
+        // 底部区域：进度条 + 功能栏
+        //
+        // Container 包在 SafeArea **外面** —— 这样系统手势条那一块也会铺上主题色。
+        // 反过来写（SafeArea 在外）的话，手势条区域是透明的，会透出下面的正文，
+        // 看起来就是「底部没铺满」。
         Positioned(
           left: 0,
           right: 0,
           bottom: 0,
-          child: SafeArea(
-            top: false,
-            child: Container(
-              color: Colors.black.withValues(alpha: 0.88),
+          child: Container(
+            color: theme.background,
+            child: SafeArea(
+              top: false,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _ProgressStrip(data: data, callbacks: callbacks),
-                  const SizedBox(height: 8),
-                  _BottomActionBar(data: data, callbacks: callbacks),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 4),
+                  _ProgressStrip(
+                      data: data, callbacks: callbacks, theme: theme),
+                  const SizedBox(height: 2),
+                  _BottomActionBar(
+                      data: data, callbacks: callbacks, theme: theme),
+                  const SizedBox(height: 6),
                 ],
               ),
             ),
@@ -179,77 +198,137 @@ class ControllerOverlay extends StatelessWidget {
 class _TopInfoBar extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
 
-  const _TopInfoBar({required this.data, required this.callbacks});
+  const _TopInfoBar({
+    required this.data,
+    required this.callbacks,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return SafeArea(
-      bottom: false,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.45),
-        ),
-        child: Row(
-          children: [
-            // 返回
-            IconButton(
-              icon: const Icon(Icons.arrow_back, color: Colors.white, size: 22),
-              onPressed: callbacks.onBack,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-            ),
-            // 书名 / 章节 / 来源
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
+    // 深色主题下纯白按钮会刺眼，所以「更多」的底色也跟着主题走
+    final isDark = theme.background.computeLuminance() < 0.5;
+    final pillBg = isDark
+        ? Colors.white.withValues(alpha: 0.12)
+        : Colors.white.withValues(alpha: 0.72);
+
+    // Container 包在 SafeArea **外面**：底色要铺到状态栏区域。
+    // 原来是 SafeArea 在外、Container 在内，状态栏那块是透明的，
+    // 正文会从状态栏下面透出来 —— 观感就是「上面留了一条空隙」。
+    return Container(
+      color: theme.background,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 2, 8, 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // ---- 第一行：返回 + 书名 + 更多 ----
+              Row(
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.arrow_back_ios_new,
+                        color: theme.text, size: 20),
+                    onPressed: callbacks.onBack,
+                    padding: const EdgeInsets.all(8),
+                    constraints:
+                        const BoxConstraints(minWidth: 40, minHeight: 40),
+                    tooltip: '返回',
+                  ),
+                  Expanded(
+                    child: Text(
                       data.bookName,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 14,
+                      style: TextStyle(
+                        color: theme.text,
+                        fontSize: 16,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${data.chapterTitle}  ·  ${data.sourceName}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  ),
+                  InkWell(
+                    onTap: callbacks.onShowMore,
+                    borderRadius: BorderRadius.circular(14),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: pillBg,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Text(
+                        '更多',
+                        style: TextStyle(color: theme.text, fontSize: 13),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              // ---- 第二行：章节 ----
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 4),
+                child: Row(
+                  children: [
+                    Text('章节：',
+                        style: TextStyle(
+                            color: theme.secondaryText, fontSize: 12)),
+                    Expanded(
+                      child: Text(
+                        data.chapterTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: theme.text, fontSize: 12),
+                      ),
                     ),
                   ],
                 ),
               ),
-            ),
-            // 刷新
-            IconButton(
-              icon: Icon(
-                Icons.refresh,
-                color: data.replaceRuleEnabled
-                    ? const Color(0xFF00A88F)
-                    : Colors.white,
-                size: 20,
+              const SizedBox(height: 3),
+              // ---- 第三行：来源 + 刷新 ----
+              Padding(
+                padding: const EdgeInsets.only(left: 12, right: 4),
+                child: Row(
+                  children: [
+                    Text('来源：',
+                        style: TextStyle(
+                            color: theme.secondaryText, fontSize: 12)),
+                    Expanded(
+                      child: Text(
+                        data.sourceName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: theme.text, fontSize: 12),
+                      ),
+                    ),
+                    InkWell(
+                      onTap: callbacks.onRefresh,
+                      borderRadius: BorderRadius.circular(4),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 2),
+                        child: Text(
+                          '刷新',
+                          style: TextStyle(
+                            // 替换规则生效时高亮，提示「刷新会走净化」
+                            color: data.replaceRuleEnabled
+                                ? const Color(0xFF00A88F)
+                                : theme.secondaryText,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              onPressed: callbacks.onRefresh,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-            // 更多
-            IconButton(
-              icon: const Icon(Icons.more_vert, color: Colors.white, size: 20),
-              onPressed: callbacks.onShowMore,
-              padding: const EdgeInsets.all(8),
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -263,11 +342,17 @@ class _TopInfoBar extends StatelessWidget {
 class _FloatingCapsule extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
 
-  const _FloatingCapsule({required this.data, required this.callbacks});
+  const _FloatingCapsule({
+    required this.data,
+    required this.callbacks,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final isDark = theme.background.computeLuminance() < 0.5;
     return Center(
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 200),
@@ -276,7 +361,10 @@ class _FloatingCapsule extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 48),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.72),
+            // 浅色主题用白胶囊（对齐 3.41）；深色主题下纯白太刺眼，改成半透明白
+            color: isDark
+                ? Colors.white.withValues(alpha: 0.14)
+                : Colors.white.withValues(alpha: 0.92),
             borderRadius: BorderRadius.circular(40),
             boxShadow: [
               BoxShadow(
@@ -286,7 +374,14 @@ class _FloatingCapsule extends StatelessWidget {
               ),
             ],
           ),
-          child: _buildCapsuleContent(),
+          // 胶囊里的图标和文字统一继承主题色，省得每个按钮各写一套颜色
+          child: IconTheme(
+            data: IconThemeData(color: theme.text),
+            child: DefaultTextStyle(
+              style: TextStyle(color: theme.text),
+              child: _buildCapsuleContent(),
+            ),
+          ),
         ),
       ),
     );
@@ -379,14 +474,13 @@ class _FloatingCapsule extends StatelessWidget {
               Text(
                 '${data.autoPageInterval.toStringAsFixed(0)}',
                 style: const TextStyle(
-                  color: Color(0xFF333333),
                   fontSize: 18,
                   fontWeight: FontWeight.w600,
                 ),
               ),
               const Text(
                 '秒/页',
-                style: TextStyle(color: Colors.grey, fontSize: 10),
+                style: TextStyle(fontSize: 10),
               ),
             ],
           ),
@@ -414,11 +508,20 @@ class _FloatingCapsule extends StatelessWidget {
 class _ProgressStrip extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
 
-  const _ProgressStrip({required this.data, required this.callbacks});
+  const _ProgressStrip({
+    required this.data,
+    required this.callbacks,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
+    // 原来写死青绿 + 灰色轨道，在护眼绿/羊皮纸这些主题下很突兀；
+    // 改成跟着主题的正文色/次要色走。
+    final thumbColor = theme.text.withValues(alpha: 0.55);
+    final trackColor = theme.secondaryText.withValues(alpha: 0.35);
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
@@ -433,7 +536,8 @@ class _ProgressStrip extends StatelessWidget {
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              child: const Text('上一章', style: TextStyle(fontSize: 12)),
+              child: Text('上一章',
+                  style: TextStyle(fontSize: 12, color: theme.text)),
             ),
           ),
           // 滑杆
@@ -443,9 +547,9 @@ class _ProgressStrip extends StatelessWidget {
                 trackHeight: 2,
                 thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                activeTrackColor: const Color(0xFF00A88F),
-                thumbColor: const Color(0xFF00A88F),
-                inactiveTrackColor: Colors.grey.withValues(alpha: 0.3),
+                activeTrackColor: thumbColor,
+                thumbColor: thumbColor,
+                inactiveTrackColor: trackColor,
               ),
               child: Slider(
                 value: (data.chapterSliderValue ?? data.chapterIndex.toDouble())
@@ -471,7 +575,8 @@ class _ProgressStrip extends StatelessWidget {
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
-              child: const Text('下一章', style: TextStyle(fontSize: 12)),
+              child: Text('下一章',
+                  style: TextStyle(fontSize: 12, color: theme.text)),
             ),
           ),
         ],
@@ -487,8 +592,13 @@ class _ProgressStrip extends StatelessWidget {
 class _BottomActionBar extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
 
-  const _BottomActionBar({required this.data, required this.callbacks});
+  const _BottomActionBar({
+    required this.data,
+    required this.callbacks,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -508,11 +618,13 @@ class _BottomActionBar extends StatelessWidget {
           _BottomEntry(
             icon: Icons.list_alt_outlined,
             label: '目录',
+            theme: theme,
             onTap: callbacks.onShowChapterList,
           ),
           _BottomEntry(
             icon: Icons.tune_outlined,
             label: '设置',
+            theme: theme,
             onTap: callbacks.onShowSettings,
           ),
         ],
@@ -529,16 +641,19 @@ class _BottomActionBar extends StatelessWidget {
           _BottomEntry(
             icon: Icons.timer_outlined,
             label: '定时',
+            theme: theme,
             onTap: callbacks.onShowTtsTimer,
           ),
           _BottomEntry(
             icon: Icons.list_alt_outlined,
             label: '目录',
+            theme: theme,
             onTap: callbacks.onShowChapterList,
           ),
           _BottomEntry(
             icon: Icons.settings_voice_outlined,
             label: '听书设置',
+            theme: theme,
             onTap: callbacks.onShowTtsSettings,
           ),
         ],
@@ -565,6 +680,9 @@ class _CapsuleButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 颜色不写死 —— 由 _FloatingCapsule 包在外面的 IconTheme 按当前阅读主题
+    // 注入，深色主题下才不会出现「浅底浅字」看不清的情况
+    final tint = IconTheme.of(context).color;
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(20),
@@ -573,11 +691,14 @@ class _CapsuleButton extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: const Color(0xFF555555), size: 20),
+            Icon(icon, color: tint, size: 20),
             const SizedBox(height: 2),
             Text(
               label,
-              style: const TextStyle(color: Color(0xFF888888), fontSize: 10),
+              style: TextStyle(
+                color: tint?.withValues(alpha: 0.65),
+                fontSize: 10,
+              ),
             ),
           ],
         ),
@@ -590,11 +711,12 @@ class _CapsuleButton extends StatelessWidget {
 class _CapsuleDivider extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
+    // 跟随外层 IconTheme（在 _FloatingCapsule 里按阅读主题注入）
     return Container(
       width: 1,
       height: 24,
       margin: const EdgeInsets.symmetric(horizontal: 4),
-      color: const Color(0xFFE0E0E0),
+      color: IconTheme.of(context).color?.withValues(alpha: 0.2),
     );
   }
 }
@@ -604,11 +726,13 @@ class _BottomEntry extends StatelessWidget {
   final IconData icon;
   final String label;
   final VoidCallback onTap;
+  final ReaderTheme theme;
 
   const _BottomEntry({
     required this.icon,
     required this.label,
     required this.onTap,
+    required this.theme,
   });
 
   @override
@@ -621,11 +745,12 @@ class _BottomEntry extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: Colors.white, size: 22),
+            // 原来是写死的白色 —— 在护眼绿这类浅色主题下基本看不见
+            Icon(icon, color: theme.text, size: 22),
             const SizedBox(height: 4),
             Text(
               label,
-              style: const TextStyle(color: Colors.white70, fontSize: 11),
+              style: TextStyle(color: theme.secondaryText, fontSize: 11),
             ),
           ],
         ),

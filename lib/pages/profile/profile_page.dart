@@ -64,8 +64,11 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
         padding: EdgeInsets.zero,
         children: [
           _buildHeader(userProvider, themeProvider, isDark),
+          // 上移量必须小于 header 的底部留白（现 32），否则下面这张卡片
+          // 会盖住 header 底部的「今日阅读」胶囊。原来是 -26 对 -28，只差 2px，
+          // 稍微有点渲染误差就压上去了。
           Transform.translate(
-            offset: const Offset(0, -26),
+            offset: const Offset(0, -18),
             child: Column(
               children: [
                 _buildCommonSection(),
@@ -92,7 +95,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
 
     return Container(
       height: 280,
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 28),
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -142,8 +145,8 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 34,
-                            fontWeight: FontWeight.w800,
+                            fontSize: 26,
+                            fontWeight: FontWeight.w700,
                             letterSpacing: 0.5,
                           ),
                         ),

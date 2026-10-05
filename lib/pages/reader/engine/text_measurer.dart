@@ -15,6 +15,7 @@ class TextMeasurer {
     required double lineHeight,
     required double maxWidth,
     FontWeight fontWeight = FontWeight.normal,
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
     final painter = TextPainter(
       text: TextSpan(
@@ -27,6 +28,8 @@ class TextMeasurer {
       ),
       textDirection: TextDirection.ltr,
       maxLines: null,
+      // 与渲染端 Text widget 对齐（Text 默认应用 MediaQuery.textScalerOf）
+      textScaler: textScaler,
     )..layout(maxWidth: maxWidth);
     return painter.height;
   }
@@ -41,6 +44,7 @@ class TextMeasurer {
     required double lineHeight,
     required double maxWidth,
     FontWeight fontWeight = FontWeight.normal,
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
     final painter = TextPainter(
       text: TextSpan(
@@ -53,6 +57,7 @@ class TextMeasurer {
       ),
       textDirection: TextDirection.ltr,
       maxLines: null,
+      textScaler: textScaler,
     )..layout(maxWidth: maxWidth);
 
     final result = <LineInfo>[];
@@ -104,6 +109,7 @@ class TextMeasurer {
     required double fontSize,
     required double lineHeight,
     required double maxWidth,
+    TextScaler textScaler = TextScaler.noScaling,
   }) {
     final displayText =
         isTitle ? text : '${isContinuation ? '' : '\u3000\u3000'}$text';
@@ -114,7 +120,9 @@ class TextMeasurer {
       fontSize: isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize,
       lineHeight: isTitle ? PaginationEngine.titleLineHeight : lineHeight,
       maxWidth: maxWidth,
-      fontWeight: isTitle ? PaginationEngine.titleFontWeight : FontWeight.normal,
+      // 标题不再单独提字重 —— 字体只有 400/700 两档，中间档拿不到，
+      // 「比正文粗一点」由 content_renderer 的描边阴影负责。
+      textScaler: textScaler,
     );
   }
 }

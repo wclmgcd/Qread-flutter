@@ -702,6 +702,10 @@ class _ReaderPageState extends State<ReaderPage> {
         ? MediaQuery.of(context).padding.bottom
         : 0.0;
 
+    // 系统「字体大小」的缩放系数。渲染端的 Text 会自动应用它，分页端必须同步，
+    // 否则断行和行高都会算错（详见下面 paginate 的注释）。
+    final textScaler = MediaQuery.textScalerOf(context);
+
     final cacheKey = ChapterLayout.cacheKey(
       chapterIndex,
       content.hashCode,
@@ -712,6 +716,8 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.pageMode,
       fontFamily: _state.fontFamily,
       bold: _state.boldText,
+      // 系统字号变化会改变断行结果，必须进 key，否则会命中旧排版
+      textScale: textScaler.scale(1.0),
     );
 
     if (_state.layoutCache.containsKey(cacheKey)) {
@@ -735,6 +741,10 @@ class _ReaderPageState extends State<ReaderPage> {
       showBottomBar: _state.showBottomBar,
       fontFamily: _state.textFontFamily,
       fontWeight: _state.textFontWeight,
+      // 渲染端的 Text 会自动应用 MediaQuery.textScalerOf(context)（也就是系统的
+      // 「字体大小」设置），分页端不跟着缩放的话，行拆分和行高都会算错 ——
+      // 表现就是正文每行被二次换行截断，且总高度溢出压住页脚的时间/电量。
+      textScaler: textScaler,
     );
 
     _state.layoutCache[cacheKey] = layout;
@@ -1144,6 +1154,9 @@ class _ReaderPageState extends State<ReaderPage> {
                     ),
                   ),
                   ControllerOverlay(
+                    // 控制栏的底色/文字色跟随当前阅读主题
+                    // （原来是写死的黑色半透明，在浅色主题下会糊住正文）
+                    theme: _state.currentTheme,
                     data: ReaderControllerViewData(
                       bookName: provider.book?.name ?? '',
                       chapterTitle: _displayedChapter(provider)?.title ?? '',
@@ -1835,6 +1848,7 @@ class _ReaderPageState extends State<ReaderPage> {
       viewportSize: _state.pagedViewportSize ?? MediaQuery.of(context).size,
       safeTop: MediaQuery.of(context).padding.top,
       safeBottom: MediaQuery.of(context).padding.bottom,
+      textScaler: MediaQuery.textScalerOf(context),
     );
     setState(() {
       _state.paragraphs = layout.paragraphs;
@@ -2609,7 +2623,6 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 更多设置抽屉
   void _showMoreSettingsSheet(ReaderProvider provider) {
     final readerTheme = _state.currentTheme;
-    const accent = Color(0xFFFF9800);
 
     showModalBottomSheet(
       context: context,
@@ -2647,35 +2660,9 @@ class _ReaderPageState extends State<ReaderPage> {
                               color: readerTheme.text)),
                       const SizedBox(height: 12),
 
-                      // ---- 其余字体（主面板放不下的） ----
-                      _chipRow('字体', [
-                        for (final font in ReaderFont.extraPresets)
-                          _ChoiceChip(
-                            font.label,
-                            _state.fontFamily == font.id,
-                            () => commit(
-                                () => _state.fontFamily = font.id,
-                                rebuildPages: true),
-                            borderColor: readerTheme.divider,
-                            textColor: readerTheme.text,
-                            accentColor: accent,
-                          ),
-                      ]),
-
-                      // ---- 其它翻页模式（滚动 / 无） ----
-                      _chipRow('翻页', [
-                        for (final anim in PageAnimType.extraChoices)
-                          _ChoiceChip(
-                            anim.label,
-                            _state.pageAnimType == anim,
-                            () => commit(() {
-                              _state.applyPageAnimType(anim);
-                            }, rebuildPages: true),
-                            borderColor: readerTheme.divider,
-                            textColor: readerTheme.text,
-                            accentColor: accent,
-                          ),
-                      ]),
+                    // 「字体」和「翻页」两行已挪回主设置面板 —— 那里才是完整的
+                    // 选项列表（含宋体 / 滚动 / 无）。这里不再重复渲染，
+                    // 否则同一个设置在两个地方各出现一次，看起来像重复项。
 
                     // ---- 段评 ----
                     SwitchListTile(

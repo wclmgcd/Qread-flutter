@@ -249,6 +249,9 @@ class ChapterLayout {
   /// 生成缓存 key
   ///
   /// 字体族/字重也会影响换行结果，必须进 key，否则换字体后仍命中旧排版。
+  /// [textScale] 是系统「字体大小」的缩放系数（MediaQuery.textScalerOf），
+  /// 它直接决定每行能放几个字，也必须进 key —— Android 上调系统字号会触发
+  /// config change 并重建页面（不重启 App），key 里不带它就会命中旧排版。
   static String cacheKey(
     int chapterIndex,
     int contentHash,
@@ -259,12 +262,14 @@ class ChapterLayout {
     String pageMode, {
     String fontFamily = 'default',
     bool bold = false,
+    double textScale = 1.0,
   }) {
     return '$chapterIndex|$contentHash|'
         '${fontSize.toStringAsFixed(2)}|'
         '${lineHeight.toStringAsFixed(2)}|'
         '${width.toStringAsFixed(1)}|'
         '${height.toStringAsFixed(1)}|'
-        '$pageMode|$fontFamily|${bold ? 1 : 0}';
+        '$pageMode|$fontFamily|${bold ? 1 : 0}|'
+        '${textScale.toStringAsFixed(2)}';
   }
 }

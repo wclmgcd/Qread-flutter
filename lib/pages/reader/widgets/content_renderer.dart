@@ -516,8 +516,13 @@ class ContentRenderer {
     ValueChanged<ParagraphComment>? onCommentTap,
   }) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(horizontalPadding, topPadding,
-          horizontalPadding, showBottomBar ? 10.0 : 0.0),
+      padding: EdgeInsets.fromLTRB(
+        horizontalPadding,
+        topPadding,
+        horizontalPadding,
+        // 与分页引擎共用同一个常量，避免两处硬编码各走各的
+        showBottomBar ? PaginationEngine.defaultBottomPadding : 0.0,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -626,8 +631,8 @@ class ContentRenderer {
         isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize;
     final effectiveLineHeight =
         isTitle ? PaginationEngine.titleLineHeight : lineHeight;
-    final effectiveWeight =
-        isTitle ? PaginationEngine.titleFontWeight : fontWeight;
+    // 字重跟正文一致；标题的「轻微加粗」由下面的描边阴影实现
+    final effectiveWeight = fontWeight;
     final effectiveColor = isHighlighted ? theme.highlight : theme.text;
 
     // 首行缩进
@@ -645,6 +650,15 @@ class ContentRenderer {
       height: effectiveLineHeight,
       fontWeight: effectiveWeight,
       fontFamily: fontFamily,
+      // 标题叠一层同色偏移副本模拟 Medium 字重（详见 PaginationEngine 的注释）
+      shadows: isTitle
+          ? [
+              Shadow(
+                color: effectiveColor,
+                offset: PaginationEngine.titleBoldShadowOffset,
+              ),
+            ]
+          : null,
     );
 
     // 小气泡**行内跟随**：直接嵌在文字流末尾（和 3.41 一样紧贴前面的内容）。
@@ -708,8 +722,8 @@ class ContentRenderer {
         isTitle ? fontSize + PaginationEngine.titleFontSizeDelta : fontSize;
     final effectiveLineHeight =
         isTitle ? PaginationEngine.titleLineHeight : lineHeight;
-    final effectiveWeight =
-        isTitle ? PaginationEngine.titleFontWeight : fontWeight;
+    // 字重跟正文一致；标题的「轻微加粗」由下面的描边阴影实现
+    final effectiveWeight = fontWeight;
 
     // 首行缩进 / 段间距改为跟随阅读设置
     final indentChars = isTitle ? 0 : firstLineIndent.round();
@@ -758,6 +772,15 @@ class ContentRenderer {
               height: effectiveLineHeight,
               fontWeight: effectiveWeight,
               fontFamily: fontFamily,
+              // 标题叠一层同色偏移副本模拟 Medium 字重
+              shadows: isTitle
+                  ? [
+                      Shadow(
+                        color: theme.text,
+                        offset: PaginationEngine.titleBoldShadowOffset,
+                      ),
+                    ]
+                  : null,
             ),
           ),
         ),

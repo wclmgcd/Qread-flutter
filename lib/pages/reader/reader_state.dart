@@ -39,16 +39,16 @@ enum PageAnimType {
       this == PageAnimType.flipbook ||
       this == PageAnimType.none;
 
-  /// 主面板上直接展示的翻页模式
+  /// 主面板上直接展示的翻页模式。
+  ///
+  /// 【为什么「滚动」「无」挪进来了】原来这两个收在「更多设置」抽屉里，
+  /// 于是「翻页」在两处各有一份选项，看起来像重复设置。现在统一收到主面板，
+  /// 抽屉里不再出现「翻页」一行。
   static const List<PageAnimType> primaryChoices = [
     PageAnimType.cover,
     PageAnimType.simulation,
     PageAnimType.flipbook,
     PageAnimType.slide,
-  ];
-
-  /// 收在「更多设置」里的翻页模式
-  static const List<PageAnimType> extraChoices = [
     PageAnimType.scroll,
     PageAnimType.none,
   ];

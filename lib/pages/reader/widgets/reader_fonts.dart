@@ -33,24 +33,22 @@ class ReaderFont {
 
   /// 主面板「字体」一行直接展示的选项。
   ///
-  /// 顺序与官方客户端一致：默认 / 谷歌 / 黑体 / 圆体。
+  /// 顺序与官方客户端一致：默认 / 谷歌 / 黑体 / 宋体 / 圆体。
+  ///
+  /// 【为什么「宋体」挪进来了】原来它单独收在「更多设置」抽屉里，于是
+  /// 主面板的「字体」和抽屉里的「字体」各有一份选项 —— 用户要在两个地方找
+  /// 同一个设置，看起来就像设置项重复了。现在全部收进主面板，
+  /// 抽屉里不再出现「字体」一行。
   static const List<ReaderFont> presets = [
     ReaderFont('default', '默认', null),
     ReaderFont('google', '谷歌', 'ReaderSans'),
     ReaderFont('heiti', '黑体', 'sans-serif'),
+    ReaderFont('song', '宋体', 'ReaderSerif'),
     ReaderFont('round', '圆体', 'ReaderRound'),
   ];
 
-  /// 主面板放不下、收在「更多设置」里的字体
-  static const List<ReaderFont> extraPresets = [
-    ReaderFont('song', '宋体', 'ReaderSerif'),
-  ];
-
   /// 全部可选字体
-  static const List<ReaderFont> all = [
-    ...presets,
-    ...extraPresets,
-  ];
+  static const List<ReaderFont> all = presets;
 
   /// 历史版本用过的 id，做一次兼容映射，避免升级后设置被打回默认
   static const Map<String, String> _legacyIds = {
