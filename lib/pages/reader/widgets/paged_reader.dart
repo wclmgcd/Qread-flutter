@@ -62,6 +62,9 @@ class PagedReader extends StatefulWidget {
   final double paragraphSpacing;
   final double firstLineIndent;
   final PageAnimType animType;
+  final String? fontFamily;
+  final FontWeight fontWeight;
+  final ValueChanged<ParagraphComment>? onCommentTap;
 
   const PagedReader({
     Key? key,
@@ -86,6 +89,9 @@ class PagedReader extends StatefulWidget {
     this.paragraphSpacing = 10.0,
     this.firstLineIndent = 2.0,
     this.animType = PageAnimType.cover,
+    this.fontFamily,
+    this.fontWeight = FontWeight.normal,
+    this.onCommentTap,
   }) : super(key: key);
 
   @override
@@ -124,6 +130,7 @@ class _PagedReaderState extends State<PagedReader>
   bool get _usesManualPaging =>
       widget.animType == PageAnimType.cover ||
       widget.animType == PageAnimType.simulation ||
+      widget.animType == PageAnimType.flipbook ||
       widget.animType == PageAnimType.none;
 
   bool get _isTurning =>
@@ -203,6 +210,8 @@ class _PagedReaderState extends State<PagedReader>
       widget.showTopBar,
       widget.showBottomBar,
       widget.showPageNumber,
+      widget.fontFamily,
+      widget.fontWeight,
     );
   }
 
@@ -384,6 +393,9 @@ class _PagedReaderState extends State<PagedReader>
         topPadding: widget.topPadding,
         paragraphSpacing: widget.paragraphSpacing,
         firstLineIndent: widget.firstLineIndent,
+        fontFamily: widget.fontFamily,
+        fontWeight: widget.fontWeight,
+        onCommentTap: widget.onCommentTap,
       ),
     );
   }
@@ -514,6 +526,8 @@ class _PagedReaderState extends State<PagedReader>
                 _buildCoverCurrentLayer(size, currentChild)
               else if (widget.animType == PageAnimType.simulation)
                 _buildSimulationLayer(size, currentChild)
+              else if (widget.animType == PageAnimType.flipbook)
+                _buildFlipbookCurrentLayer(size, currentChild)
               else
                 currentChild,
             ],
@@ -529,6 +543,11 @@ class _PagedReaderState extends State<PagedReader>
     }
 
     if (widget.animType == PageAnimType.simulation) {
+      return targetChild;
+    }
+
+    // 翻书：目标页整页垫在下面，上层当前页绕书脊转出去
+    if (widget.animType == PageAnimType.flipbook) {
       return targetChild;
     }
 
@@ -567,6 +586,26 @@ class _PagedReaderState extends State<PagedReader>
         child: currentChild,
         opacity: shadow,
         alignAtTrailingEdge: _turnDirection > 0,
+      ),
+    );
+  }
+
+  /// 翻书：当前页绕书脊（左/右边缘）做带透视的 Y 轴旋转
+  Widget _buildFlipbookCurrentLayer(Size size, Widget currentChild) {
+    final direction = _turnDirection >= 0 ? 1 : -1;
+    final angle = -direction * _progress * (math.pi / 2);
+    final transform = Matrix4.identity()
+      ..setEntry(3, 2, 0.0015)
+      ..rotateY(angle);
+    final shadow = (_progress * 0.35).clamp(0.0, 0.35);
+    return Transform(
+      alignment:
+          direction > 0 ? Alignment.centerLeft : Alignment.centerRight,
+      transform: transform,
+      child: _edgeShadow(
+        child: currentChild,
+        opacity: shadow,
+        alignAtTrailingEdge: direction > 0,
       ),
     );
   }

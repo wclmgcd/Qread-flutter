@@ -24,6 +24,9 @@ class ScrollReader extends StatelessWidget {
   final double topPadding;
   final double paragraphSpacing;
   final double firstLineIndent;
+  final String? fontFamily;
+  final FontWeight fontWeight;
+  final ValueChanged<ParagraphComment>? onCommentTap;
 
   const ScrollReader({
     Key? key,
@@ -41,6 +44,9 @@ class ScrollReader extends StatelessWidget {
     this.topPadding = 18.0,
     this.paragraphSpacing = 10.0,
     this.firstLineIndent = 2.0,
+    this.fontFamily,
+    this.fontWeight = FontWeight.normal,
+    this.onCommentTap,
   }) : super(key: key);
 
   @override
@@ -69,6 +75,9 @@ class ScrollReader extends StatelessWidget {
             ttsParagraphIndex: ttsParagraphIndex,
             paragraphSpacing: paragraphSpacing,
             firstLineIndent: firstLineIndent,
+            fontFamily: fontFamily,
+            fontWeight: fontWeight,
+            onCommentTap: onCommentTap,
           ),
           const SizedBox(height: 14),
           Expanded(
@@ -85,6 +94,9 @@ class ScrollReader extends StatelessWidget {
                   ttsParagraphIndex: ttsParagraphIndex,
                   paragraphSpacing: paragraphSpacing,
                   firstLineIndent: firstLineIndent,
+                  fontFamily: fontFamily,
+                  fontWeight: fontWeight,
+                  onCommentTap: onCommentTap,
                 );
               },
             ),
@@ -97,27 +109,23 @@ class ScrollReader extends StatelessWidget {
   }
 
   Widget _buildFooter() {
+    final style = TextStyle(
+      fontSize: 11,
+      color: theme.secondaryText,
+      fontFamily: fontFamily,
+    );
     return Row(
       children: [
-        Text(
-          timeLabel,
-          style: TextStyle(fontSize: 11, color: theme.secondaryText),
-        ),
+        Text(timeLabel, style: style),
         const Spacer(),
-        Text(
-          pageIndicator,
-          style: TextStyle(fontSize: 11, color: theme.secondaryText),
-        ),
+        Text(pageIndicator, style: style),
         const Spacer(),
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(Icons.battery_std, size: 13, color: theme.secondaryText),
             const SizedBox(width: 4),
-            Text(
-              batteryLabel,
-              style: TextStyle(fontSize: 11, color: theme.secondaryText),
-            ),
+            Text(batteryLabel, style: style),
           ],
         ),
       ],

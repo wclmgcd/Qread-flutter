@@ -14,10 +14,13 @@ import '../../providers/reader_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/browsing_history_service.dart';
+import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
 import '../../services/tts_service.dart';
 import 'engine/engine.dart';
+import 'paragraph_comment_page.dart';
 import 'reader_state.dart';
+import 'widgets/reader_fonts.dart';
 import 'widgets/widgets.dart';
 
 class ReaderPage extends StatefulWidget {
@@ -46,6 +49,10 @@ class _ReaderPageState extends State<ReaderPage> {
   static const _keyHorizontalPadding = 'reader_horizontal_padding';
   static const _keyTopPadding = 'reader_top_padding';
   static const _keyPageAnimType = 'reader_page_anim_type';
+  static const _keyBrightness = 'reader_brightness';
+  static const _keyFontFamily = 'reader_font_family';
+  static const _keyBoldText = 'reader_bold_text';
+  static const _keyShowParagraphComment = 'reader_show_paragraph_comment';
 
   late PageController _pageController;
   final PagedReaderController _pagedReaderController = PagedReaderController();
@@ -59,6 +66,8 @@ class _ReaderPageState extends State<ReaderPage> {
   Timer? _metaTimer;
   Timer? _autoPageTimer;
   Timer? _ttsSleepTimer;
+  StreamSubscription<WsPushMessage>? _wsSubscription;
+  bool _openingCommentPage = false;
 
   String? _token;
   String? _bookUrl;
@@ -78,6 +87,7 @@ class _ReaderPageState extends State<ReaderPage> {
     _comicScrollController.addListener(_onComicScroll);
     _tts.addListener(_onTtsStateChanged);
     _startMetaTicker();
+    _listenBackendPush();
     WidgetsBinding.instance.addPostFrameCallback((_) => _initBook());
   }
 
@@ -87,6 +97,8 @@ class _ReaderPageState extends State<ReaderPage> {
     _metaTimer?.cancel();
     _autoPageTimer?.cancel();
     _ttsSleepTimer?.cancel();
+    _wsSubscription?.cancel();
+    ReaderWsService.instance.onToast = null;
     _comicScrollController.removeListener(_onComicScroll);
     _comicScrollController.dispose();
     _novelScrollController.dispose();
@@ -97,6 +109,104 @@ class _ReaderPageState extends State<ReaderPage> {
     _saveProgressSync();
     unawaited(ReadingStatsService.instance.endSession());
     super.dispose();
+  }
+
+  // ============================================================
+  // 后端推送（段评 / 书源交互）
+  // ============================================================
+
+  void _listenBackendPush() {
+    _wsSubscription?.cancel();
+    _wsSubscription =
+        ReaderWsService.instance.pushStream.listen(_onBackendPush);
+    ReaderWsService.instance.onToast = (message) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+      );
+    };
+  }
+
+  void _onBackendPush(WsPushMessage message) {
+    if (!mounted) return;
+    if (!message.isOpenPage) return;
+    if (message.url.trim().isEmpty) return;
+
+    // 段评页用「段评」标题，其它（登录页/验证码）用后端给的标题
+    final title = message.title.trim().isEmpty ? '段评' : message.title.trim();
+    _openingCommentPage = false;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ParagraphCommentPage(
+          url: message.url,
+          title: title,
+          headers: message.headerMap,
+          requestId: message.id,
+          token: _token,
+        ),
+      ),
+    );
+  }
+
+  /// 点击正文里的段评气泡
+  ///
+  /// 气泡自带 `click`（形如 `showCmt(bid,cid,pid,ts)`），
+  /// 把它包成 JS 规则交给后端执行，后端执行完会通过 WebSocket 把
+  /// 段评页 URL 推回来（见 [_onBackendPush]）。
+  Future<void> _openParagraphComment(ParagraphComment comment) async {
+    final token = _token;
+    if (token == null) return;
+    if (!comment.isTappable) return;
+    if (_openingCommentPage) return;
+    final provider = context.read<ReaderProvider>();
+    final source = provider.book?.origin ?? provider.book?.originName ?? '';
+    final bookUrl = _bookUrl ?? provider.book?.bookUrl ?? '';
+
+    _openingCommentPage = true;
+    try {
+      final resolved = await ApiService.instance.getOpenUrl(
+        token,
+        bookSourceUrl: source,
+        url: '<js>${comment.click}</js>',
+        bookurl: bookUrl,
+      );
+      if (!mounted) return;
+      // 正常情况下后端已经通过 WebSocket 推了 startBrowser，
+      // 这里只做兜底：拿到可用的 http(s) 地址就直接打开。
+      final usable = resolved.startsWith('http') && !resolved.endsWith('/null');
+      if (usable && _openingCommentPage) {
+        _openingCommentPage = false;
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ParagraphCommentPage(
+              url: resolved,
+              title: '段评',
+              token: token,
+            ),
+          ),
+        );
+        return;
+      }
+      // 没拿到可用地址，且 WebSocket 也没推（_openingCommentPage 仍为 true）
+      if (_openingCommentPage) {
+        _openingCommentPage = false;
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('段评打开失败，请检查后端连接'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      _openingCommentPage = false;
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).clearSnackBars();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('段评打开失败: $e')),
+      );
+    }
   }
 
   // ============================================================
@@ -122,6 +232,11 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.firstLineIndent = prefs.getDouble(_keyFirstLineIndent) ?? 2.0;
       _state.horizontalPadding = prefs.getDouble(_keyHorizontalPadding) ?? 24.0;
       _state.topPadding = prefs.getDouble(_keyTopPadding) ?? 18.0;
+      _state.brightness = prefs.getDouble(_keyBrightness) ?? 1.0;
+      _state.fontFamily = prefs.getString(_keyFontFamily) ?? 'default';
+      _state.boldText = prefs.getBool(_keyBoldText) ?? false;
+      _state.showParagraphComment =
+          prefs.getBool(_keyShowParagraphComment) ?? true;
       final rawAnimType = prefs.get(_keyPageAnimType);
       if (rawAnimType is String) {
         _state.applyPageAnimType(PageAnimType.fromId(rawAnimType));
@@ -156,6 +271,10 @@ class _ReaderPageState extends State<ReaderPage> {
     await prefs.setDouble(_keyHorizontalPadding, _state.horizontalPadding);
     await prefs.setDouble(_keyTopPadding, _state.topPadding);
     await prefs.setString(_keyPageAnimType, _state.pageAnimType.id);
+    await prefs.setDouble(_keyBrightness, _state.brightness);
+    await prefs.setString(_keyFontFamily, _state.fontFamily);
+    await prefs.setBool(_keyBoldText, _state.boldText);
+    await prefs.setBool(_keyShowParagraphComment, _state.showParagraphComment);
   }
 
   // ============================================================
@@ -198,6 +317,8 @@ class _ReaderPageState extends State<ReaderPage> {
     _state.isComic = book.type == 2;
     _bookUrl = book.bookUrl;
     _tts.init();
+    // 段评靠后端 WebSocket 推送，进阅读页就把长连接拉起来
+    unawaited(ReaderWsService.instance.connect(_token));
     final provider = context.read<ReaderProvider>();
     _readerProvider = provider;
     provider.setBook(book);
@@ -533,6 +654,8 @@ class _ReaderPageState extends State<ReaderPage> {
       size.width,
       size.height,
       _state.pageMode,
+      fontFamily: _state.fontFamily,
+      bold: _state.boldText,
     );
 
     if (_state.layoutCache.containsKey(cacheKey)) {
@@ -554,6 +677,8 @@ class _ReaderPageState extends State<ReaderPage> {
       topPadding: _state.topPadding,
       showTopBar: _state.showTopBar,
       showBottomBar: _state.showBottomBar,
+      fontFamily: _state.textFontFamily,
+      fontWeight: _state.textFontWeight,
     );
 
     _state.layoutCache[cacheKey] = layout;
@@ -659,6 +784,8 @@ class _ReaderPageState extends State<ReaderPage> {
         return const Duration(milliseconds: 240);
       case PageAnimType.simulation:
         return const Duration(milliseconds: 320);
+      case PageAnimType.flipbook:
+        return const Duration(milliseconds: 340);
       case PageAnimType.none:
         return Duration.zero;
       case PageAnimType.cover:
@@ -675,6 +802,8 @@ class _ReaderPageState extends State<ReaderPage> {
         return Curves.easeOut;
       case PageAnimType.simulation:
         return Curves.easeInOutCubic;
+      case PageAnimType.flipbook:
+        return Curves.easeInOutCubic;
       case PageAnimType.scroll:
       case PageAnimType.none:
         return Curves.easeOut;
@@ -682,9 +811,7 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   void _moveToPage(int pageIndex) {
-    if (_state.pageAnimType == PageAnimType.cover ||
-        _state.pageAnimType == PageAnimType.simulation ||
-        _state.pageAnimType == PageAnimType.none) {
+    if (_state.pageAnimType.usesManualPaging) {
       if (_state.pageAnimType.instantTurn) {
         _pagedReaderController.jumpToPage(pageIndex);
       } else {
@@ -920,6 +1047,15 @@ class _ReaderPageState extends State<ReaderPage> {
                   child: _buildContent(provider),
                 ),
               ),
+              // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区
+              if (_state.dimOpacity > 0)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: ColoredBox(
+                      color: Colors.black.withValues(alpha: _state.dimOpacity),
+                    ),
+                  ),
+                ),
               if (_state.showController) ...[
                 Positioned.fill(
                   child: GestureDetector(
@@ -1154,6 +1290,10 @@ class _ReaderPageState extends State<ReaderPage> {
           paragraphSpacing: _state.paragraphSpacing,
           firstLineIndent: _state.firstLineIndent,
           animType: _state.pageAnimType,
+          fontFamily: _state.textFontFamily,
+          fontWeight: _state.textFontWeight,
+          onCommentTap:
+              _state.showParagraphComment ? _openParagraphComment : null,
           onPageChanged: (page) {
             final position =
                 _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
@@ -1191,6 +1331,10 @@ class _ReaderPageState extends State<ReaderPage> {
       topPadding: _state.topPadding,
       paragraphSpacing: _state.paragraphSpacing,
       firstLineIndent: _state.firstLineIndent,
+      fontFamily: _state.textFontFamily,
+      fontWeight: _state.textFontWeight,
+      onCommentTap:
+          _state.showParagraphComment ? _openParagraphComment : null,
     );
   }
 
@@ -1970,144 +2114,200 @@ class _ReaderPageState extends State<ReaderPage> {
 
             return SafeArea(
               top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // 拖拽指示条
-                    Center(
-                      child: Container(
-                        width: 36,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(2),
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // 拖拽指示条
+                      Center(
+                        child: Container(
+                          width: 36,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
-                    ),
 
-                    // ---- 字号 ----
-                    _SettingRow(
-                      label: '字号',
-                      value: _state.fontSize.round().toString(),
-                      child: Slider(
-                        value: _state.fontSize,
-                        min: 12,
-                        max: 32,
-                        divisions: 20,
-                        label: _state.fontSize.round().toString(),
-                        onChanged: (v) => commit(() => _state.fontSize = v,
-                            rebuildPages: true),
+                      // ---- 亮度 ----
+                      _SettingRow(
+                        label: '亮度',
+                        value: '${(_state.brightness * 100).round()}%',
+                        child: Slider(
+                          value: _state.brightness.clamp(0.1, 1.0),
+                          min: 0.1,
+                          max: 1.0,
+                          divisions: 18,
+                          onChanged: (v) =>
+                              commit(() => _state.brightness = v),
+                        ),
                       ),
-                    ),
 
-                    const SizedBox(height: 8),
+                      const SizedBox(height: 8),
 
-                    // ---- 翻页动画 ----
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('翻页', style: TextStyle(fontSize: 14)),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            children: [
-                              for (final anim in PageAnimType.values)
-                                _ChoiceChip(
-                                  _pageAnimLabel(anim),
-                                  _state.pageAnimType == anim,
-                                  () => commit(() {
-                                    _state.applyPageAnimType(anim);
-                                  }, rebuildPages: true),
-                                ),
-                            ],
+                      // ---- 字号 ----
+                      _chipRow('字号', [
+                        _ChoiceChip('A-', false, () {
+                          final next = (_state.fontSize - 2).clamp(12.0, 32.0);
+                          commit(() => _state.fontSize = next,
+                              rebuildPages: true);
+                        }),
+                        _ChoiceChip('A+', false, () {
+                          final next = (_state.fontSize + 2).clamp(12.0, 32.0);
+                          commit(() => _state.fontSize = next,
+                              rebuildPages: true);
+                        }),
+                        _ChoiceChip(
+                          _state.boldText ? '粗' : '细',
+                          _state.boldText,
+                          () => commit(() => _state.boldText = !_state.boldText,
+                              rebuildPages: true),
+                        ),
+                        // 当前字号数值，纯展示
+                        Padding(
+                          padding: const EdgeInsets.only(left: 4),
+                          child: Text(
+                            '${_state.fontSize.round()}',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Colors.grey.shade600,
+                            ),
                           ),
-                        ],
-                      ),
-                    ),
+                        ),
+                      ]),
 
-                    const SizedBox(height: 8),
+                      const SizedBox(height: 8),
 
-                    // ---- 背景主题 ----
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('背景', style: TextStyle(fontSize: 14)),
-                          const SizedBox(height: 8),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 8,
-                            children: [
-                              for (final preset in ReaderTheme.presets)
+                      // ---- 字体 ----
+                      _chipRow('字体', [
+                        for (final font in ReaderFont.presets)
+                          _ChoiceChip(
+                            font.label,
+                            _state.fontFamily == font.id,
+                            () => commit(
+                                () => _state.fontFamily = font.id,
+                                rebuildPages: true),
+                          ),
+                      ]),
+
+                      const SizedBox(height: 8),
+
+                      // ---- 翻页 ----
+                      _chipRow('翻页', [
+                        for (final anim in PageAnimType.primaryChoices)
+                          _ChoiceChip(
+                            anim.label,
+                            _state.pageAnimType == anim,
+                            () => commit(() {
+                              _state.applyPageAnimType(anim);
+                            }, rebuildPages: true),
+                          ),
+                      ]),
+
+                      const SizedBox(height: 8),
+
+                      // ---- 背景主题 ----
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('背景', style: TextStyle(fontSize: 14)),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
+                              children: [
+                                for (final preset in ReaderTheme.presets)
+                                  _ThemeColorDot(
+                                    label: ReaderTheme.displayName(preset.name),
+                                    color: preset.background,
+                                    selected: _state.theme == preset.name,
+                                    onTap: () => commit(
+                                        () => _state.theme = preset.name),
+                                  ),
+                                // 自定义颜色
                                 _ThemeColorDot(
-                                  label: ReaderTheme.displayName(preset.name),
-                                  color: preset.background,
-                                  selected: _state.theme == preset.name,
-                                  onTap: () =>
-                                      commit(() => _state.theme = preset.name),
+                                  label: '自定义',
+                                  color: _state.theme.startsWith('custom_')
+                                      ? _state.currentTheme.background
+                                      : Colors.grey.shade300,
+                                  selected: _state.theme.startsWith('custom_'),
+                                  onTap: () async {
+                                    final color = await _showColorPicker(
+                                      _state.currentTheme.background,
+                                    );
+                                    if (color != null) {
+                                      final theme = ReaderTheme.custom(color);
+                                      commit(() => _state.theme = theme.name);
+                                    }
+                                  },
+                                  isCustom: true,
                                 ),
-                              // 自定义颜色
-                              _ThemeColorDot(
-                                label: '自定义',
-                                color: _state.theme.startsWith('custom_')
-                                    ? _state.currentTheme.background
-                                    : Colors.grey.shade300,
-                                selected: _state.theme.startsWith('custom_'),
-                                onTap: () async {
-                                  final color = await _showColorPicker(
-                                    _state.currentTheme.background,
-                                  );
-                                  if (color != null) {
-                                    final theme = ReaderTheme.custom(color);
-                                    commit(() => _state.theme = theme.name);
-                                  }
-                                },
-                                isCustom: true,
-                              ),
-                            ],
-                          ),
-                        ],
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
 
-                    const Divider(height: 20),
+                      const Divider(height: 20),
 
-                    // ---- 间距设置入口 ----
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('间距设置'),
-                      trailing: const Icon(Icons.chevron_right, size: 20),
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _showSpacingSettingsSheet(provider);
-                      },
-                    ),
+                      // ---- 间距设置入口 ----
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('间距设置'),
+                        trailing: const Icon(Icons.chevron_right, size: 20),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          _showSpacingSettingsSheet(provider);
+                        },
+                      ),
 
-                    // ---- 更多设置入口 ----
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('更多设置'),
-                      trailing: const Icon(Icons.chevron_right, size: 20),
-                      onTap: () {
-                        Navigator.pop(sheetContext);
-                        _showMoreSettingsSheet(provider);
-                      },
-                    ),
-                  ],
+                      // ---- 更多设置入口 ----
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('更多设置'),
+                        trailing: const Icon(Icons.chevron_right, size: 20),
+                        onTap: () {
+                          Navigator.pop(sheetContext);
+                          _showMoreSettingsSheet(provider);
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
           },
         );
       },
+    );
+  }
+
+  /// 「标签 + 一行可换行的胶囊按钮」布局
+  Widget _chipRow(String label, List<Widget> chips) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 44,
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Text(label, style: const TextStyle(fontSize: 14)),
+            ),
+          ),
+          Expanded(
+            child: Wrap(spacing: 8, runSpacing: 6, children: chips),
+          ),
+        ],
+      ),
     );
   }
 
@@ -2289,6 +2489,30 @@ class _ReaderPageState extends State<ReaderPage> {
                         style: TextStyle(
                             fontSize: 18, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 8),
+
+                    // ---- 其它翻页模式（滚动 / 无） ----
+                    _chipRow('翻页', [
+                      for (final anim in PageAnimType.extraChoices)
+                        _ChoiceChip(
+                          anim.label,
+                          _state.pageAnimType == anim,
+                          () => commit(() {
+                            _state.applyPageAnimType(anim);
+                          }, rebuildPages: true),
+                        ),
+                    ]),
+
+                    // ---- 段评 ----
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('显示段评'),
+                      subtitle: const Text('正文里内联的段评气泡',
+                          style: TextStyle(fontSize: 12)),
+                      value: _state.showParagraphComment,
+                      onChanged: (v) => commit(
+                          () => _state.showParagraphComment = v,
+                          rebuildPages: true),
+                    ),
 
                     // ---- 屏幕常亮 ----
                     SwitchListTile(
@@ -2681,22 +2905,6 @@ class _ReaderPageState extends State<ReaderPage> {
   void _applyWakelock() {
     // wakelock 屏幕常亮——后续可接入 wakelock_plus 插件
     // 当前为占位方法，预留设置入口
-  }
-
-  /// 翻页动画类型显示名
-  String _pageAnimLabel(PageAnimType type) {
-    switch (type) {
-      case PageAnimType.cover:
-        return '覆盖';
-      case PageAnimType.slide:
-        return '滑动';
-      case PageAnimType.simulation:
-        return '仿真';
-      case PageAnimType.scroll:
-        return '滚动';
-      case PageAnimType.none:
-        return '无';
-    }
   }
 
   /// 显示颜色选择器

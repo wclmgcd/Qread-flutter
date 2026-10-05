@@ -243,6 +243,39 @@ class ApiService {
     return resp.data['data'] ?? {};
   }
 
+  // ============ 段评 / 书源交互 ============
+
+  /// 执行书源里的一个 JS 表达式并取回它解析出的 URL。
+  ///
+  /// 段评就是靠这个：正文气泡带着 `click: "showCmt(...)"`，
+  /// 客户端把 `<js>showCmt(...)</js>` 交给后端执行，
+  /// 书源 JS 内部会调 `java.startBrowserDp/startBrowser`，
+  /// 后端再把要打开的网页通过 WebSocket 推回来。
+  Future<String> getOpenUrl(
+    String accessToken, {
+    required String bookSourceUrl,
+    required String url,
+    String? bookurl,
+  }) async {
+    final resp = await _dio.get('/getopenurl', queryParameters: {
+      'accessToken': accessToken,
+      'bookSourceUrl': bookSourceUrl,
+      'url': url,
+      if (bookurl != null) 'bookurl': bookurl,
+    });
+    return resp.data['data']?.toString() ?? '';
+  }
+
+  /// 给后端的 WebView / 浏览器请求回执，释放服务端 `WaitForResponse`。
+  Future<void> saveHtml(String accessToken,
+      {required String id, String html = ''}) async {
+    await _dio.post('/savehtml', queryParameters: {
+      'accessToken': accessToken,
+      'id': id,
+      'html': html,
+    });
+  }
+
   // ============ 搜索 ============
 
   Future<List<SearchResult>> searchBook(String accessToken, String keyword,

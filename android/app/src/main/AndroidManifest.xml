@@ -27,6 +27,33 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- 【修复】关闭 Impeller，回退到 Skia。
+             Android 上 Flutter 默认用 Impeller（Vulkan 后端）。部分 GPU 驱动上
+             字形图集/纹理采样精度出问题，整屏文字会碎裂、错位、重叠，锁屏再
+             解锁（重建 surface）后又能恢复 —— 正是用户反馈的「字体重叠模糊」。
+             关掉后走 Skia，文字渲染稳定。
+
+             【为什么必须是这个 meta-data】
+             `flutter build apk --no-enable-impeller` 在 release 构建里会被忽略
+             （flutter_tools 会打印 "The ... flag is ignored in release builds"），
+             所以只能写在 manifest 里。引擎侧对应
+             FlutterEngineFlags.ENABLE_IMPELLER：metadataKey 前缀固定为
+             io.flutter.embedding.android.，且 allowedInRelease = true，
+             因此 release 包同样生效。
+
+             【怎么确认生效】
+             adb logcat | findstr /C:"Impeller"
+             - 关掉后：不应再出现 "Using the Impeller rendering backend (Vulkan)"
+             - 若仍出现，先 flutter clean 再重新打包（manifest 会被 Gradle 缓存）
+
+             【如果不想完全放弃 Impeller】
+             可以只把后端从 Vulkan 换成 OpenGLES（同样是 release 可用）：
+             <meta-data android:name="io.flutter.embedding.android.ImpellerBackend"
+                        android:value="opengles" />
+             上面的 EnableImpeller=false 优先级更高，二选一即可。 -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -63,3 +63,6 @@ Thumbs.db
 Qread-source
 output
 legado-source
+
+# 内置字体的全量源文件缓存（约 92 MB，由 tool/subset_fonts.py 下载）
+tool/.fonts-src/

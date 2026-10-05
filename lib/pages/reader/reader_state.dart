@@ -1,30 +1,62 @@
 import 'package:flutter/material.dart';
 
 import 'engine/engine.dart';
+import 'widgets/reader_fonts.dart';
 import 'widgets/reader_theme.dart';
 import 'widgets/controller_overlay.dart';
 
 /// 翻页动画类型
+///
+/// 与设置面板「翻页」一行对应：
+/// 覆盖 / 仿真 / 翻书 / 左右 是主选项，滚动 / 无 收在「更多设置」里。
 enum PageAnimType {
-  cover('cover'), // 覆盖
-  slide('slide'), // 滑动
-  simulation('simulation'), // 仿真
-  scroll('scroll'), // 滚动
-  none('none'); // 无
+  cover('cover', '覆盖'),
+  simulation('simulation', '仿真'),
+  flipbook('flipbook', '翻书'),
+  slide('slide', '左右'),
+  scroll('scroll', '滚动'),
+  none('none', '无');
 
-  const PageAnimType(this.id);
+  const PageAnimType(this.id, this.label);
 
   final String id;
+  final String label;
 
+  /// 是否走竖向滚动的 ScrollReader（只有「滚动」）
   bool get usesScrollReader => this == PageAnimType.scroll;
 
+  /// 是否瞬间切换（无动画）
   bool get instantTurn => this == PageAnimType.none;
 
   Axis get axis => Axis.horizontal;
 
   bool get disableUserScroll => this == PageAnimType.none;
 
+  /// 是否走手势驱动的「手动分页」渲染（覆盖 / 仿真 / 翻书 / 无）
+  bool get usesManualPaging =>
+      this == PageAnimType.cover ||
+      this == PageAnimType.simulation ||
+      this == PageAnimType.flipbook ||
+      this == PageAnimType.none;
+
+  /// 主面板上直接展示的翻页模式
+  static const List<PageAnimType> primaryChoices = [
+    PageAnimType.cover,
+    PageAnimType.simulation,
+    PageAnimType.flipbook,
+    PageAnimType.slide,
+  ];
+
+  /// 收在「更多设置」里的翻页模式
+  static const List<PageAnimType> extraChoices = [
+    PageAnimType.scroll,
+    PageAnimType.none,
+  ];
+
   static PageAnimType fromId(String? id) {
+    // 兼容历史配置：旧版本把「仿真」存成 book、左右存成 horizontal、
+    // 滚动存成 vertical。注意 'vertical' 现在仍然映射到 scroll，
+    // 因为新的翻页枚举里没有单独的「上下」。
     switch (id) {
       case 'book':
         return PageAnimType.simulation;
@@ -39,6 +71,7 @@ enum PageAnimType {
     return PageAnimType.cover;
   }
 
+  /// 旧版本按序号存的是 int
   static PageAnimType fromLegacyIndex(int index) {
     switch (index) {
       case 0:
@@ -77,6 +110,19 @@ class ReaderState with ChangeNotifier {
   String theme = 'light';
   String pageMode = 'paged';
   PageAnimType pageAnimType = PageAnimType.cover;
+
+  /// 屏幕亮度（1.0 = 不压暗，0.1 = 最暗）。
+  /// 实现方式是盖一层黑色蒙版，不动系统亮度。
+  double brightness = 1.0;
+
+  /// 字体 id，见 widgets/reader_fonts.dart
+  String fontFamily = 'default';
+
+  /// 正文加粗
+  bool boldText = false;
+
+  /// 段评（段落评论）：是否在正文里显示并允许点击气泡
+  bool showParagraphComment = true;
 
   // ---- 更多设置（默认值） ----
   bool screenWakelock = true; // 屏幕常亮
@@ -147,6 +193,16 @@ class ReaderState with ChangeNotifier {
   // ---- 便捷方法 ----
 
   ReaderTheme get currentTheme => ReaderTheme.byName(theme);
+
+  /// 当前正文字体族（null = 系统默认）
+  String? get textFontFamily => ReaderFont.familyOf(fontFamily);
+
+  /// 正文字重
+  FontWeight get textFontWeight =>
+      boldText ? FontWeight.w600 : FontWeight.normal;
+
+  /// 屏幕压暗蒙版透明度（0 = 不压暗）
+  double get dimOpacity => ((1.0 - brightness) * 0.85).clamp(0.0, 0.85);
 
   bool get isScrollMode => isComic || pageAnimType.usesScrollReader;
 

@@ -61,3 +61,37 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+
+  # 阅读器内置中文字体（设置面板「字体」一行对应 reader_fonts.dart）
+  #
+  # 三个字族都是「GB2312 全集 + 常用标点/符号」子集化后的产物，共约 20.9 MB：
+  #   ReaderSans  ← Noto Sans SC   (OFL-1.1)  面板「谷歌」= 谷歌思源黑体
+  #   ReaderSerif ← Noto Serif SC  (OFL-1.1)  面板「宋体」= 思源宋体
+  #   ReaderRound ← 悠哉字体 Yozai  (OFL-1.1)  面板「圆体」= 圆润字体
+  # 之所以要内置而不是用系统字体：Android 上不指定 fontFamily 时 Flutter 会按
+  # 字符逐个走系统回退字体，同一段正文里会混进黑体/宋体，观感就是「字体不一」。
+  #
+  # 每个字族都带 400 / 700 两个真实字重文件，「粗细」开关改 FontWeight 即可命中，
+  # 不走 Skia 的合成加粗（合成加粗在中文上容易糊）。
+  #
+  # 子集/实例化流程见 doc/fonts.md，重新生成用 tool/subset_fonts.py，
+  # 请勿手改本段文件名。
+  fonts:
+    - family: ReaderSans
+      fonts:
+        - asset: assets/fonts/ReaderSans-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/ReaderSans-Bold.ttf
+          weight: 700
+    - family: ReaderSerif
+      fonts:
+        - asset: assets/fonts/ReaderSerif-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/ReaderSerif-Bold.ttf
+          weight: 700
+    - family: ReaderRound
+      fonts:
+        - asset: assets/fonts/ReaderRound-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/ReaderRound-Bold.ttf
+          weight: 700
