@@ -36,6 +36,28 @@ class SourceManageProvider extends ChangeNotifier {
   int get enabledCount => _sources.where((s) => s.enabled == true).length;
   int get exploreEnabledCount => _sources.where((s) => s.enabledExplore == true).length;
 
+  /// 本次会话里被删掉的书源 url。
+  ///
+  /// 删除后条目已经从 [_sources] 里摘掉了，光看 `_sources` 分不清
+  /// 「被删了」和「本来就没有」，所以额外记一份。
+  final Set<String> _removedSourceUrls = <String>{};
+
+  /// 应该在「发现」页隐藏的书源 url。
+  ///
+  /// 【为什么需要这个收口】发现页的列表来自另一条接口，是一批**独立的
+  /// BookSource 实例**，而且后端只保证 `enabledExplore == true`，不管
+  /// `enabled`。所以书源管理页里点「禁用」不会反映到发现页 ——
+  /// 用户看到的就是「书源管理里明明已禁用，发现页还能刷出它的内容」。
+  ///
+  /// 这里把「已禁用」和「已删除」两类统一暴露出去，发现页直接读这个集合
+  /// 做过滤即可，不需要重新请求后端，也就没有刷新前的窗口期。
+  Set<String> get discoverHiddenSourceUrls => {
+        for (final s in _sources)
+          if (s.enabled != true && (s.bookSourceUrl ?? '').isNotEmpty)
+            s.bookSourceUrl!,
+        ..._removedSourceUrls,
+      };
+
   List<BookSource> get filteredSources {
     var list = _sources;
     if (_searchQuery.isNotEmpty) {
@@ -139,6 +161,24 @@ class SourceManageProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 反选（对齐 3.41 批量栏上的「反选」）。
+  ///
+  /// 和 [selectAll] 一样只在**当前可见（过滤后）**的列表里翻转 ——
+  /// 用户开着「只看已禁用」时点反选，期望的是把眼前这批翻过来，
+  /// 而不是把看不见的那些也一起选进来。
+  void invertSelection() {
+    for (final s in filteredSources) {
+      final id = s.bookSourceUrl;
+      if (id == null) continue;
+      if (_selectedIds.contains(id)) {
+        _selectedIds.remove(id);
+      } else {
+        _selectedIds.add(id);
+      }
+    }
+    notifyListeners();
+  }
+
   void clearSelection() {
     _selectedIds.clear();
     _selectMode = false;
@@ -179,6 +219,9 @@ class SourceManageProvider extends ChangeNotifier {
 
       _canEdit = await permissionFuture;
       _sources = allSources;
+      // 整表重拉之后，服务端返回的就是权威结果，之前记的「已删除」
+      // 不再需要（万一用户在别处又导入回来了，也不该继续被隐藏）
+      _removedSourceUrls.clear();
     } catch (e) {
       _error = e.toString();
     } finally {
@@ -239,6 +282,8 @@ class SourceManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         _sources.removeWhere((s) => s.bookSourceUrl == id);
         _selectedIds.remove(id);
+        // 记下来，发现页据此把这条也摘掉
+        _removedSourceUrls.add(id);
         notifyListeners();
         return true;
       }
@@ -292,6 +337,8 @@ class SourceManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         _sources.removeWhere((s) => ids.contains(s.bookSourceUrl));
         _selectedIds.clear();
+        // 记下来，发现页据此把这些也摘掉
+        _removedSourceUrls.addAll(ids);
         notifyListeners();
         return true;
       }

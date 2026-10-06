@@ -572,7 +572,15 @@ class _SourceManagePageState extends State<SourceManagePage> {
     );
   }
 
+  /// 批量操作栏（对齐 3.41）：全选(n/m) | 反选 | 删除 | 更多
+  ///
+  /// 【为什么改】原来是一整排**横向滚动**的按钮（启用/禁用/开启发现/关闭发现/
+  /// 置顶/置底/分组/导出/删除），九个头等操作挤在一条横条里，用户得左右滑
+  /// 才找得到，而且「删除」混在中间，容易误触。
+  /// 3.41 只把「删除」留在栏上，其余全部收进「更多」弹出的底部菜单。
   Widget _buildBatchBar(SourceManageProvider provider) {
+    final total = provider.sources.length;
+    final selected = provider.selectedIds.length;
     return Container(
       decoration: BoxDecoration(
         color: Theme.of(context).scaffoldBackgroundColor,
@@ -584,70 +592,129 @@ class _SourceManagePageState extends State<SourceManagePage> {
           ),
         ],
       ),
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
       child: SafeArea(
-        child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              _BatchActionButton(
-                label: '启用',
-                icon: Icons.check_circle_outline,
-                onTap: () => provider.batchSetEnabled(_token(), true),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '禁用',
-                icon: Icons.block,
-                onTap: () => provider.batchSetEnabled(_token(), false),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '开启发现',
-                icon: Icons.explore,
-                onTap: () => provider.batchSetExploreEnabled(_token(), true),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '关闭发现',
-                icon: Icons.explore_off,
-                onTap: () => provider.batchSetExploreEnabled(_token(), false),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '置顶',
-                icon: Icons.vertical_align_top,
-                onTap: () => provider.batchTop(_token()),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '置底',
-                icon: Icons.vertical_align_bottom,
-                onTap: () => provider.batchBottom(_token()),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '分组',
-                icon: Icons.folder,
-                onTap: () => _showBatchGroupDialog(),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '导出',
-                icon: Icons.ios_share,
-                onTap: () => _exportSelected(),
-              ),
-              const SizedBox(width: 8),
-              _BatchActionButton(
-                label: '删除',
-                icon: Icons.delete_outline,
-                color: Colors.red,
-                onTap: () => _confirmBatchDelete(),
-              ),
-            ],
-          ),
+        child: Row(
+          children: [
+            TextButton(
+              onPressed: () => provider.selectAll(),
+              child: Text('全选 ($selected/$total)'),
+            ),
+            const Spacer(),
+            TextButton(
+              onPressed: () => provider.invertSelection(),
+              child: const Text('反选'),
+            ),
+            TextButton(
+              onPressed: () => _confirmBatchDelete(),
+              style: TextButton.styleFrom(foregroundColor: Colors.red),
+              child: const Text('删除'),
+            ),
+            TextButton(
+              onPressed: () => _showBatchMoreSheet(),
+              child: const Text('更多'),
+            ),
+          ],
         ),
       ),
+    );
+  }
+
+  /// 「更多」底部菜单 —— 条目与顺序对齐 3.41。
+  ///
+  /// 【少了「检验书源」】3.41 这一项是逐源跑一遍校验；本项目后端没有对应的
+  /// 接口（`api_service.dart` 里没有 check / verify 之类的方法），
+  /// 与其放一个点下去没反应的条目，不如先不列。后端补上接口后再加。
+  Future<void> _showBatchMoreSheet() async {
+    final provider = context.read<SourceManageProvider>();
+    final token = _token();
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) {
+        void close() => Navigator.pop(sheetContext);
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.check_circle_outline),
+                  title: const Text('启用书源'),
+                  onTap: () {
+                    close();
+                    provider.batchSetEnabled(token, true);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.block),
+                  title: const Text('禁用书源'),
+                  onTap: () {
+                    close();
+                    provider.batchSetEnabled(token, false);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.explore_outlined),
+                  title: const Text('启用发现'),
+                  onTap: () {
+                    close();
+                    provider.batchSetExploreEnabled(token, true);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.explore_off_outlined),
+                  title: const Text('禁用发现'),
+                  onTap: () {
+                    close();
+                    provider.batchSetExploreEnabled(token, false);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.vertical_align_top),
+                  title: const Text('置顶所有'),
+                  onTap: () {
+                    close();
+                    provider.batchTop(token);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.vertical_align_bottom),
+                  title: const Text('置底所有'),
+                  onTap: () {
+                    close();
+                    provider.batchBottom(token);
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.create_new_folder_outlined),
+                  title: const Text('添加分组'),
+                  onTap: () {
+                    close();
+                    _showBatchGroupDialog(initialSt: '0');
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.folder_delete_outlined),
+                  title: const Text('删除分组'),
+                  onTap: () {
+                    close();
+                    _showBatchGroupDialog(initialSt: '1');
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.ios_share),
+                  title: const Text('导出书源'),
+                  onTap: () {
+                    close();
+                    _exportSelected();
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -822,9 +889,14 @@ class _SourceManagePageState extends State<SourceManagePage> {
     );
   }
 
-  void _showBatchGroupDialog() {
+  /// 批量改分组。
+  ///
+  /// [initialSt] 决定默认落在哪一段：'0' = 添加分组，'1' = 移除分组。
+  /// 「更多」菜单里「添加分组 / 删除分组」是两个独立入口，分别传 '0' / '1'，
+  /// 这样用户点进来就是想要的那一段，不用再手动切换。
+  void _showBatchGroupDialog({String initialSt = '0'}) {
     final groupController = TextEditingController();
-    String st = '0'; // 0=添加分组, 1=移除分组
+    String st = initialSt; // 0=添加分组, 1=移除分组
     showDialog(
       context: context,
       builder: (ctx) => StatefulBuilder(
@@ -1248,35 +1320,6 @@ class _StatusChip extends StatelessWidget {
       child: Text(
         label,
         style: TextStyle(fontSize: 11, color: textColor),
-      ),
-    );
-  }
-}
-
-class _BatchActionButton extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final VoidCallback onTap;
-  final Color? color;
-
-  const _BatchActionButton({
-    required this.label,
-    required this.icon,
-    required this.onTap,
-    this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final c = color ?? const Color(0xFF009688);
-    return TextButton.icon(
-      onPressed: onTap,
-      icon: Icon(icon, size: 16, color: c),
-      label: Text(label, style: TextStyle(fontSize: 12, color: c)),
-      style: TextButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        visualDensity: VisualDensity.compact,
-        side: BorderSide(color: c.withValues(alpha: 0.3)),
       ),
     );
   }

@@ -159,42 +159,39 @@ class ReaderProvider extends ChangeNotifier {
             : null) ??
         _book!.durChapterTitle;
     final savedPos = pos;
+
+    // 【本地字段必须**先**改，再发网络请求】
+    // `_book` 是书架通过路由参数传进来的**同一个对象**
+    // （`BookCard` → `/reader` → `ReaderProvider.setBook`）。
+    // 原来这里 new 了一个新实例把它替换掉，于是书架持有的那个对象从此再也
+    // 收不到进度更新 —— 表现就是「从阅读页退回书架，刚看的书不会排到最前，
+    // 得手动下拉刷新」。原地改字段 + notifyListeners 效果一样，但引用还连着。
+    //
+    // 顺序也很重要：退出阅读页时书架会在 `didPopNext()` 里立刻重排，
+    // 如果等到 `await` 网络请求回来才写 durChapterTime，重排早就跑完了，
+    // 排序仍然用的是旧时间。所以先写本地，网络请求失败也不影响排序。
+    //
+    // 顺带修掉一个副作用：原来那份拷贝漏了 durChapterTime / wordCount /
+    // kind / imageDecode 等字段，每次存进度都会把它们抹成 null。
+    final book = _book;
+    if (book != null) {
+      book.durChapterTitle = savedTitle;
+      book.durChapterIndex = savedIndex;
+      book.durChapterPos = savedPos.toInt();
+      // 最近阅读时间用**毫秒**时间戳（后端是 `System.currentTimeMillis()`）。
+      // 书架「最近阅读」排序就靠它。
+      book.durChapterTime = DateTime.now().millisecondsSinceEpoch;
+      notifyListeners();
+    }
+
     try {
       await ApiService.instance.saveBookProgress(
         accessToken,
-        url: _book!.bookUrl,
+        url: book?.bookUrl,
         title: savedTitle,
         index: savedIndex,
         pos: savedPos,
       );
-      if (_book != null) {
-        _book = Book(
-          bookUrl: _book!.bookUrl,
-          name: _book!.name,
-          author: _book!.author,
-          coverUrl: _book!.coverUrl,
-          intro: _book!.intro,
-          customCoverUrl: _book!.customCoverUrl,
-          tocUrl: _book!.tocUrl,
-          origin: _book!.origin,
-          originName: _book!.originName,
-          type: _book!.type,
-          group: _book!.group,
-          latestChapterTitle: _book!.latestChapterTitle,
-          latestChapterTime: _book!.latestChapterTime,
-          lastCheckTime: _book!.lastCheckTime,
-          lastCheckCount: _book!.lastCheckCount,
-          totalChapterNum: _book!.totalChapterNum,
-          durChapterTitle: savedTitle,
-          durChapterIndex: savedIndex,
-          durChapterPos: savedPos.toInt(),
-          canUpdate: _book!.canUpdate,
-          order: _book!.order,
-          useReplaceRule: _book!.useReplaceRule,
-          variable: _book!.variable,
-        );
-        notifyListeners();
-      }
     } catch (_) {}
   }
 

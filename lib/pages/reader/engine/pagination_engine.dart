@@ -122,6 +122,16 @@ class PaginationEngine {
         : 0.0;
     final bottomPadding = showBottomBar ? defaultBottomPadding : 0.0;
 
+    // 底部安全余量。
+    //
+    // 原来是固定 4px。正文是「一行一个 Text widget」拼起来的，每个 Text 的
+    // 实际行高会因字体度量有零点几 px 的出入；一页十几行累积起来就可能超过
+    // 4px，于是最后一行被 ClipRect 切掉半截（反馈「文字显示不全」）。
+    // 改成按行高的 1/4 留余量：缓冲足够，又不至于每页都白丢一行。
+    final lineBoxHeightForMargin =
+        textScaler.scale(fontSize) * lineHeight;
+    final safetyMargin = lineBoxHeightForMargin * 0.25;
+
     final availableHeight = viewportSize.height -
         safeTop -
         safeBottom -
@@ -130,7 +140,7 @@ class PaginationEngine {
         headerHeight -
         headerSpacing -
         footerHeight -
-        4; // 4px 安全余量
+        safetyMargin;
 
     // 3. 逐段落 → 逐行 → 分页
     final pages = <PageSlice>[];
@@ -267,6 +277,33 @@ class PaginationEngine {
 
     if (paragraph.text.isEmpty) return [];
 
+    // 【段评气泡必须预留宽度】
+    //
+    // 分页时所有段评都挂在段末行（见本方法末尾的 `result.last = ...`），
+    // 渲染端则把气泡作为 `WidgetSpan` **追加在段末行文字后面**
+    // （见 ContentRenderer._buildTextLine）。但这里的 TextPainter 只有纯文本，
+    // 完全不知道气泡占了多宽。
+    //
+    // 后果：段末行本来刚好放得下，渲染时被气泡一挤就换行 → 整页凭空多出一行
+    // → 页面底部溢出，最后一行被裁掉一半（反馈截图正是这个现象，
+    // 而且只在「有的页面」出现，取决于段末行是不是刚好接近满宽）。
+    //
+    // 所以只要段落带行内段评，整段就按气泡宽度缩窄 —— 段末行的文字宽度
+    // 必然 ≤ maxWidth - 气泡宽度，加上气泡后刚好放得下。
+    // 「神评论」横幅（isBanner）是独立占一行的，不在这里预留。
+    final inlineComments =
+        paragraph.comments.where((c) => !c.isBanner).toList(growable: false);
+    final bubbleReserve = inlineComments.isEmpty
+        ? 0.0
+        // CommentBubbleMetrics.width 与渲染端算出的 inkWidth 一致（见
+        // InlineCommentBubble），再加气泡左侧那截 0.3em 间距；末尾 2px 是
+        // 浮点取整的余量。
+        : CommentBubbleMetrics(effectiveFontSize).width +
+            effectiveFontSize * 0.30 +
+            2.0;
+    final effectiveMaxWidth =
+        (maxWidth - bubbleReserve).clamp(0.0, maxWidth);
+
     final painter = TextPainter(
       text: TextSpan(
         text: fullText,
@@ -275,13 +312,19 @@ class PaginationEngine {
           height: effectiveLineHeight,
           fontWeight: effectiveWeight,
           fontFamily: fontFamily,
+          // 【必须显式写 0】渲染端的 Text 会从 DefaultTextStyle 继承
+          // Material 3 bodyMedium 的 letterSpacing(0.25)，阅读页顶层已经把它
+          // 归零（见 reader_page.dart 的 DefaultTextStyle.merge）。
+          // 这里显式声明 0，是为了让「分页端」的意图也写在代码里 ——
+          // 两边一旦不一致，行尾最后一个字就会被挤到下一行。
+          letterSpacing: 0,
         ),
       ),
       textDirection: TextDirection.ltr,
       maxLines: null,
       // 必须与渲染端 Text widget 保持一致（Text 默认用 MediaQuery.textScalerOf）
       textScaler: textScaler,
-    )..layout(maxWidth: maxWidth);
+    )..layout(maxWidth: effectiveMaxWidth);
 
     final lineMetrics = painter.computeLineMetrics();
 

@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../config/routes.dart';
 import '../../models/book_source.dart';
 import '../../providers/discover_provider.dart';
+import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import 'explore_books_page.dart';
@@ -64,6 +65,23 @@ class _DiscoverPageState extends State<DiscoverPage>
     super.build(context);
     final userProvider = context.watch<UserProvider>();
     final provider = context.watch<DiscoverProvider>();
+    // 【书源禁用后，发现页也要跟着禁用】
+    //
+    // 后端返回的「发现书源」只保证 `enabledExplore == true`，**不管**
+    // `enabled`。而书源管理页里点「禁用」只改 `enabled`，两边各自持有
+    // 不同的 BookSource 实例，发现页那份不会自动更新 ——
+    // 用户看到的就是「书源管理里明明已禁用，发现页还能刷出它的内容」。
+    //
+    // 这里 watch SourceManageProvider 的**内存状态**：点「禁用」会立刻
+    // notifyListeners，本页随即重建并把那条过滤掉。不用重新请求后端，
+    // 也就不存在「刷新之前一直是旧列表」的窗口期。
+    // 集合里同时包含「已禁用」和「本次会话里已删除」两类，见 provider 注释。
+    final manageProvider = context.watch<SourceManageProvider>();
+    final hiddenIds = manageProvider.discoverHiddenSourceUrls;
+    // 本地缓存和接口返回的列表里也可能混着已禁用的源，统一在这里过一遍
+    final sources = provider.exploreSources
+        .where((s) => !hiddenIds.contains(s.bookSourceUrl))
+        .toList(growable: false);
 
     return Scaffold(
       appBar: AppBar(
@@ -71,11 +89,12 @@ class _DiscoverPageState extends State<DiscoverPage>
         titleSpacing: 16,
         title: _buildSearchField(),
         actions: [
-          _buildGroupMenuButton(provider.exploreSources),
+          // 分组菜单也用过滤后的列表，免得列出「只剩禁用源」的分组
+          _buildGroupMenuButton(sources),
           const SizedBox(width: 8),
         ],
       ),
-      body: _buildBody(userProvider, provider),
+      body: _buildBody(userProvider, provider, sources),
     );
   }
 
@@ -156,14 +175,18 @@ class _DiscoverPageState extends State<DiscoverPage>
     );
   }
 
-  Widget _buildBody(UserProvider userProvider, DiscoverProvider provider) {
+  Widget _buildBody(
+    UserProvider userProvider,
+    DiscoverProvider provider,
+    List<BookSource> sources,
+  ) {
     if (!userProvider.isLoggedIn) {
       return const Center(child: Text('请先登录'));
     }
-    if (provider.loading && provider.exploreSources.isEmpty) {
+    if (provider.loading && sources.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (provider.error != null && provider.exploreSources.isEmpty) {
+    if (provider.error != null && sources.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -178,11 +201,11 @@ class _DiscoverPageState extends State<DiscoverPage>
         ),
       );
     }
-    if (provider.exploreSources.isEmpty) {
+    if (sources.isEmpty) {
       return const Center(child: Text('暂无可用书源'));
     }
 
-    final visibleSources = _filterSources(provider.exploreSources);
+    final visibleSources = _filterSources(sources);
     if (visibleSources.isEmpty) {
       return RefreshIndicator(
         onRefresh: () => _loadSources(refresh: true),

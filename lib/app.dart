@@ -20,6 +20,9 @@ class App extends StatelessWidget {
         initialRoute: '/',
         routes: AppRoutes.routes,
         onGenerateRoute: AppRoutes.onGenerateRoute,
+        // 让页面能感知「上层路由被 pop、自己重新露出来」——
+        // 书架靠它在从阅读页返回时重排列表（见 AppRoutes.appRouteObserver）。
+        navigatorObservers: [appRouteObserver],
         // 兜底：没有 AppBar 的页面（阅读页、登录页等）不会自带
         // SystemUiOverlayStyle，这里统一给一份，保证系统手势条不会变黑。
         // 有 AppBar 的页面由 AppBarTheme.systemOverlayStyle 覆盖（同色）。

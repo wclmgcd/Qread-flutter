@@ -22,7 +22,7 @@ class BookshelfPage extends StatefulWidget {
 }
 
 class _BookshelfPageState extends State<BookshelfPage>
-    with AutomaticKeepAliveClientMixin {
+    with AutomaticKeepAliveClientMixin, RouteAware {
   static const _bookshelfViewModeKey = 'bookshelf_view_mode';
 
   @override
@@ -31,6 +31,9 @@ class _BookshelfPageState extends State<BookshelfPage>
   bool _dataLoaded = false;
   bool _selectionMode = false;
   bool _loadedViewMode = false;
+
+  /// 已订阅的 ModalRoute，避免 didChangeDependencies 里重复订阅
+  ModalRoute<void>? _subscribedRoute;
 
   /// 导入/导出/添加网址等异步操作期间置位，避免重复触发
   bool _busy = false;
@@ -43,6 +46,36 @@ class _BookshelfPageState extends State<BookshelfPage>
     super.didChangeDependencies();
     _tryLoadData();
     _loadViewModeIfNeeded();
+    _subscribeRoute();
+  }
+
+  @override
+  void dispose() {
+    appRouteObserver.unsubscribe(this);
+    super.dispose();
+  }
+
+  void _subscribeRoute() {
+    final route = ModalRoute.of<void>(context);
+    if (route == null || route == _subscribedRoute) return;
+    if (_subscribedRoute != null) appRouteObserver.unsubscribe(this);
+    _subscribedRoute = route;
+    appRouteObserver.subscribe(this, route);
+  }
+
+  /// 上层路由（阅读页 / 书籍信息页）被 pop，书架重新露出来。
+  ///
+  /// 【修的是什么】阅读页只改了内存里那本书的 `durChapterTime`，没有任何东西
+  /// 触发书架重排，所以「刚看完的书」还停在原位，用户得手动下拉刷新才看到它
+  /// 排到最前。这里补上重排。
+  ///
+  /// 用 RouteAware 而不是在 `BookCard` 的 `Navigator.push` 后面接 `.then()`，
+  /// 是为了**覆盖所有返回路径** —— 点封面直接进阅读、经书籍信息页进阅读、
+  /// 从「我的 → 阅读历史」进阅读，都能回到这里。
+  @override
+  void didPopNext() {
+    if (!mounted) return;
+    context.read<BookshelfProvider>().applySort();
   }
 
   void _tryLoadData() {

@@ -74,8 +74,16 @@ class _ReaderPageState extends State<ReaderPage> {
   Timer? _metaTimer;
   Timer? _autoPageTimer;
   Timer? _ttsSleepTimer;
+  Timer? _controllerHideTimer;
   StreamSubscription<WsPushMessage>? _wsSubscription;
   bool _openingCommentPage = false;
+
+  /// 控制栏（引导条）自动隐藏延时。
+  ///
+  /// 之前**根本没有**自动隐藏 —— 点出控制栏后只能再点一次中间才会收，
+  /// 于是它会一直盖在正文上（用户反馈「不会自动隐藏，安卓和 iOS 都不行」）。
+  /// 4 秒是照着官方 3.41 的手感定的，想调只改这一个常量。
+  static const Duration _controllerAutoHideDelay = Duration(seconds: 4);
 
   String? _token;
   String? _bookUrl;
@@ -105,6 +113,7 @@ class _ReaderPageState extends State<ReaderPage> {
     _metaTimer?.cancel();
     _autoPageTimer?.cancel();
     _ttsSleepTimer?.cancel();
+    _controllerHideTimer?.cancel();
     _wsSubscription?.cancel();
     ReaderWsService.instance.onToast = null;
     _comicScrollController.removeListener(_onComicScroll);
@@ -842,6 +851,9 @@ class _ReaderPageState extends State<ReaderPage> {
     } else {
       _toggleController();
     }
+    // 控制栏正显示着的时候翻页，把自动隐藏倒计时往后推，
+    // 免得用户连翻几页时工具条在半路被收走
+    if (_state.showController) _restartControllerHideTimer();
   }
 
   Duration _pageTurnDuration() {
@@ -926,7 +938,8 @@ class _ReaderPageState extends State<ReaderPage> {
       final chapterIndex =
           _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
       if (chapterIndex >= provider.chapters.length - 1) {
-        setState(() => _state.showController = true);
+        // 提示「已到本章末页」时把控制栏亮出来（并开始自动隐藏倒计时）
+        _showControllerTemporarily();
         ScaffoldMessenger.of(context).clearSnackBars();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -945,7 +958,7 @@ class _ReaderPageState extends State<ReaderPage> {
         _openChapter(chapterIndex + 1, chapterPosition: 0);
       }
     } else {
-      setState(() => _state.showController = true);
+      _showControllerTemporarily();
       ScaffoldMessenger.of(context).clearSnackBars();
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1070,7 +1083,43 @@ class _ReaderPageState extends State<ReaderPage> {
           () => _state.showAutoPageControls = !_state.showAutoPageControls);
       return;
     }
-    setState(() => _state.showController = !_state.showController);
+    // 已经显示 → 手动收起（并取消倒计时）；没显示 → 显示并开始倒计时
+    if (_state.showController) {
+      _hideController();
+    } else {
+      _showControllerTemporarily();
+    }
+  }
+
+  /// 显示控制栏，并开始自动隐藏倒计时
+  void _showControllerTemporarily() {
+    if (!_state.showController) {
+      setState(() => _state.showController = true);
+    }
+    _restartControllerHideTimer();
+  }
+
+  /// 立刻收起控制栏（手动收起、或弹出面板要腾地方时调用）
+  void _hideController() {
+    _controllerHideTimer?.cancel();
+    if (_state.showController) {
+      setState(() => _state.showController = false);
+    }
+  }
+
+  /// 重置自动隐藏倒计时。
+  ///
+  /// 在控制栏上做任何操作（翻章、拉进度、点目录…）都该调一次，
+  /// 否则用户操作到一半工具条就被收走了。
+  void _restartControllerHideTimer() {
+    _controllerHideTimer?.cancel();
+    // 自动翻页模式下控制栏里有「秒/页」调节，需要常驻，不参与自动隐藏
+    if (!_state.showController || _state.autoPageRunning) return;
+    _controllerHideTimer = Timer(_controllerAutoHideDelay, () {
+      if (!mounted) return;
+      if (_state.autoPageRunning) return;
+      setState(() => _state.showController = false);
+    });
   }
 
   void _goToPreviousChapter() {
@@ -1121,31 +1170,47 @@ class _ReaderPageState extends State<ReaderPage> {
   @override
   Widget build(BuildContext context) {
     return _withReaderSystemBars(
-      Scaffold(
-        backgroundColor: _state.currentTheme.background,
-        body: Consumer<ReaderProvider>(
-          builder: (context, provider, _) {
-            if (provider.book == null) {
-              return const Center(child: Text('未选择书籍'));
-            }
-            return Stack(
-              children: [
-                Positioned.fill(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: (details) => _handleTap(details, provider),
-                    child: _buildContent(provider),
-                  ),
-                ),
-                // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区
-                if (_state.dimOpacity > 0)
+      // 【为什么要把 letterSpacing 钉成 0】
+      //
+      // `Material` 会用 `theme.textTheme.bodyMedium` 当 `DefaultTextStyle`
+      // 注入给整棵子树，而 Material 3 的 bodyMedium 自带 `letterSpacing: 0.25`。
+      // `Text` 的 style 默认 `inherit: true`，会把这个 0.25 合并进去 ——
+      // 于是**渲染端**每行实际比测量宽了「0.25 × 每行字数 ≈ 4px」。
+      //
+      // 而分页引擎用的是裸 `TextStyle`（letterSpacing 为 null，等于 0），
+      // 它算「这一行刚好放得下」，渲染端却因为多出这 4px 把**行尾最后一个字
+      // 挤到下一行** —— 页面上就会出现孤零零一个字占一行的「分段错误」。
+      // 用「谷歌」字体时最明显，因为那个字体的字宽刚好卡在边界上。
+      //
+      // 在阅读页顶层把它归零，渲染端和分页端的度量就完全一致了。
+      DefaultTextStyle.merge(
+        style: const TextStyle(letterSpacing: 0),
+        child: Scaffold(
+          backgroundColor: _state.currentTheme.background,
+          body: Consumer<ReaderProvider>(
+            builder: (context, provider, _) {
+              if (provider.book == null) {
+                return const Center(child: Text('未选择书籍'));
+              }
+              return Stack(
+                children: [
                   Positioned.fill(
-                    child: IgnorePointer(
-                      child: ColoredBox(
-                        color: Colors.black.withValues(alpha: _state.dimOpacity),
-                      ),
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapUp: (details) => _handleTap(details, provider),
+                      child: _buildContent(provider),
                     ),
                   ),
+                  // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区
+                  if (_state.dimOpacity > 0)
+                    Positioned.fill(
+                      child: IgnorePointer(
+                        child: ColoredBox(
+                          color:
+                              Colors.black.withValues(alpha: _state.dimOpacity),
+                        ),
+                      ),
+                    ),
                 if (_state.showController) ...[
                   Positioned.fill(
                     child: GestureDetector(
@@ -1273,12 +1338,13 @@ class _ReaderPageState extends State<ReaderPage> {
                       ),
                     ),
                   ),
-              ],
-            );
-          },
+                  ],
+                );
+              },
+            ),
+          ),
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildContent(ReaderProvider provider) {
@@ -1687,6 +1753,8 @@ class _ReaderPageState extends State<ReaderPage> {
   void _startAutoPageMode() {
     final provider = context.read<ReaderProvider>();
     _stopTts();
+    // 自动翻页模式下控制栏常驻，不需要自动隐藏倒计时
+    _controllerHideTimer?.cancel();
     setState(() {
       _state.autoPageRunning = true;
       _state.showAutoPageControls = true;
@@ -1834,6 +1902,8 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.continueTtsOnNextChapter = false;
       _state.showController = true;
     });
+    // TTS 模式下控制栏里是停止/暂停按钮，同样会自动收起
+    _restartControllerHideTimer();
     await _speakParagraphAt(startParagraphIndex);
   }
 
@@ -2197,9 +2267,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
     // 官方客户端里，设置面板一出来，顶部/底部工具条就收起来了。
     // 不收起的话那条半透明黑底会盖在正文上，正文透过来看着像「字体重叠」。
-    if (_state.showController) {
-      setState(() => _state.showController = false);
-    }
+    _hideController();
 
     showModalBottomSheet(
       context: context,

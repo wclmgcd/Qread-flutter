@@ -1,5 +1,6 @@
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../config/constants.dart';
@@ -64,9 +65,11 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
         padding: EdgeInsets.zero,
         children: [
           _buildHeader(userProvider, themeProvider, isDark),
-          // 上移量必须小于 header 的底部留白（现 32），否则下面这张卡片
-          // 会盖住 header 底部的「今日阅读」胶囊。原来是 -26 对 -28，只差 2px，
-          // 稍微有点渲染误差就压上去了。
+          // 卡片压在 header 底边上，做出 3.41 那种「卡片嵌在头图里」的层次。
+          //
+          // 上移量必须**明显小于** header 的底部留白（现 26），否则卡片会盖住
+          // 头图里的「轻阅读用户」胶囊 —— 这正是之前「我的界面有遮挡」的原因
+          // （原来 -26 对 -28，只差 2px，稍有渲染误差就压上去了）。
           Transform.translate(
             offset: const Offset(0, -18),
             child: Column(
@@ -74,6 +77,8 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
                 _buildCommonSection(),
                 const SizedBox(height: 10),
                 _buildAdvancedSection(),
+                // 整列上移后底部会空出 18px，补一点回来
+                const SizedBox(height: 6),
               ],
             ),
           ),
@@ -88,14 +93,18 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
     bool isDark,
   ) {
     final username = userProvider.username?.trim();
-    final title =
-        userProvider.isLoggedIn && username != null && username.isNotEmpty
-            ? username.toUpperCase()
-            : '立即登录';
+    final loggedIn = userProvider.isLoggedIn;
+    // 3.41 这里显示的是原样的用户名（admin），不是全大写 —— 全大写会让
+    // 字母显得更宽，在窄屏上更容易被省略号截断。
+    final title = loggedIn && username != null && username.isNotEmpty
+        ? username
+        : '立即登录';
 
     return Container(
-      height: 280,
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+      // 整体比原来矮一截（280 → 214）：头像和文字都小了一号，
+      // 再留 280 就会在头图下方堆出一大片空白。
+      height: 214,
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 26),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topLeft,
@@ -111,30 +120,47 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 右上角：设置 + 深浅切换。
+            // 3.41 这里只有一个齿轮（深浅切换收在设置页里），本项目保留成并排
+            // 两个图标，免得把已有的开关藏起来。
             Align(
               alignment: Alignment.topRight,
-              child: IconButton(
-                icon: Icon(
-                  isDark ? Icons.light_mode_rounded : Icons.dark_mode_rounded,
-                  color: Colors.white,
-                  size: 30,
-                ),
-                tooltip: isDark ? '切换浅色模式' : '切换深色模式',
-                onPressed: themeProvider.toggleLightDark,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.settings_outlined,
+                        color: Colors.white, size: 23),
+                    tooltip: '设置',
+                    onPressed: () =>
+                        Navigator.pushNamed(context, '/settings/general'),
+                  ),
+                  IconButton(
+                    icon: Icon(
+                      isDark
+                          ? Icons.light_mode_rounded
+                          : Icons.dark_mode_rounded,
+                      color: Colors.white,
+                      size: 23,
+                    ),
+                    tooltip: isDark ? '切换浅色模式' : '切换深色模式',
+                    onPressed: themeProvider.toggleLightDark,
+                  ),
+                ],
               ),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 2),
             InkWell(
-              borderRadius: BorderRadius.circular(24),
+              borderRadius: BorderRadius.circular(20),
               onTap: () => _showUserManager(userProvider),
               child: Row(
                 children: [
                   _ProfileAvatar(
                     username: userProvider.username,
-                    loggedIn: userProvider.isLoggedIn,
-                    size: 116,
+                    loggedIn: loggedIn,
+                    size: 72,
                   ),
-                  const SizedBox(width: 24),
+                  const SizedBox(width: 16),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -145,34 +171,42 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
                             color: Colors.white,
-                            fontSize: 26,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w600,
                           ),
                         ),
-                        const SizedBox(height: 14),
+                        const SizedBox(height: 8),
+                        // 身份胶囊 —— 对齐 3.41 的「轻阅读用户」
                         Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 16,
-                            vertical: 10,
-                          ),
+                              horizontal: 12, vertical: 5),
                           decoration: BoxDecoration(
                             color: Colors.white.withValues(alpha: 0.18),
-                            borderRadius: BorderRadius.circular(22),
+                            borderRadius: BorderRadius.circular(20),
                           ),
                           child: Text(
-                            userProvider.isLoggedIn
-                                ? _buildStatsText()
-                                : '登录后端可多端同步',
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                            loggedIn ? '轻阅读用户' : '登录后端可多端同步',
                             style: const TextStyle(
                               color: Colors.white,
-                              fontSize: 16,
+                              fontSize: 12,
                               fontWeight: FontWeight.w500,
                             ),
                           ),
                         ),
+                        // 阅读统计原来占着那颗胶囊，现在胶囊给了身份，
+                        // 统计改成下面一行小字，功能不丢
+                        if (loggedIn) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            _buildStatsText(),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.85),
+                              fontSize: 11.5,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -187,7 +221,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
 
   Widget _buildCommonSection() {
     return _ProfilePanel(
-      padding: const EdgeInsets.fromLTRB(18, 18, 18, 22),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 18),
       child: Row(
         children: [
           Expanded(
@@ -198,7 +232,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
               onTap: _showBrowsingHistorySheet,
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: _QuickActionCard(
               icon: Icons.menu_book_rounded,
@@ -208,13 +242,15 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
                   Navigator.pushNamed(context, AppRoutes.readingPreference),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
+          // 3.41 这一格是「反馈帮助」，原来放的是「常规设置」；
+          // 常规设置现在从右上角的齿轮进（和 3.41 一致）。
           Expanded(
             child: _QuickActionCard(
-              icon: Icons.tune_rounded,
+              icon: Icons.feedback_outlined,
               accent: const Color(0xFFFFB84F),
-              title: '常规设置',
-              onTap: () => Navigator.pushNamed(context, '/settings/general'),
+              title: '反馈帮助',
+              onTap: _showFeedbackDialog,
             ),
           ),
         ],
@@ -226,6 +262,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
     return _ProfilePanel(
       child: Column(
         children: [
+          // 顺序对齐 3.41：书源管理 / 替换净化 / 朗读引擎 / 关于我们
           _ProfileMenuTile(
             item: _ProfileMenuItem(
               icon: Icons.source_outlined,
@@ -234,26 +271,7 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
               onTap: () => Navigator.pushNamed(context, '/sourceManage'),
             ),
           ),
-          Divider(
-            height: 1,
-            color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
-            indent: 84,
-            endIndent: 20,
-          ),
-          _ProfileMenuTile(
-            item: _ProfileMenuItem(
-              icon: Icons.record_voice_over_outlined,
-              accent: const Color(0xFF4FC3C7),
-              title: '朗读引擎',
-              onTap: () => Navigator.pushNamed(context, AppRoutes.ttsEngines),
-            ),
-          ),
-          Divider(
-            height: 1,
-            color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
-            indent: 84,
-            endIndent: 20,
-          ),
+          _menuDivider(),
           _ProfileMenuTile(
             item: _ProfileMenuItem(
               icon: Icons.cleaning_services_outlined,
@@ -262,12 +280,16 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
               onTap: () => Navigator.pushNamed(context, '/replaceRules'),
             ),
           ),
-          Divider(
-            height: 1,
-            color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
-            indent: 84,
-            endIndent: 20,
+          _menuDivider(),
+          _ProfileMenuTile(
+            item: _ProfileMenuItem(
+              icon: Icons.record_voice_over_outlined,
+              accent: const Color(0xFF4FC3C7),
+              title: '朗读引擎',
+              onTap: () => Navigator.pushNamed(context, AppRoutes.ttsEngines),
+            ),
           ),
+          _menuDivider(),
           _ProfileMenuTile(
             item: _ProfileMenuItem(
               icon: Icons.info_outline_rounded,
@@ -286,6 +308,14 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
       ),
     );
   }
+
+  /// 菜单分组里的分隔线。indent 要和 _ProfileMenuTile 的图标盒右边缘对齐。
+  Widget _menuDivider() => Divider(
+        height: 1,
+        color: Theme.of(context).dividerColor.withValues(alpha: 0.15),
+        indent: 76,
+        endIndent: 18,
+      );
 
   String _buildStatsText() {
     final today = _formatDuration(_stats.todaySeconds);
@@ -307,6 +337,76 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
       return '$hours 小时';
     }
     return '$hours 小时 $remain 分';
+  }
+
+  /// 「反馈帮助」弹窗（对齐 3.41 的样式：标题 + 描述框 + 整宽「上报」）。
+  ///
+  /// 【为什么不真的上报】后端没有反馈上报接口 ——
+  /// `web/controller/api/` 下只有 User / Book / Bookshelf / Rss / Tts 等控制器，
+  /// 没有 Feedback 相关端点。所以这里点「上报」是把描述（带上 App 版本）
+  /// 复制到剪贴板，让用户粘到反馈渠道去，而不是弹一个假的「上报成功」。
+  /// 等后端加了接口再换成真正的 POST 即可。
+  Future<void> _showFeedbackDialog() async {
+    final controller = TextEditingController();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('反馈帮助'),
+        contentPadding: const EdgeInsets.fromLTRB(24, 10, 24, 0),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '问题描述（乱码、不完整等等）',
+              style: TextStyle(
+                fontSize: 13,
+                color: Theme.of(dialogContext).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: controller,
+              maxLines: 5,
+              minLines: 4,
+              decoration: const InputDecoration(
+                hintText: '问题描述（乱码、不完整等等）',
+                border: OutlineInputBorder(),
+                isDense: true,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton(
+              onPressed: () async {
+                final text = controller.text.trim();
+                if (text.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('请先填写问题描述')),
+                  );
+                  return;
+                }
+                final payload =
+                    'Qread v${AppConstants.appVersion}\n---\n$text';
+                await Clipboard.setData(ClipboardData(text: payload));
+                if (!mounted) return;
+                Navigator.pop(dialogContext);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('已复制到剪贴板，粘贴到反馈渠道即可'),
+                  ),
+                );
+              },
+              child: const Text('上报'),
+            ),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
   }
 
   Future<void> _showUserManager(UserProvider userProvider) async {
@@ -726,23 +826,28 @@ class _ProfileMenuTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ListTile(
-      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+      // 整体比原来小一号（图标盒 56→44、标题 18→16、上下留白 8→4），
+      // 一行的高度从 ~72 收到 ~58 —— 这是「我的界面文字调小一号」的主体。
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       leading: Container(
-        width: 56,
-        height: 56,
+        width: 44,
+        height: 44,
         decoration: BoxDecoration(
           color: item.accent.withValues(alpha: 0.16),
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(14),
         ),
-        child: Icon(item.icon, color: item.accent, size: 28),
+        child: Icon(item.icon, color: item.accent, size: 22),
       ),
       title: Text(
         item.title,
-        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
       ),
-      subtitle: item.subtitle == null ? null : Text(item.subtitle!),
+      subtitle: item.subtitle == null
+          ? null
+          : Text(item.subtitle!, style: const TextStyle(fontSize: 12)),
       trailing: Icon(
         Icons.chevron_right_rounded,
+        size: 20,
         color: Theme.of(context).colorScheme.onSurfaceVariant,
       ),
       onTap: item.onTap,
@@ -770,12 +875,12 @@ class _ProfileAvatar extends StatelessWidget {
     return Container(
       width: size,
       height: size,
-      padding: const EdgeInsets.all(5),
+      padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
         color: Colors.transparent,
         shape: BoxShape.circle,
         border:
-            Border.all(color: Colors.white.withValues(alpha: 0.9), width: 2.8),
+            Border.all(color: Colors.white.withValues(alpha: 0.9), width: 2.4),
       ),
       child: DecoratedBox(
         decoration: const BoxDecoration(
@@ -788,14 +893,14 @@ class _ProfileAvatar extends StatelessWidget {
                   letter.isEmpty ? 'Q' : letter,
                   style: TextStyle(
                     color: const Color(0xFF2F8CEB),
-                    fontSize: size * 0.34,
-                    fontWeight: FontWeight.w800,
+                    fontSize: size * 0.38,
+                    fontWeight: FontWeight.w700,
                   ),
                 )
               : Icon(
                   Icons.person_outline_rounded,
                   color: const Color(0xFF2F8CEB),
-                  size: size * 0.38,
+                  size: size * 0.42,
                 ),
         ),
       ),
@@ -821,24 +926,27 @@ class _QuickActionCard extends StatelessWidget {
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(18),
         onTap: onTap,
         child: Column(
           children: [
             Container(
-              height: 92,
+              // 图标盒 92→68、图标 42→30、标题 16→14，整体小一号
+              height: 68,
               decoration: BoxDecoration(
                 color: accent.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(22),
+                borderRadius: BorderRadius.circular(18),
               ),
               alignment: Alignment.center,
-              child: Icon(icon, color: accent, size: 42),
+              child: Icon(icon, color: accent, size: 30),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Text(
               title,
               textAlign: TextAlign.center,
-              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
             ),
           ],
         ),

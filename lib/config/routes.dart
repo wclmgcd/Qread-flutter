@@ -27,6 +27,22 @@ import '../pages/rss/rss_article_list_page.dart';
 import '../pages/rss/rss_article_detail_page.dart';
 import '../services/app_settings.dart';
 
+/// 全局路由观察器。
+///
+/// 用途：让页面能感知「自己上面那层路由被 pop 了，我又露出来了」——
+/// 即 [RouteAware.didPopNext]。
+///
+/// 【为什么需要】书架从阅读页返回时，列表顺序不会自己更新：
+/// 阅读页只改了内存里那本书的 `durChapterTime`，没有任何东西触发书架重排，
+/// 所以用户必须手动下拉刷新才看到「刚读的书排到最前」。
+/// 挂上这个 observer 后，书架页在 `didPopNext()` 里重排一次即可，
+/// 而且**所有**返回路径都覆盖到（点封面进阅读、经书籍信息页进阅读……），
+/// 不用在每处 `Navigator.push` 后面各写一遍。
+///
+/// 注意：必须在 `MaterialApp.navigatorObservers` 里注册才会生效。
+final RouteObserver<ModalRoute<void>> appRouteObserver =
+    RouteObserver<ModalRoute<void>>();
+
 class AppRoutes {
   static const String home = '/';
   static const String login = '/login';
