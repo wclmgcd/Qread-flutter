@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'app.dart';
@@ -11,12 +13,22 @@ import 'providers/reader_provider.dart';
 import 'providers/replace_rule_provider.dart';
 import 'providers/source_manage_provider.dart';
 import 'providers/theme_provider.dart';
+import 'pages/reader/widgets/reader_fonts.dart';
 import 'services/api_service.dart';
 import 'services/app_settings.dart';
 import 'services/storage_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 阅读字体预热。
+  //
+  // pubspec 里声明的字体是**懒加载**的：第一次有 TextStyle 用到某个 family
+  // 时引擎才异步读 ttf。而分页是「一次性测量 + 缓存结果」，如果这次测量发生
+  // 在字体读完之前，量到的是回退字体的行宽，断行会偏（正文里冒出
+  // 「一句正常的话被断开」）。启动时就开始读，等用户点开书时基本已就绪。
+  // 刻意不 await —— 不能为了字体拖慢启动；万一还没就绪，阅读页那边
+  // 也有补排兜底（见 ReaderPage._ensureFontsThenRepaginate）。
+  unawaited(ReaderFont.preload());
   final storage = await StorageService.instance;
   final savedBaseUrl = storage.baseUrl;
   if (savedBaseUrl != null && savedBaseUrl.isNotEmpty) {

@@ -59,6 +59,10 @@ class _ReaderPageState extends State<ReaderPage> {
   static const _keyFontFamily = 'reader_font_family';
   static const _keyBoldText = 'reader_bold_text';
   static const _keyShowParagraphComment = 'reader_show_paragraph_comment';
+  // 「听书设置」里的三个开关（对齐 3.41 的听书设置面板）
+  static const _keyTtsAllowPageTurn = 'reader_tts_allow_page_turn';
+  static const _keyTtsShowChapterSwitch = 'reader_tts_show_chapter_switch';
+  static const _keyTtsDelayPageTurn = 'reader_tts_delay_page_turn';
   /// 老默认排版 → 官方客户端同款排版 的一次性迁移标记
   static const _keyLayoutMigrated = 'reader_layout_migrated_v2';
 
@@ -74,7 +78,6 @@ class _ReaderPageState extends State<ReaderPage> {
   Timer? _metaTimer;
   Timer? _autoPageTimer;
   Timer? _ttsSleepTimer;
-  Timer? _controllerHideTimer;
   StreamSubscription<WsPushMessage>? _wsSubscription;
   bool _openingCommentPage = false;
 
@@ -84,6 +87,14 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 于是它会一直盖在正文上（用户反馈「不会自动隐藏，安卓和 iOS 都不行」）。
   /// 4 秒是照着官方 3.41 的手感定的，想调只改这一个常量。
   static const Duration _controllerAutoHideDelay = Duration(seconds: 4);
+
+  /// 控制栏交互计数。
+  ///
+  /// 【为什么需要它】倒计时本身由 `ControllerOverlay` 自己持有
+  /// （它只会在控制栏可见时存在，`initState` 里就排好倒计时，见
+  /// controller_overlay.dart 的注释）。页面这边只需要在用户「又操作了一下」
+  /// 时把这个计数 +1，控制栏就会把倒计时往后推。
+  int _controllerRestartToken = 0;
 
   String? _token;
   String? _bookUrl;
@@ -105,6 +116,32 @@ class _ReaderPageState extends State<ReaderPage> {
     _startMetaTicker();
     _listenBackendPush();
     WidgetsBinding.instance.addPostFrameCallback((_) => _initBook());
+    _ensureFontsThenRepaginate();
+  }
+
+  /// 字体就绪后补排一次。
+  ///
+  /// 【为什么需要】pubspec 声明的字体是懒加载的，第一次用到才异步读 ttf。
+  /// 如果进阅读页时字体还没读完，首次分页量到的是**回退字体**的行宽，
+  /// 断行位置会偏 —— 表现就是「一句正常的话被断开到下一段」，而换一种
+  /// 字体（换掉缓存 key → 强制重排）就恢复正常。
+  /// 这里等预加载完成后，把分页缓存清掉重排一次，从根上消掉这个竞态。
+  void _ensureFontsThenRepaginate() {
+    // 进页面时已经就绪（绝大多数情况，main() 里就开始预热了）→ 不用管
+    if (ReaderFont.fontsReady) return;
+    unawaited(ReaderFont.preload().then((_) {
+      if (!mounted) return;
+      // 缓存里那份是用回退字体算的，必须整体作废
+      _state.layoutCache.clear();
+      _state.prefetchedNextLayout = null;
+      _state.prefetchedNextChapterIndex = -1;
+      _state.prefetchedPrevLayout = null;
+      _state.prefetchedPrevChapterIndex = -1;
+      final provider = _readerProvider;
+      if (provider == null) return;
+      setState(() {});
+      _rebuildPages(provider);
+    }));
   }
 
   @override
@@ -113,7 +150,6 @@ class _ReaderPageState extends State<ReaderPage> {
     _metaTimer?.cancel();
     _autoPageTimer?.cancel();
     _ttsSleepTimer?.cancel();
-    _controllerHideTimer?.cancel();
     _wsSubscription?.cancel();
     ReaderWsService.instance.onToast = null;
     _comicScrollController.removeListener(_onComicScroll);
@@ -289,6 +325,12 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.boldText = prefs.getBool(_keyBoldText) ?? false;
       _state.showParagraphComment =
           prefs.getBool(_keyShowParagraphComment) ?? true;
+      _state.ttsAllowPageTurn =
+          prefs.getBool(_keyTtsAllowPageTurn) ?? true;
+      _state.ttsShowChapterSwitch =
+          prefs.getBool(_keyTtsShowChapterSwitch) ?? true;
+      _state.ttsDelayPageTurn =
+          prefs.getBool(_keyTtsDelayPageTurn) ?? true;
       if (needMigrate) {
         if (_state.fontSize == 18.0) _state.fontSize = 28.0;
         if (_state.lineHeight == 1.8) _state.lineHeight = 1.5;
@@ -340,6 +382,9 @@ class _ReaderPageState extends State<ReaderPage> {
     await prefs.setString(_keyFontFamily, _state.fontFamily);
     await prefs.setBool(_keyBoldText, _state.boldText);
     await prefs.setBool(_keyShowParagraphComment, _state.showParagraphComment);
+    await prefs.setBool(_keyTtsAllowPageTurn, _state.ttsAllowPageTurn);
+    await prefs.setBool(_keyTtsShowChapterSwitch, _state.ttsShowChapterSwitch);
+    await prefs.setBool(_keyTtsDelayPageTurn, _state.ttsDelayPageTurn);
   }
 
   // ============================================================
@@ -727,6 +772,9 @@ class _ReaderPageState extends State<ReaderPage> {
       bold: _state.boldText,
       // 系统字号变化会改变断行结果，必须进 key，否则会命中旧排版
       textScale: textScaler.scale(1.0),
+      // 内置字体没读完时量出来的是回退字体的行宽，断行会偏。
+      // 把它也放进 key，字体就绪后自动重排（见 ReaderFont.fontsReady 的注释）。
+      fontsReady: ReaderFont.fontsReady,
     );
 
     if (_state.layoutCache.containsKey(cacheKey)) {
@@ -1100,8 +1148,10 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   /// 立刻收起控制栏（手动收起、或弹出面板要腾地方时调用）
+  ///
+  /// 倒计时由 `ControllerOverlay` 自己持有，控制栏一从树上移除，
+  /// 它的 `dispose` 就会把倒计时取消，这里不用管。
   void _hideController() {
-    _controllerHideTimer?.cancel();
     if (_state.showController) {
       setState(() => _state.showController = false);
     }
@@ -1112,14 +1162,9 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 在控制栏上做任何操作（翻章、拉进度、点目录…）都该调一次，
   /// 否则用户操作到一半工具条就被收走了。
   void _restartControllerHideTimer() {
-    _controllerHideTimer?.cancel();
     // 自动翻页模式下控制栏里有「秒/页」调节，需要常驻，不参与自动隐藏
     if (!_state.showController || _state.autoPageRunning) return;
-    _controllerHideTimer = Timer(_controllerAutoHideDelay, () {
-      if (!mounted) return;
-      if (_state.autoPageRunning) return;
-      setState(() => _state.showController = false);
-    });
+    setState(() => _controllerRestartToken++);
   }
 
   void _goToPreviousChapter() {
@@ -1222,6 +1267,13 @@ class _ReaderPageState extends State<ReaderPage> {
                     // 控制栏的底色/文字色跟随当前阅读主题
                     // （原来是写死的黑色半透明，在浅色主题下会糊住正文）
                     theme: _state.currentTheme,
+                    // 自动隐藏：自动翻页模式下传 null（控制栏常驻），
+                    // 其余模式 4 秒后自动收起
+                    autoHideDelay: _state.autoPageRunning
+                        ? null
+                        : _controllerAutoHideDelay,
+                    restartToken: _controllerRestartToken,
+                    onAutoHide: _hideController,
                     data: ReaderControllerViewData(
                       bookName: provider.book?.name ?? '',
                       chapterTitle: _displayedChapter(provider)?.title ?? '',
@@ -1276,6 +1328,15 @@ class _ReaderPageState extends State<ReaderPage> {
                       onResumeTts: _resumeTts,
                       onShowTtsTimer: _showTtsTimerSheet,
                       onShowTtsSettings: _showTtsSettingsSheet,
+                      // 朗读栏上的 ⏮ / ⏭ / « / » / 语速
+                      onTtsPrevParagraph: () => _ttsSkipParagraph(-1),
+                      onTtsNextParagraph: () => _ttsSkipParagraph(1),
+                      onTtsPrevChapter: () => _ttsSwitchChapter(-1),
+                      onTtsNextChapter: () => _ttsSwitchChapter(1),
+                      onTtsRateChanged: (v) async {
+                        await _tts.setRate(v);
+                        if (mounted) setState(() {});
+                      },
                       onStopAutoPage: _stopAutoPageMode,
                       onDecreaseAutoPageInterval: () =>
                           _changeAutoPageInterval(-1),
@@ -1753,8 +1814,9 @@ class _ReaderPageState extends State<ReaderPage> {
   void _startAutoPageMode() {
     final provider = context.read<ReaderProvider>();
     _stopTts();
-    // 自动翻页模式下控制栏常驻，不需要自动隐藏倒计时
-    _controllerHideTimer?.cancel();
+    // 自动翻页模式下控制栏常驻，不需要自动隐藏倒计时。
+    // 把 showController 置 false 后控制栏会从树上移除，它自带的倒计时
+    // 也随之在 dispose 里被取消。
     setState(() {
       _state.autoPageRunning = true;
       _state.showAutoPageControls = true;
@@ -1932,19 +1994,24 @@ class _ReaderPageState extends State<ReaderPage> {
       return;
     }
     setState(() => _state.ttsParagraphIndex = index);
-    _focusParagraph(index);
+    // 「延迟翻页」开启时，翻页交给上一段的 onChunkComplete（这一段读完了才翻），
+    // 画面不会跑到朗读前面去；关掉就是段落一开始就紧跟高亮走。
+    if (!_state.ttsDelayPageTurn) _focusParagraph(index);
 
     _tts.onChunkComplete = () {
       if (!_state.ttsReading || !mounted) return;
       final nextIndex = index + 1;
       if (nextIndex < _state.paragraphs.length) {
+        if (_state.ttsDelayPageTurn) _focusParagraph(nextIndex);
         _speakParagraphAt(nextIndex);
         return;
       }
       final provider = context.read<ReaderProvider>();
       final ci =
           _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
-      if (_state.autoNext &&
+      // 「显示章节切换」关掉后，本章读完就停，不再自动切下一章
+      if (_state.ttsShowChapterSwitch &&
+          _state.autoNext &&
           _state.hasNextChapter(ci, provider.chapters.length) &&
           _token != null) {
         _state.continueTtsOnNextChapter = true;
@@ -1958,7 +2025,29 @@ class _ReaderPageState extends State<ReaderPage> {
     await _tts.speakText(_state.paragraphs[index].text);
   }
 
+  /// 朗读栏上的 ⏮ / ⏭：跳到上一段 / 下一段并接着读
+  void _ttsSkipParagraph(int delta) {
+    if (!_state.ttsReading || _state.paragraphs.isEmpty) return;
+    final current =
+        _state.ttsParagraphIndex < 0 ? 0 : _state.ttsParagraphIndex;
+    final target = (current + delta).clamp(0, _state.paragraphs.length - 1);
+    if (target == current) return;
+    _speakParagraphAt(target);
+  }
+
+  /// 朗读栏上的 « / »：切上一章 / 下一章并接着读
+  void _ttsSwitchChapter(int delta) {
+    if (_state.ttsReading) _state.continueTtsOnNextChapter = true;
+    if (delta < 0) {
+      _goToPreviousChapter();
+    } else {
+      _goToNextChapter();
+    }
+  }
+
   void _focusParagraph(int index) {
+    // 「允许听书翻页」关掉后，页面就停在原处，不再跟着朗读走
+    if (!_state.ttsAllowPageTurn) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!_state.pageAnimType.usesScrollReader) {
@@ -2828,77 +2917,267 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// 「听书设置」面板 —— 对齐 3.41：
+  /// 三个开关（允许听书翻页 / 显示章节切换 / 延迟翻页）+ 一个「朗读引擎」入口卡片。
+  ///
+  /// 原来这里是「语速滑杆 + 语音下拉框」，而语速在朗读控制栏上已经有了，
+  /// 下拉框又长得跟正文界面完全不是一个体系。
   void _showTtsSettingsSheet() {
+    final readerTheme = _state.currentTheme;
     showModalBottomSheet(
       context: context,
+      backgroundColor: readerTheme.background,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, sheetSetState) {
-            final voices = _tts.voices;
+            void commit(VoidCallback fn) {
+              setState(fn);
+              sheetSetState(() {});
+              unawaited(_saveSettings());
+            }
+
             return SafeArea(
               top: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+                padding: const EdgeInsets.fromLTRB(16, 6, 16, 20),
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('听书设置',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 18),
                     Row(
                       children: [
-                        const SizedBox(width: 56, child: Text('语速')),
-                        Expanded(
-                          child: Slider(
-                            value: _tts.rate,
-                            min: 0.1,
-                            max: 1.0,
-                            divisions: 9,
-                            label: _tts.rate.toStringAsFixed(1),
-                            onChanged: (value) async {
-                              await _tts.setRate(value);
-                              if (mounted) {
-                                setState(() {});
-                                sheetSetState(() {});
-                              }
-                            },
-                          ),
+                        const Expanded(
+                          child: Text('听书设置',
+                              style: TextStyle(
+                                  fontSize: 17, fontWeight: FontWeight.w600)),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.close, size: 20),
+                          tooltip: '关闭',
+                          onPressed: () => Navigator.pop(sheetContext),
                         ),
                       ],
                     ),
-                    if (voices.isNotEmpty) ...[
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<String>(
-                        initialValue: _tts.selectedVoiceId,
-                        decoration: const InputDecoration(
-                          labelText: '语音',
-                          border: OutlineInputBorder(),
+                    _ttsSwitchTile(
+                      title: '允许听书翻页',
+                      value: _state.ttsAllowPageTurn,
+                      onChanged: (v) =>
+                          commit(() => _state.ttsAllowPageTurn = v),
+                    ),
+                    _ttsSwitchTile(
+                      title: '显示章节切换',
+                      value: _state.ttsShowChapterSwitch,
+                      onChanged: (v) =>
+                          commit(() => _state.ttsShowChapterSwitch = v),
+                    ),
+                    _ttsSwitchTile(
+                      title: '延迟翻页',
+                      value: _state.ttsDelayPageTurn,
+                      onChanged: (v) =>
+                          commit(() => _state.ttsDelayPageTurn = v),
+                    ),
+                    const SizedBox(height: 12),
+                    // 朗读引擎入口（3.41 是一个灰底卡片，右边一个 ›）
+                    InkWell(
+                      onTap: () => _showTtsEngineSheet(
+                        onPicked: () => sheetSetState(() {}),
+                      ),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: readerTheme.text.withValues(alpha: 0.06),
+                          borderRadius: BorderRadius.circular(10),
                         ),
-                        items: voices.map((voice) {
-                          final id =
-                              (voice['name'] ?? voice['identifier']).toString();
-                          final locale = (voice['locale'] ?? '').toString();
-                          final label = locale.isEmpty ? id : '$id ($locale)';
-                          return DropdownMenuItem<String>(
-                            value: id,
-                            child: Text(label, overflow: TextOverflow.ellipsis),
-                          );
-                        }).toList(),
-                        onChanged: (value) async {
-                          if (value == null) return;
-                          await _tts.setVoiceById(value);
-                          if (mounted) {
-                            setState(() {});
-                            sheetSetState(() {});
-                          }
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    '朗读引擎',
+                                    style: TextStyle(
+                                        fontSize: 12,
+                                        color: readerTheme.secondaryText),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    children: [
+                                      Icon(Icons.cloud_outlined,
+                                          size: 16, color: readerTheme.text),
+                                      const SizedBox(width: 6),
+                                      Expanded(
+                                        child: Text(
+                                          _currentVoiceLabel(),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                              fontSize: 14,
+                                              color: readerTheme.text),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(Icons.chevron_right,
+                                size: 20, color: readerTheme.secondaryText),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 「听书设置」里的一行开关：标题 + 说明图标 + 右侧 Switch
+  Widget _ttsSwitchTile({
+    required String title,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    final theme = _state.currentTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 1),
+      child: Row(
+        children: [
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(title,
+                      style: TextStyle(fontSize: 15, color: theme.text)),
+                ),
+                const SizedBox(width: 6),
+                Icon(Icons.help_outline, size: 15, color: theme.secondaryText),
+              ],
+            ),
+          ),
+          Switch(value: value, onChanged: onChanged),
+        ],
+      ),
+    );
+  }
+
+  /// 当前选中的朗读语音名（没选过就显示「系统默认」）
+  String _currentVoiceLabel() {
+    final id = _tts.selectedVoiceId;
+    if (id == null || id.trim().isEmpty) return '系统默认';
+    return id;
+  }
+
+  /// 朗读引擎（语音）选择面板 —— 对齐 3.41：搜索框 + 一整列可选项。
+  ///
+  /// 【这里列的是设备上的系统语音】本项目朗读走的是 `flutter_tts`（系统 TTS），
+  /// 所以能真正生效的「引擎」就是系统装的这些语音。后端那套 HTTP 朗读引擎
+  /// （`/getalltts`）目前还没接进播放链路，列出来选了也不会出声，就不放进来。
+  void _showTtsEngineSheet({VoidCallback? onPicked}) {
+    final readerTheme = _state.currentTheme;
+    final voices = _tts.voices;
+    var query = '';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: readerTheme.background,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, sheetSetState) {
+            final q = query.trim().toLowerCase();
+            final list = voices.where((v) {
+              if (q.isEmpty) return true;
+              final name =
+                  (v['name'] ?? v['identifier'] ?? '').toString().toLowerCase();
+              final locale = (v['locale'] ?? '').toString().toLowerCase();
+              return name.contains(q) || locale.contains(q);
+            }).toList(growable: false);
+
+            return SafeArea(
+              top: false,
+              child: SizedBox(
+                height: MediaQuery.of(sheetContext).size.height * 0.72,
+                child: Column(
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+                      child: TextField(
+                        decoration: InputDecoration(
+                          isDense: true,
+                          hintText: '搜索引擎',
+                          prefixIcon: const Icon(Icons.search, size: 20),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(22),
+                          ),
+                        ),
+                        onChanged: (v) {
+                          query = v;
+                          sheetSetState(() {});
                         },
                       ),
-                    ],
+                    ),
+                    Expanded(
+                      child: list.isEmpty
+                          ? const Center(child: Text('没有匹配的朗读引擎'))
+                          : ListView.builder(
+                              itemCount: list.length,
+                              itemBuilder: (ctx, i) {
+                                final v = list[i];
+                                final id =
+                                    (v['name'] ?? v['identifier'] ?? '')
+                                        .toString();
+                                final locale = (v['locale'] ?? '').toString();
+                                final selected = id == _tts.selectedVoiceId;
+                                return ListTile(
+                                  dense: true,
+                                  leading: Icon(
+                                    Icons.cloud_outlined,
+                                    size: 20,
+                                    color: selected
+                                        ? const Color(0xFF009688)
+                                        : readerTheme.secondaryText,
+                                  ),
+                                  title: Text(
+                                    locale.isEmpty ? id : '$id ($locale)',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: selected
+                                          ? const Color(0xFF009688)
+                                          : readerTheme.text,
+                                    ),
+                                  ),
+                                  trailing: selected
+                                      ? const Icon(Icons.check,
+                                          size: 18, color: Color(0xFF009688))
+                                      : null,
+                                  onTap: () async {
+                                    await _tts.setVoiceById(id);
+                                    if (!mounted) return;
+                                    setState(() {});
+                                    Navigator.pop(sheetContext);
+                                    onPicked?.call();
+                                  },
+                                );
+                              },
+                            ),
+                    ),
                   ],
                 ),
               ),

@@ -144,11 +144,17 @@ class SourceManageProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 勾选/取消一个书源。
+  ///
+  /// 【对齐 3.41】复选框是**常驻**的，底部批量栏也常驻（`全选 (0/34) 反选
+  /// 删除 更多`）。所以「勾上任意一项」本身就意味着进入多选态，不需要
+  /// 先点工具栏上的「批量管理」。
   void toggleSelection(String id) {
     if (_selectedIds.contains(id)) {
       _selectedIds.remove(id);
     } else {
       _selectedIds.add(id);
+      _selectMode = true;
     }
     notifyListeners();
   }

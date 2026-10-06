@@ -252,6 +252,11 @@ class ChapterLayout {
   /// [textScale] 是系统「字体大小」的缩放系数（MediaQuery.textScalerOf），
   /// 它直接决定每行能放几个字，也必须进 key —— Android 上调系统字号会触发
   /// config change 并重建页面（不重启 App），key 里不带它就会命中旧排版。
+  ///
+  /// [fontsReady] 是「内置字体是否已加载完」。pubspec 声明的字体是懒加载的，
+  /// 字体没就绪时 `TextPainter` 量到的是**回退字体**的行宽，断行位置会偏。
+  /// 带上它，字体就绪后 key 变化 → 自动用正确度量重排一次，而不是命中
+  /// 那份用回退字体算出来的旧排版（否则会一直显示「提前断行」）。
   static String cacheKey(
     int chapterIndex,
     int contentHash,
@@ -263,6 +268,7 @@ class ChapterLayout {
     String fontFamily = 'default',
     bool bold = false,
     double textScale = 1.0,
+    bool fontsReady = true,
   }) {
     return '$chapterIndex|$contentHash|'
         '${fontSize.toStringAsFixed(2)}|'
@@ -270,6 +276,7 @@ class ChapterLayout {
         '${width.toStringAsFixed(1)}|'
         '${height.toStringAsFixed(1)}|'
         '$pageMode|$fontFamily|${bold ? 1 : 0}|'
-        '${textScale.toStringAsFixed(2)}';
+        '${textScale.toStringAsFixed(2)}|'
+        '${fontsReady ? 1 : 0}';
   }
 }

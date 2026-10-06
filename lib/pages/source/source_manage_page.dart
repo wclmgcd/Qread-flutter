@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -83,7 +84,7 @@ class _SourceManagePageState extends State<SourceManagePage> {
     return Scaffold(
       appBar: _buildAppBar(provider),
       body: _buildBody(userProvider, provider),
-      floatingActionButton: provider.selectMode ? null : FloatingActionButton(
+      floatingActionButton: FloatingActionButton(
         onPressed: _openCreateEditor,
         child: const Icon(Icons.add),
       ),
@@ -91,24 +92,10 @@ class _SourceManagePageState extends State<SourceManagePage> {
   }
 
   PreferredSizeWidget _buildAppBar(SourceManageProvider provider) {
-    if (provider.selectMode) {
-      return AppBar(
-        leading: IconButton(
-          icon: const Icon(Icons.close),
-          onPressed: () => provider.clearSelection(),
-        ),
-        title: Text('已选 ${provider.selectedIds.length} 项'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.select_all),
-            tooltip: '全选',
-            onPressed: () => provider.selectAll(),
-          ),
-        ],
-      );
-    }
-
     // 常驻搜索框（对齐官方 3.41：标题位置就是搜索框，不用先点放大镜）
+    //
+    // 【对齐 3.41】勾选后 AppBar 不再切换成「已选 N 项」—— 3.41 的标题栏
+    // 始终是搜索框，选中数量显示在底部批量栏的「全选 (n/m)」里。
     return AppBar(
       titleSpacing: 8,
       title: TextField(
@@ -185,14 +172,15 @@ class _SourceManagePageState extends State<SourceManagePage> {
             ),
           ],
         ),
-        IconButton(
-          icon: const Icon(Icons.checklist),
-          tooltip: '批量管理',
-          onPressed: () => provider.toggleSelectMode(),
-        ),
+        // 【对齐 3.41】右上角 ⋮ 的菜单项与官方一一对应：
+        // 刷新书源 / 新建书源 / 本地导入 / 网络导入 / 扫码导入 /
+        // 清理cache / 清理cookie。
+        // 原来多出来的「粘贴导入」「导出全部」已收掉：「粘贴导入」并进了
+        // 「新建书源」入口，「导出」挪到批量栏的「更多」里（3.41 就在那儿）。
         PopupMenuButton<String>(
+          icon: const Icon(Icons.more_vert),
+          tooltip: '更多',
           onSelected: (action) => _handleMenuAction(action),
-          // 菜单项与官方 3.41 一致
           itemBuilder: (context) => const [
             PopupMenuItem(value: 'refresh', child: Text('刷新书源')),
             PopupMenuItem(value: 'create', child: Text('新建书源')),
@@ -201,8 +189,6 @@ class _SourceManagePageState extends State<SourceManagePage> {
             PopupMenuItem(value: 'import_qr', child: Text('扫码导入')),
             PopupMenuItem(value: 'clear_cache', child: Text('清理cache')),
             PopupMenuItem(value: 'clear_cookie', child: Text('清理cookie')),
-            PopupMenuItem(value: 'import', child: Text('粘贴导入')),
-            PopupMenuItem(value: 'export_all', child: Text('导出全部')),
           ],
         ),
       ],
@@ -438,68 +424,43 @@ class _SourceManagePageState extends State<SourceManagePage> {
 
     return Column(
       children: [
-        if (!provider.selectMode && provider.sources.isNotEmpty)
-          _buildTopSection(provider),
+        // 【对齐 3.41】顶部不再放「统计卡片 + 分组 chips」：
+        // 3.41 的书源页就是「搜索框 + 紧凑列表 + 常驻批量栏」，
+        // 分组标题以普通文字插在列表里（见 _SourceGroupSection），
+        // 按分组筛选走 AppBar 的漏斗按钮，不占列表顶部的位置。
+        if (!provider.canEdit) _buildReadOnlyNotice(),
         Expanded(
           child: provider.sources.isEmpty
               ? _buildEmptyView()
               : _buildSourceList(provider),
         ),
-        if (provider.selectMode && provider.selectedIds.isNotEmpty)
-          _buildBatchBar(provider),
+        // 批量栏常驻（3.41 就是这样：0 选中时它也在，只是「删除/更多」置灰）
+        if (provider.sources.isNotEmpty) _buildBatchBar(provider),
       ],
     );
   }
 
-  Widget _buildTopSection(SourceManageProvider provider) {
-    return Column(
-      children: [
-        _SummaryCard(provider: provider),
-        if (!provider.canEdit)
-          Container(
-            width: double.infinity,
-            margin: const EdgeInsets.symmetric(horizontal: 12),
-            padding: const EdgeInsets.all(10),
-            decoration: BoxDecoration(
-              color: Colors.orange.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: const Row(
-              children: [
-                Icon(Icons.info_outline, size: 18, color: Colors.orange),
-                SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    '当前账号为只读模式，仅可查看书源',
-                    style: TextStyle(fontSize: 13, color: Colors.orange),
-                  ),
-                ),
-              ],
+  Widget _buildReadOnlyNotice() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.info_outline, size: 18, color: Colors.orange),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '当前账号为只读模式，仅可查看书源',
+              style: TextStyle(fontSize: 13, color: Colors.orange),
             ),
           ),
-        if (provider.allGroups.isNotEmpty)
-          SizedBox(
-            height: 36,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              itemCount: provider.allGroups.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final g = provider.allGroups[index];
-                final isSelected = g == provider.filterGroup;
-                return FilterChip(
-                  label: Text(g, style: const TextStyle(fontSize: 12)),
-                  selected: isSelected,
-                  onSelected: (_) => provider.setFilterGroup(g),
-                  visualDensity: VisualDensity.compact,
-                  selectedColor: const Color(0xFF009688).withValues(alpha: 0.2),
-                );
-              },
-            ),
-          ),
-        const SizedBox(height: 4),
-      ],
+        ],
+      ),
     );
   }
 
@@ -605,13 +566,15 @@ class _SourceManagePageState extends State<SourceManagePage> {
               onPressed: () => provider.invertSelection(),
               child: const Text('反选'),
             ),
+            // 一个都没勾的时候「删除 / 更多」置灰（对齐 3.41：
+            // 0/34 时这两颗是灰的，勾上任意一条才亮）
             TextButton(
-              onPressed: () => _confirmBatchDelete(),
+              onPressed: selected > 0 ? () => _confirmBatchDelete() : null,
               style: TextButton.styleFrom(foregroundColor: Colors.red),
               child: const Text('删除'),
             ),
             TextButton(
-              onPressed: () => _showBatchMoreSheet(),
+              onPressed: selected > 0 ? () => _showBatchMoreSheet() : null,
               child: const Text('更多'),
             ),
           ],
@@ -622,12 +585,16 @@ class _SourceManagePageState extends State<SourceManagePage> {
 
   /// 「更多」底部菜单 —— 条目与顺序对齐 3.41。
   ///
-  /// 【少了「检验书源」】3.41 这一项是逐源跑一遍校验；本项目后端没有对应的
-  /// 接口（`api_service.dart` 里没有 check / verify 之类的方法），
-  /// 与其放一个点下去没反应的条目，不如先不列。后端补上接口后再加。
+  /// 【3.41 会根据「有没有勾选」换一套菜单】
+  /// - 勾了书源：启用书源 / 禁用书源 / 启用发现 / 禁用发现 /
+  ///   置顶所有 / 置底所有 / 添加分组 / 删除分组
+  /// - 一个没勾：启用发现 / 禁用发现 / 置顶所有 / 置底所有 /
+  ///   添加分组 / 删除分组 / 检验书源 / 导出书源
+  /// 「检验书源」「导出书源」是**对全体**做的，所以只在没勾选时出现。
   Future<void> _showBatchMoreSheet() async {
     final provider = context.read<SourceManageProvider>();
     final token = _token();
+    final hasSelection = provider.selectedIds.isNotEmpty;
 
     await showModalBottomSheet<void>(
       context: context,
@@ -638,22 +605,24 @@ class _SourceManagePageState extends State<SourceManagePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                ListTile(
-                  leading: const Icon(Icons.check_circle_outline),
-                  title: const Text('启用书源'),
-                  onTap: () {
-                    close();
-                    provider.batchSetEnabled(token, true);
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.block),
-                  title: const Text('禁用书源'),
-                  onTap: () {
-                    close();
-                    provider.batchSetEnabled(token, false);
-                  },
-                ),
+                if (hasSelection) ...[
+                  ListTile(
+                    leading: const Icon(Icons.check_circle_outline),
+                    title: const Text('启用书源'),
+                    onTap: () {
+                      close();
+                      provider.batchSetEnabled(token, true);
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.block),
+                    title: const Text('禁用书源'),
+                    onTap: () {
+                      close();
+                      provider.batchSetEnabled(token, false);
+                    },
+                  ),
+                ],
                 ListTile(
                   leading: const Icon(Icons.explore_outlined),
                   title: const Text('启用发现'),
@@ -702,19 +671,110 @@ class _SourceManagePageState extends State<SourceManagePage> {
                     _showBatchGroupDialog(initialSt: '1');
                   },
                 ),
-                ListTile(
-                  leading: const Icon(Icons.ios_share),
-                  title: const Text('导出书源'),
-                  onTap: () {
-                    close();
-                    _exportSelected();
-                  },
-                ),
+                if (!hasSelection) ...[
+                  ListTile(
+                    leading: const Icon(Icons.fact_check_outlined),
+                    title: const Text('检验书源'),
+                    onTap: () {
+                      close();
+                      _verifyAllSources();
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.ios_share),
+                    title: const Text('导出书源'),
+                    onTap: () {
+                      close();
+                      _exportAll();
+                    },
+                  ),
+                ],
               ],
             ),
           ),
         );
       },
+    );
+  }
+
+  /// 检验书源（对齐 3.41「更多」里的「检验书源」）。
+  ///
+  /// 【为什么是本地可达性检查】后端没有「逐源校验」的接口
+  /// （`api_service.dart` 里没有 check / verify 之类的方法），所以这里自己
+  /// 并发请求每个书源的主页 URL，把能连上 / 连不上的分别统计出来。
+  /// 它验的是「书源站点还活着吗」，不等同于「搜索规则还能不能用」，
+  /// 但比放一个点下去没反应的条目有用得多。
+  Future<void> _verifyAllSources() async {
+    final provider = context.read<SourceManageProvider>();
+    final list = provider.filteredSources
+        .where((s) => (s.bookSourceUrl ?? '').trim().isNotEmpty)
+        .toList(growable: false);
+    if (list.isEmpty) {
+      _toast('没有可检验的书源');
+      return;
+    }
+    _toast('正在检验 ${list.length} 个书源…');
+
+    final ok = <String>[];
+    final bad = <String>[];
+    // 分批并发，避免一次打出去几十个请求被系统掐掉
+    const concurrency = 6;
+    for (var i = 0; i < list.length; i += concurrency) {
+      final batch = list.skip(i).take(concurrency);
+      await Future.wait(batch.map((s) async {
+        final url = s.bookSourceUrl!;
+        final name = (s.bookSourceName ?? url).trim();
+        try {
+          final resp = await Dio(BaseOptions(
+            connectTimeout: const Duration(seconds: 6),
+            receiveTimeout: const Duration(seconds: 6),
+            followRedirects: true,
+            validateStatus: (c) => c != null && c < 500,
+          )).get<dynamic>(url);
+          final code = resp.statusCode ?? 0;
+          if (code > 0 && code < 400) {
+            ok.add(name);
+          } else {
+            bad.add('$name（HTTP $code）');
+          }
+        } catch (_) {
+          bad.add('$name（连接失败）');
+        }
+      }));
+    }
+
+    if (!mounted) return;
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('检验书源'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Text('可用 ${ok.length} 个，不可用 ${bad.length} 个'),
+              if (bad.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                const Text('不可用：',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                for (final n in bad)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text('· $n', style: const TextStyle(fontSize: 13)),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -943,21 +1003,6 @@ class _SourceManagePageState extends State<SourceManagePage> {
     );
   }
 
-  Future<void> _exportSelected() async {
-    final provider = context.read<SourceManageProvider>();
-    final messenger = ScaffoldMessenger.of(context);
-    final json = await provider.exportSelectedSources(_token());
-    if (json != null && mounted) {
-      await Clipboard.setData(ClipboardData(text: json));
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text('已导出 ${provider.selectedIds.length} 个书源 JSON 到剪贴板'),
-        ),
-      );
-      provider.clearSelection();
-    }
-  }
-
   Future<void> _exportAll() async {
     final provider = context.read<SourceManageProvider>();
     final messenger = ScaffoldMessenger.of(context);
@@ -988,56 +1033,6 @@ class _SourceManagePageState extends State<SourceManagePage> {
 }
 
 // ============ Components ============
-
-class _SummaryCard extends StatelessWidget {
-  final SourceManageProvider provider;
-  const _SummaryCard({required this.provider});
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.all(12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Row(
-          children: [
-            _MetricItem(label: '总数', value: provider.sources.length.toString()),
-            const SizedBox(width: 24),
-            _MetricItem(label: '启用', value: provider.enabledCount.toString()),
-            const SizedBox(width: 24),
-            _MetricItem(label: '发现', value: provider.exploreEnabledCount.toString()),
-            const Spacer(),
-            if (provider.filterGroup.isNotEmpty)
-              Chip(
-                label: Text(provider.filterGroup, style: const TextStyle(fontSize: 11)),
-                deleteIcon: const Icon(Icons.close, size: 16),
-                onDeleted: () => provider.setFilterGroup(provider.filterGroup),
-                visualDensity: VisualDensity.compact,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _MetricItem extends StatelessWidget {
-  final String label;
-  final String value;
-  const _MetricItem({required this.label, required this.value});
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(value, style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 4),
-        Text(label, style: Theme.of(context).textTheme.bodySmall),
-      ],
-    );
-  }
-}
 
 class _SourceGroupSection extends StatelessWidget {
   final String title;
@@ -1076,33 +1071,35 @@ class _SourceGroupSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 12),
-            ...sources.map((source) => _SourceTile(
-                  source: source,
-                  canEdit: canEdit,
-                  onToggleEnabled: () => onToggleEnabled(source),
-                  onToggleExplore: () => onToggleExplore(source),
-                  onDelete: () => onDelete(source),
-                  onTop: () => onTop(source),
-                  onBottom: () => onBottom(source),
-                  onEdit: () => onEdit(source),
-                  onLogin: () => onLogin(source),
-                  onDebug: () => onDebug(source),
-                  selected: isSelected(source.bookSourceUrl ?? ''),
-                  onToggleSelect: () => onToggleSelect(source.bookSourceUrl ?? ''),
-                  selectMode: selectMode,
-                )),
-          ],
+    // 【对齐 3.41】分组不再包成 Card，标题就是一行普通文字。
+    // 原来每个分组一张卡、卡里每条书源再一个带边框的小卡，
+    // 一层套一层，一屏只能看到两三条书源。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
+          child: Text(
+            title,
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          ),
         ),
-      ),
+        ...sources.map((source) => _SourceTile(
+              source: source,
+              canEdit: canEdit,
+              onToggleEnabled: () => onToggleEnabled(source),
+              onToggleExplore: () => onToggleExplore(source),
+              onDelete: () => onDelete(source),
+              onTop: () => onTop(source),
+              onBottom: () => onBottom(source),
+              onEdit: () => onEdit(source),
+              onLogin: () => onLogin(source),
+              onDebug: () => onDebug(source),
+              selected: isSelected(source.bookSourceUrl ?? ''),
+              onToggleSelect: () => onToggleSelect(source.bookSourceUrl ?? ''),
+              selectMode: selectMode,
+            )),
+      ],
     );
   }
 }
@@ -1140,186 +1137,112 @@ class _SourceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(8),
-        onTap: selectMode ? onToggleSelect : (canEdit ? onEdit : null),
-        child: Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: selected ? const Color(0xFF009688) : Colors.black12,
-              width: selected ? 2 : 1,
-            ),
-            color: selected ? const Color(0xFF009688).withValues(alpha: 0.05) : null,
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  if (selectMode)
-                    Padding(
-                      padding: const EdgeInsets.only(right: 8),
-                      child: Icon(
-                        selected ? Icons.check_box : Icons.check_box_outline_blank,
-                        color: selected ? const Color(0xFF009688) : Colors.grey,
-                        size: 20,
-                      ),
-                    ),
-                  Expanded(
-                    child: Text(
-                      source.bookSourceName ?? '未命名书源',
-                      style: Theme.of(context).textTheme.titleSmall,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  // 行内开关（对齐官方 3.41：每行右侧直接一个启用开关，
-                  // 不用先点 ⋮ 再选「启用/禁用」）
-                  if (!selectMode && canEdit)
-                    Transform.scale(
-                      scale: 0.78,
-                      child: Switch(
-                        value: source.enabled == true,
-                        onChanged: (_) => onToggleEnabled(),
-                      ),
-                    ),
-                  if (!selectMode && canEdit)
-                    PopupMenuButton<String>(
-                      padding: EdgeInsets.zero,
-                      iconSize: 20,
-                      constraints: const BoxConstraints(),
-                      onSelected: (action) {
-                        switch (action) {
-                          case 'toggle':
-                            onToggleEnabled();
-                            break;
-                          case 'toggleExplore':
-                            onToggleExplore();
-                            break;
-                          case 'login':
-                            onLogin();
-                            break;
-                          case 'debug':
-                            onDebug();
-                            break;
-                          case 'edit':
-                            onEdit();
-                            break;
-                          case 'top':
-                            onTop();
-                            break;
-                          case 'bottom':
-                            onBottom();
-                            break;
-                          case 'delete':
-                            onDelete();
-                            break;
-                        }
-                      },
-                      itemBuilder: (ctx) => [
-                        PopupMenuItem(
-                          value: 'toggle',
-                          child: Text(source.enabled == true ? '禁用' : '启用'),
-                        ),
-                        PopupMenuItem(
-                          value: 'toggleExplore',
-                          child: Text(source.enabledExplore == true ? '关闭发现' : '开启发现'),
-                        ),
-                        if ((source.loginUrl ?? '').isNotEmpty ||
-                            (source.loginUi ?? '').isNotEmpty)
-                          const PopupMenuItem(value: 'login', child: Text('登录')),
-                        const PopupMenuItem(value: 'debug', child: Text('调试')),
-                        const PopupMenuItem(value: 'edit', child: Text('编辑')),
-                        const PopupMenuItem(value: 'top', child: Text('置顶')),
-                        const PopupMenuItem(value: 'bottom', child: Text('置底')),
-                        const PopupMenuItem(
-                          value: 'delete',
-                          child: Text('删除', style: TextStyle(color: Colors.red)),
-                        ),
-                      ],
-                    ),
-                ],
+    final enabled = source.enabled == true;
+    // 【对齐 3.41】一行一条：复选框 + 名称 + 开关 + 编辑笔 + ⋮。
+    //
+    // 原来每条书源是一个带边框的小卡片，里面塞了 url、备注、三个状态 chip，
+    // 一屏只能看两三条。3.41 是紧凑行 —— url / 备注 / 状态都收进 ⋮ 里，
+    // 列表本身只留「一眼扫过去就能找到书名」的信息。
+    return InkWell(
+      onTap: selectMode ? onToggleSelect : (canEdit ? onEdit : null),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+        child: Row(
+          children: [
+            // 复选框常驻（对齐 3.41：不用先点「批量管理」，直接勾）
+            InkWell(
+              onTap: onToggleSelect,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Icon(
+                  selected ? Icons.check_box : Icons.check_box_outline_blank,
+                  color: selected ? const Color(0xFF009688) : Colors.grey,
+                  size: 22,
+                ),
               ),
-              const SizedBox(height: 6),
-              Text(
-                source.bookSourceUrl ?? '',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: 11),
+            ),
+            Expanded(
+              child: Text(
+                source.bookSourceName ?? '未命名书源',
+                style: const TextStyle(fontSize: 15),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              if ((source.bookSourceComment ?? '').isNotEmpty) ...[
-                const SizedBox(height: 4),
-                Text(
-                  source.bookSourceComment!,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(fontSize: 11),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
+            ),
+            if (canEdit) ...[
+              // 行内开关（对齐官方 3.41：每行右侧直接一个启用开关，
+              // 不用先点 ⋮ 再选「启用/禁用」）
+              Transform.scale(
+                scale: 0.72,
+                child: Switch(
+                  value: enabled,
+                  onChanged: (_) => onToggleEnabled(),
                 ),
-              ],
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 6,
-                runSpacing: 6,
-                children: [
-                  _StatusChip(
-                    label: source.enabled == true ? '已启用' : '已禁用',
-                    color: source.enabled == true
-                        ? const Color(0xFFE0F2F1)
-                        : const Color(0xFFF5F5F5),
-                    textColor: source.enabled == true
-                        ? const Color(0xFF00695C)
-                        : const Color(0xFF9E9E9E),
-                  ),
-                  _StatusChip(
-                    label: source.enabledExplore == true ? '发现已启用' : '发现已禁用',
-                    color: source.enabledExplore == true
-                        ? const Color(0xFFE3F2FD)
-                        : const Color(0xFFF5F5F5),
-                    textColor: source.enabledExplore == true
-                        ? const Color(0xFF1565C0)
-                        : const Color(0xFF9E9E9E),
-                  ),
-                  if ((source.searchUrl ?? '').isNotEmpty)
-                    const _StatusChip(
-                      label: '支持搜索',
-                      color: Color(0xFFFFF8E1),
-                      textColor: Color(0xFFF57F17),
-                    ),
-                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.edit_outlined, size: 20),
+                tooltip: '编辑',
+                visualDensity: VisualDensity.compact,
+                onPressed: onEdit,
               ),
             ],
-          ),
+            PopupMenuButton<String>(
+              padding: EdgeInsets.zero,
+              iconSize: 20,
+              constraints: const BoxConstraints(),
+              onSelected: (action) {
+                switch (action) {
+                  case 'toggle':
+                    onToggleEnabled();
+                    break;
+                  case 'toggleExplore':
+                    onToggleExplore();
+                    break;
+                  case 'login':
+                    onLogin();
+                    break;
+                  case 'debug':
+                    onDebug();
+                    break;
+                  case 'edit':
+                    onEdit();
+                    break;
+                  case 'top':
+                    onTop();
+                    break;
+                  case 'bottom':
+                    onBottom();
+                    break;
+                  case 'delete':
+                    onDelete();
+                    break;
+                }
+              },
+              itemBuilder: (ctx) => [
+                PopupMenuItem(
+                  value: 'toggle',
+                  child: Text(enabled ? '禁用' : '启用'),
+                ),
+                PopupMenuItem(
+                  value: 'toggleExplore',
+                  child: Text(source.enabledExplore == true ? '关闭发现' : '开启发现'),
+                ),
+                if ((source.loginUrl ?? '').isNotEmpty ||
+                    (source.loginUi ?? '').isNotEmpty)
+                  const PopupMenuItem(value: 'login', child: Text('登录')),
+                const PopupMenuItem(value: 'debug', child: Text('调试')),
+                const PopupMenuItem(value: 'edit', child: Text('编辑')),
+                const PopupMenuItem(value: 'top', child: Text('置顶')),
+                const PopupMenuItem(value: 'bottom', child: Text('置底')),
+                const PopupMenuItem(
+                  value: 'delete',
+                  child: Text('删除', style: TextStyle(color: Colors.red)),
+                ),
+              ],
+            ),
+          ],
         ),
-      ),
-    );
-  }
-}
-
-class _StatusChip extends StatelessWidget {
-  final String label;
-  final Color color;
-  final Color textColor;
-  const _StatusChip({
-    required this.label,
-    required this.color,
-    this.textColor = const Color(0xFF616161),
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(fontSize: 11, color: textColor),
       ),
     );
   }

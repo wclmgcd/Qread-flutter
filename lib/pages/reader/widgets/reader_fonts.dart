@@ -1,3 +1,5 @@
+import 'package:flutter/services.dart';
+
 /// 阅读器字体目录
 ///
 /// 与设置面板里的「字体」一行对应（默认 / 谷歌 / 黑体 / 圆体），
@@ -68,4 +70,59 @@ class ReaderFont {
 
   /// 取字体族（null = 系统默认）
   static String? familyOf(String? id) => byId(id).family;
+
+  // ============================================================
+  // 预加载
+  // ============================================================
+
+  /// 三个内置字族的 asset 清单，必须与 pubspec.yaml 的 `flutter.fonts` 段一致。
+  static const Map<String, List<String>> _bundledAssets = {
+    'ReaderSans': [
+      'assets/fonts/ReaderSans-Regular.ttf',
+      'assets/fonts/ReaderSans-Bold.ttf',
+    ],
+    'ReaderSerif': [
+      'assets/fonts/ReaderSerif-Regular.ttf',
+      'assets/fonts/ReaderSerif-Bold.ttf',
+    ],
+    'ReaderRound': [
+      'assets/fonts/ReaderRound-Regular.ttf',
+      'assets/fonts/ReaderRound-Bold.ttf',
+    ],
+  };
+
+  static Future<void>? _preloadFuture;
+  static bool _fontsReady = false;
+
+  /// 内置字族是否已经全部读完。
+  ///
+  /// 【为什么分页要关心这个】pubspec 里声明的字体是**懒加载**的：
+  /// 第一次有 `TextStyle` 用到某个 family 时，引擎才异步去读 ttf。
+  /// 而分页引擎是「一次性 `TextPainter.layout()` + 把结果缓存起来」——
+  /// 如果这次 layout 发生在字体还没读完的时候，量出来的是**回退字体**的
+  /// 行宽，断行位置就会偏；等字体读完，`Text` widget 用真字体重排，
+  /// 「分页结果」和「实际渲染」对不上，正文里就冒出「一句正常的话被
+  /// 断开到下一段」。
+  ///
+  /// 用户反馈「换一种字体后消失」正是佐证：换字体会换掉分页缓存 key →
+  /// 强制重排一次，而那时字体早就加载完了。
+  static bool get fontsReady => _fontsReady;
+
+  /// 预加载全部内置字族（幂等，重复调用共用同一个 Future）。
+  static Future<void> preload() => _preloadFuture ??= _doPreload();
+
+  static Future<void> _doPreload() async {
+    for (final entry in _bundledAssets.entries) {
+      try {
+        final loader = FontLoader(entry.key);
+        for (final asset in entry.value) {
+          loader.addFont(rootBundle.load(asset));
+        }
+        await loader.load();
+      } catch (_) {
+        // 单个字族加载失败不该拖垮阅读器，退回系统字体即可
+      }
+    }
+    _fontsReady = true;
+  }
 }

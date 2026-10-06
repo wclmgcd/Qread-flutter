@@ -277,7 +277,7 @@ class PaginationEngine {
 
     if (paragraph.text.isEmpty) return [];
 
-    // 【段评气泡必须预留宽度】
+    // 【段评气泡必须预留宽度 —— 但**只给段末行**预留】
     //
     // 分页时所有段评都挂在段末行（见本方法末尾的 `result.last = ...`），
     // 渲染端则把气泡作为 `WidgetSpan` **追加在段末行文字后面**
@@ -285,11 +285,14 @@ class PaginationEngine {
     // 完全不知道气泡占了多宽。
     //
     // 后果：段末行本来刚好放得下，渲染时被气泡一挤就换行 → 整页凭空多出一行
-    // → 页面底部溢出，最后一行被裁掉一半（反馈截图正是这个现象，
-    // 而且只在「有的页面」出现，取决于段末行是不是刚好接近满宽）。
+    // → 页面底部溢出，最后一行被裁掉一半。
     //
-    // 所以只要段落带行内段评，整段就按气泡宽度缩窄 —— 段末行的文字宽度
-    // 必然 ≤ maxWidth - 气泡宽度，加上气泡后刚好放得下。
+    // 【上一版修错了】曾经把**整段**都按 `maxWidth - bubbleReserve` 排。
+    // 这样段末行确实放得下了，但代价是**该段每一行右侧都空出一截** ——
+    // 用户反馈「一段文字后有段评，那这段文字右侧便有明显的空格」正是这个。
+    //
+    // 正确做法：正文照常按**整宽**排版，排完之后再单独把段末行拆一次
+    // （见本方法末尾的「段末行为气泡让位」），只有那 1~2 行变窄。
     // 「神评论」横幅（isBanner）是独立占一行的，不在这里预留。
     final inlineComments =
         paragraph.comments.where((c) => !c.isBanner).toList(growable: false);
@@ -301,30 +304,27 @@ class PaginationEngine {
         : CommentBubbleMetrics(effectiveFontSize).width +
             effectiveFontSize * 0.30 +
             2.0;
-    final effectiveMaxWidth =
-        (maxWidth - bubbleReserve).clamp(0.0, maxWidth);
+
+    final textStyle = TextStyle(
+      fontSize: effectiveFontSize,
+      height: effectiveLineHeight,
+      fontWeight: effectiveWeight,
+      fontFamily: fontFamily,
+      // 【必须显式写 0】渲染端的 Text 会从 DefaultTextStyle 继承
+      // Material 3 bodyMedium 的 letterSpacing(0.25)，阅读页顶层已经把它
+      // 归零（见 reader_page.dart 的 DefaultTextStyle.merge）。
+      // 这里显式声明 0，是为了让「分页端」的意图也写在代码里 ——
+      // 两边一旦不一致，行尾最后一个字就会被挤到下一行。
+      letterSpacing: 0,
+    );
 
     final painter = TextPainter(
-      text: TextSpan(
-        text: fullText,
-        style: TextStyle(
-          fontSize: effectiveFontSize,
-          height: effectiveLineHeight,
-          fontWeight: effectiveWeight,
-          fontFamily: fontFamily,
-          // 【必须显式写 0】渲染端的 Text 会从 DefaultTextStyle 继承
-          // Material 3 bodyMedium 的 letterSpacing(0.25)，阅读页顶层已经把它
-          // 归零（见 reader_page.dart 的 DefaultTextStyle.merge）。
-          // 这里显式声明 0，是为了让「分页端」的意图也写在代码里 ——
-          // 两边一旦不一致，行尾最后一个字就会被挤到下一行。
-          letterSpacing: 0,
-        ),
-      ),
+      text: TextSpan(text: fullText, style: textStyle),
       textDirection: TextDirection.ltr,
       maxLines: null,
       // 必须与渲染端 Text widget 保持一致（Text 默认用 MediaQuery.textScalerOf）
       textScaler: textScaler,
-    )..layout(maxWidth: effectiveMaxWidth);
+    )..layout(maxWidth: maxWidth);
 
     final lineMetrics = painter.computeLineMetrics();
 
@@ -412,6 +412,86 @@ class PaginationEngine {
       isLastLineOfParagraph: true,
       comments: paragraph.comments,
     );
+
+    // ---- 段末行为气泡让位 ----
+    //
+    // 上面是整宽排出来的结果，段末行可能已经贴到右边界。渲染端会在它后面
+    // 追加一个气泡 WidgetSpan，一挤就换行 → 多出一行。这里把段末行的文字
+    // 按 `maxWidth - 气泡宽度` 再排一次：
+    //   - 还放得下（1 行）→ 什么都不做；
+    //   - 放不下（≥2 行）→ 用拆出来的子行替换原来的段末行。
+    // 只有段末这几行变窄，段内其他行保持整宽。
+    if (inlineComments.isNotEmpty && bubbleReserve > 0) {
+      final tailMaxWidth = (maxWidth - bubbleReserve).clamp(0.0, maxWidth);
+      if (tailMaxWidth > 0) {
+        final last = result.last;
+        // 段末行同时也是段首行时（整段只有一行），要连缩进一起量
+        final measureText =
+            last.isFirstLineOfParagraph ? '$indentStr${last.text}' : last.text;
+        final tailPainter = TextPainter(
+          text: TextSpan(text: measureText, style: textStyle),
+          textDirection: TextDirection.ltr,
+          maxLines: null,
+          textScaler: textScaler,
+        )..layout(maxWidth: tailMaxWidth);
+
+        final tailMetrics = tailPainter.computeLineMetrics();
+        if (tailMetrics.length > 1) {
+          final measureLength = measureText.length;
+          final subLines = <TextLine>[];
+          var cursor = 0;
+          var consumedChars = 0;
+          for (var i = 0; i < tailMetrics.length; i++) {
+            if (cursor >= measureLength) break;
+            final boundary = tailPainter.getLineBoundary(
+              TextPosition(offset: cursor, affinity: TextAffinity.downstream),
+            );
+            final s = boundary.start;
+            final e = boundary.end;
+            if (s >= e || e <= cursor) {
+              cursor++;
+              continue;
+            }
+            var raw = measureText.substring(
+              s.clamp(0, measureLength),
+              e.clamp(0, measureLength),
+            );
+            // 只有「段首行」才带缩进，拆出来的第一段要把缩进摘掉再显示
+            if (last.isFirstLineOfParagraph && i == 0) {
+              raw = raw.length > indentLength ? raw.substring(indentLength) : '';
+            }
+            if (raw.isEmpty) {
+              cursor = e;
+              continue;
+            }
+            subLines.add(TextLine(
+              paragraphIndex: paragraph.index,
+              text: raw,
+              // 段评行的偏移量对阅读进度影响很小，按字数平摊即可
+              startOffset: (last.startOffset + consumedChars)
+                  .clamp(0, paragraph.text.length),
+              endOffset: (last.startOffset + consumedChars + raw.length)
+                  .clamp(0, paragraph.text.length),
+              isTitle: isTitle,
+              isFirstLineOfParagraph: last.isFirstLineOfParagraph && i == 0,
+              isLastLineOfParagraph: i == tailMetrics.length - 1,
+              height: lineBoxHeight,
+            ));
+            consumedChars += raw.length;
+            cursor = e;
+          }
+          if (subLines.isNotEmpty) {
+            result.removeLast();
+            result.addAll(subLines);
+            // 段评重新挂到（新的）末行
+            result.last = result.last.copyWith(
+              isLastLineOfParagraph: true,
+              comments: paragraph.comments,
+            );
+          }
+        }
+      }
+    }
 
     return result;
   }

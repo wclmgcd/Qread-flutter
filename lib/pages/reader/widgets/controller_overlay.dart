@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../../services/tts_service.dart';
@@ -80,6 +82,17 @@ class ReaderControllerCallbacks {
   final VoidCallback onResumeTts;
   final VoidCallback onShowTtsTimer;
   final VoidCallback onShowTtsSettings;
+
+  /// 朗读栏上的 ⏮ / ⏭（上一段 / 下一段）
+  final VoidCallback onTtsPrevParagraph;
+  final VoidCallback onTtsNextParagraph;
+
+  /// 朗读栏上的 « / »（上一章 / 下一章）
+  final VoidCallback onTtsPrevChapter;
+  final VoidCallback onTtsNextChapter;
+
+  /// 朗读语速滑杆
+  final ValueChanged<double> onTtsRateChanged;
   final VoidCallback onStopAutoPage;
   final VoidCallback onDecreaseAutoPageInterval;
   final VoidCallback onIncreaseAutoPageInterval;
@@ -106,6 +119,11 @@ class ReaderControllerCallbacks {
     required this.onResumeTts,
     required this.onShowTtsTimer,
     required this.onShowTtsSettings,
+    required this.onTtsPrevParagraph,
+    required this.onTtsNextParagraph,
+    required this.onTtsPrevChapter,
+    required this.onTtsNextChapter,
+    required this.onTtsRateChanged,
     required this.onStopAutoPage,
     required this.onDecreaseAutoPageInterval,
     required this.onIncreaseAutoPageInterval,
@@ -117,7 +135,7 @@ class ReaderControllerCallbacks {
 // 主组件
 // ============================================================
 
-class ControllerOverlay extends StatelessWidget {
+class ControllerOverlay extends StatefulWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
 
@@ -130,15 +148,81 @@ class ControllerOverlay extends StatelessWidget {
   /// 改成跟阅读背景同色之后，控制栏与正文融为一体，两个问题一起消失。
   final ReaderTheme theme;
 
+  /// 自动隐藏延时；传 null 表示不自动隐藏（自动翻页模式下控制栏常驻）。
+  ///
+  /// 【为什么把倒计时放在控制栏自己身上】
+  /// 上一版是在页面的 `_showControllerTemporarily()` 里起 `Timer`。
+  /// 那条路径确实会走到，但「倒计时」这件事被绑在了一个**调用点**上 ——
+  /// 任何一次意外的 `cancel`、或将来新增一条显示路径，都会让控制栏
+  /// 永久盖在正文上（用户反馈「还是无法自动隐藏引导条」）。
+  /// 现在改成由 `ControllerOverlay` 自己持有：它只会在控制栏可见时存在于
+  /// 树上，`initState` 里就排好倒计时 —— 等价于「只要它被渲染出来，
+  /// 就一定会自己收起来」。
+  final Duration? autoHideDelay;
+
+  /// 用户与控制栏交互（翻页 / 拉进度 / 切主题…）时由页面 +1，
+  /// 用来把倒计时往后推。
+  final int restartToken;
+
+  /// 倒计时结束的回调（页面负责把 showController 置 false）
+  final VoidCallback? onAutoHide;
+
   const ControllerOverlay({
     Key? key,
     required this.data,
     required this.callbacks,
     required this.theme,
+    this.autoHideDelay,
+    this.restartToken = 0,
+    this.onAutoHide,
   }) : super(key: key);
 
   @override
+  State<ControllerOverlay> createState() => _ControllerOverlayState();
+}
+
+class _ControllerOverlayState extends State<ControllerOverlay> {
+  Timer? _autoHideTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleAutoHide();
+  }
+
+  @override
+  void didUpdateWidget(ControllerOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 交互或模式切换会换 token / 延时，倒计时重新开始。
+    // 注意：Provider 通知导致的普通重建不会换 token，所以倒计时不会被
+    // 高频刷新（时间/电量每分钟一次）反复推后。
+    if (oldWidget.restartToken != widget.restartToken ||
+        oldWidget.autoHideDelay != widget.autoHideDelay) {
+      _scheduleAutoHide();
+    }
+  }
+
+  @override
+  void dispose() {
+    _autoHideTimer?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleAutoHide() {
+    _autoHideTimer?.cancel();
+    final delay = widget.autoHideDelay;
+    if (delay == null) return;
+    _autoHideTimer = Timer(delay, () {
+      if (!mounted) return;
+      widget.onAutoHide?.call();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final data = widget.data;
+    final callbacks = widget.callbacks;
+    final theme = widget.theme;
     return Stack(
       children: [
         // 顶部信息栏
@@ -149,16 +233,15 @@ class ControllerOverlay extends StatelessWidget {
           child: _TopInfoBar(data: data, callbacks: callbacks, theme: theme),
         ),
 
-        // 中部悬浮胶囊
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 136,
-          child:
-              _FloatingCapsule(data: data, callbacks: callbacks, theme: theme),
-        ),
-
-        // 底部区域：进度条 + 功能栏
+        // 底部整块：悬浮胶囊 + 进度条 + 功能栏
+        //
+        // 【为什么三者要一起从底边往上堆】
+        // 原来胶囊是独立的 `Positioned(bottom: 136)`，而 136 这个数字是拍脑袋
+        // 定的 —— 底部整块的实际高度是「手势条 + 进度条 + 功能栏」，
+        // 在 iOS/Android 上约 140px，于是胶囊正好压在「上一章/下一章」那一行上
+        // （反馈截图「自动/朗读/浅色」那排和滑杆重叠）。
+        // 现在把胶囊放进同一个 Column，它会自动排在面板**上方**，
+        // 不管手势条多高、字体多大都不会再重叠。
         //
         // Container 包在 SafeArea **外面** —— 这样系统手势条那一块也会铺上主题色。
         // 反过来写（SafeArea 在外）的话，手势条区域是透明的，会透出下面的正文，
@@ -167,23 +250,35 @@ class ControllerOverlay extends StatelessWidget {
           left: 0,
           right: 0,
           bottom: 0,
-          child: Container(
-            color: theme.background,
-            child: SafeArea(
-              top: false,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(height: 4),
-                  _ProgressStrip(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // TTS 模式下播放控制已经在下面的面板里了，中间胶囊不再重复出现
+              if (data.capsuleMode != ControllerCapsuleMode.tts)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 14),
+                  child: _FloatingCapsule(
                       data: data, callbacks: callbacks, theme: theme),
-                  const SizedBox(height: 2),
-                  _BottomActionBar(
-                      data: data, callbacks: callbacks, theme: theme),
-                  const SizedBox(height: 6),
-                ],
+                ),
+              Container(
+                color: theme.background,
+                child: SafeArea(
+                  top: false,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const SizedBox(height: 4),
+                      _ProgressStrip(
+                          data: data, callbacks: callbacks, theme: theme),
+                      const SizedBox(height: 2),
+                      _BottomActionBar(
+                          data: data, callbacks: callbacks, theme: theme),
+                      const SizedBox(height: 6),
+                    ],
+                  ),
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ],
@@ -632,32 +727,169 @@ class _BottomActionBar extends StatelessWidget {
     );
   }
 
+  /// TTS 模式底部（对齐 3.41 的朗读界面），三行：
+  ///
+  /// ```
+  /// «  ⏮  ⏸/▶  ⏹  ⏭  »
+  /// 朗读语速 0.5 ────────  [⏱ 定时]
+  ///      目录        设置
+  /// ```
+  ///
+  /// 原来只有「定时 / 目录 / 听书设置」三个入口，播放控制塞在中间那颗
+  /// 悬浮胶囊里（只有「停止/暂停」），切段、切章都得退出去。
   Widget _buildTtsBottom() {
+    final isPaused = data.ttsState == TtsState.paused;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          _BottomEntry(
-            icon: Icons.timer_outlined,
-            label: '定时',
-            theme: theme,
-            onTap: callbacks.onShowTtsTimer,
+          // ---- 第一行：播放控制 ----
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _TtsIconButton(
+                icon: Icons.keyboard_double_arrow_left,
+                size: 22,
+                color: theme.text,
+                onTap: callbacks.onTtsPrevChapter,
+              ),
+              _TtsIconButton(
+                icon: Icons.skip_previous,
+                size: 24,
+                color: theme.text,
+                onTap: callbacks.onTtsPrevParagraph,
+              ),
+              _TtsIconButton(
+                icon: isPaused ? Icons.play_arrow : Icons.pause,
+                size: 30,
+                color: theme.text,
+                onTap: isPaused ? callbacks.onResumeTts : callbacks.onPauseTts,
+              ),
+              _TtsIconButton(
+                icon: Icons.stop,
+                size: 26,
+                color: theme.text,
+                onTap: callbacks.onStopTts,
+              ),
+              _TtsIconButton(
+                icon: Icons.skip_next,
+                size: 24,
+                color: theme.text,
+                onTap: callbacks.onTtsNextParagraph,
+              ),
+              _TtsIconButton(
+                icon: Icons.keyboard_double_arrow_right,
+                size: 22,
+                color: theme.text,
+                onTap: callbacks.onTtsNextChapter,
+              ),
+            ],
           ),
-          _BottomEntry(
-            icon: Icons.list_alt_outlined,
-            label: '目录',
-            theme: theme,
-            onTap: callbacks.onShowChapterList,
+          const SizedBox(height: 2),
+          // ---- 第二行：语速 + 定时 ----
+          Row(
+            children: [
+              const SizedBox(width: 6),
+              Text(
+                '朗读语速 ${data.ttsRate.toStringAsFixed(1)}',
+                style: TextStyle(fontSize: 12, color: theme.secondaryText),
+              ),
+              Expanded(
+                child: SliderTheme(
+                  data: SliderThemeData(
+                    trackHeight: 2,
+                    thumbShape:
+                        const RoundSliderThumbShape(enabledThumbRadius: 5),
+                    overlayShape:
+                        const RoundSliderOverlayShape(overlayRadius: 12),
+                    activeTrackColor: theme.text.withValues(alpha: 0.55),
+                    thumbColor: theme.text.withValues(alpha: 0.55),
+                    inactiveTrackColor:
+                        theme.secondaryText.withValues(alpha: 0.3),
+                  ),
+                  child: Slider(
+                    value: data.ttsRate.clamp(0.1, 1.0),
+                    min: 0.1,
+                    max: 1.0,
+                    divisions: 9,
+                    onChanged: callbacks.onTtsRateChanged,
+                  ),
+                ),
+              ),
+              InkWell(
+                onTap: callbacks.onShowTtsTimer,
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: theme.text.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.timer_outlined, size: 14, color: theme.text),
+                      const SizedBox(width: 4),
+                      Text('定时',
+                          style: TextStyle(fontSize: 12, color: theme.text)),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
           ),
-          _BottomEntry(
-            icon: Icons.settings_voice_outlined,
-            label: '听书设置',
-            theme: theme,
-            onTap: callbacks.onShowTtsSettings,
+          const SizedBox(height: 2),
+          // ---- 第三行：目录 / 设置 ----
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _BottomEntry(
+                icon: Icons.menu_book_outlined,
+                label: '目录',
+                theme: theme,
+                onTap: callbacks.onShowChapterList,
+              ),
+              _BottomEntry(
+                icon: Icons.settings_outlined,
+                label: '设置',
+                theme: theme,
+                onTap: callbacks.onShowTtsSettings,
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+}
+
+/// 朗读控制栏上的图标按钮（颜色由调用方显式给，底部区域没有 IconTheme）
+class _TtsIconButton extends StatelessWidget {
+  final IconData icon;
+  final double size;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _TtsIconButton({
+    required this.icon,
+    required this.size,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      iconSize: size,
+      color: color,
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+      padding: const EdgeInsets.all(4),
+      icon: Icon(icon),
     );
   }
 }

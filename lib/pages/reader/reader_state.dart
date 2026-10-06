@@ -164,6 +164,15 @@ class ReaderState with ChangeNotifier {
   int ttsParagraphIndex = -1;
   int? ttsSleepMinutes;
 
+  /// 听书设置里的三个开关（对齐 3.41 的「听书设置」面板）。
+  ///
+  /// - [ttsAllowPageTurn]：朗读时页面是否跟着朗读位置自动翻页；
+  /// - [ttsShowChapterSwitch]：本章读完后是否自动切到下一章；
+  /// - [ttsDelayPageTurn]：翻页是否延后到当前段读完（关掉就是紧跟高亮走）。
+  bool ttsAllowPageTurn = true;
+  bool ttsShowChapterSwitch = true;
+  bool ttsDelayPageTurn = true;
+
   // ---- 自动翻页 ----
   bool autoPageRunning = false;
 
