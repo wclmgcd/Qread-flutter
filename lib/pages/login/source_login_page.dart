@@ -7,6 +7,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../models/row_ui.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/cookie_sync_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../reader/paragraph_comment_page.dart';
 import 'webview_login_page.dart';
@@ -158,22 +159,63 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
   ///
   /// 用整屏（`embedded: false`）而不是阅读页那种半截式弹窗：设置中心 / 更新页
   /// 都是要整屏填的表单，半截式放不下。
+  ///
+  /// 【关页面后为什么要同步 cookie】
+  /// `register()` / `fq_login()` / `loginqt()` 这些动作都是
+  /// `java.startBrowserAwait(url, title)`（第三参 `refetchAfterSuccess=true`）——
+  /// 后端会**阻塞等用户把网页关掉**，然后用**后端自己的** cookie 仓重新抓一次这个
+  /// URL。用户在 WebView 里登录产生的 cookie 只存在客户端，不推上去后端就看不见，
+  /// 于是「登录了但没登录」。所以页面 pop 之后必须把该站点的 cookie 推给后端。
   void _openBackendPage(WsPushMessage msg) {
     final url = msg.url.trim();
     if (url.isEmpty || !mounted) return;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ParagraphCommentPage(
-          url: url,
-          title: msg.title.trim().isEmpty
-              ? widget.args.sourceName
-              : msg.title.trim(),
-          headers: msg.headerMap,
-          requestId: msg.id,
-          token: context.read<UserProvider>().token,
-        ),
-      ),
+    final token = context.read<UserProvider>().token;
+    unawaited(
+      Navigator.of(context)
+          .push(
+            MaterialPageRoute(
+              builder: (_) => ParagraphCommentPage(
+                url: url,
+                title: msg.title.trim().isEmpty
+                    ? widget.args.sourceName
+                    : msg.title.trim(),
+                headers: msg.headerMap,
+                requestId: msg.id,
+                token: token,
+              ),
+            ),
+          )
+          .then((_) async {
+            // `data:` 开头的地址（书源把整页 HTML base64 塞进 URL）没有域名，
+            // registrableDomain 会返回空，syncOne 内部直接跳过。
+            await CookieSyncService.instance.syncOne(token, url);
+            if (!mounted) return;
+            // 登录类动作的结果通常在关页面之后才由后端推回来，这里重新拉一次
+            // 登录信息兜底，避免用户看到「已执行」但什么都没变。
+            await _refreshLoginInfoAfterAction();
+          }),
     );
+  }
+
+  /// 动作执行完 / 关掉后端网页后，拉一次 `/getLoginInfo` 看看内容有没有变
+  Future<void> _refreshLoginInfoAfterAction() async {
+    final token = context.read<UserProvider>().token;
+    try {
+      final resp = _isBookSource
+          ? await ApiService.instance.getSourcesLoginInfo(
+              token, widget.args.sourceUrl)
+          : await ApiService.instance.getRssLoginInfo(
+              token, widget.args.sourceUrl);
+      final data = resp['data']?.toString() ?? '';
+      if (!mounted) return;
+      if (data.isEmpty || data == '{}' || data == _initialLoginInfo) return;
+      _initialLoginInfo = data;
+      final text = _prettyJson(data);
+      if (text.trim().isEmpty) return;
+      // 动作期间已经报过结果就别重复弹
+      if (_wsResults.isNotEmpty) return;
+      _showActionResult('登录信息已更新', text);
+    } catch (_) {}
   }
 
   void _collectWsResult(String text, String title) {
@@ -208,10 +250,16 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
       final api = ApiService.instance;
       final token = context.read<UserProvider>().token ?? '';
 
-      if (widget.args.loginUi != null && widget.args.loginUi!.isNotEmpty) {
-        _rows = parseLoginUi(widget.args.loginUi);
-      } else {
-        // Fetch from backend
+      // 先试书源列表里带回来的那份 loginUi。
+      //
+      // 【为什么判据是「解析出几行」而不是「非空」】
+      // `@js:` 形式的 loginUi（整个 UI 由 JS 拼出来，知秋终版 / 大灰狼都用它）
+      // 在书源列表接口里拿不到求值结果：后端只把原始串原样返回，
+      // `GSON.fromJsonArray` 失败时甚至变成字符串 "null"。这两种都「非空」，
+      // 但 `parseLoginUi` 解析出来是空列表 —— 页面就一个按钮都没有。
+      var rows = parseLoginUi(widget.args.loginUi);
+      if (rows.isEmpty) {
+        // `/getSourcesloginui` 会在服务端把 `@js:` 跑成 JSON 数组
         Map<String, dynamic> resp;
         if (_isBookSource) {
           resp = await api.getSourcesloginui(token, url: widget.args.sourceUrl);
@@ -220,11 +268,14 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
         }
         final data = resp['data'];
         if (data is String && data.isNotEmpty) {
-          _rows = parseLoginUi(data);
+          rows = parseLoginUi(data);
         } else if (data is List) {
-          _rows = data.map((e) => RowUi.fromJson(e is Map<String, dynamic> ? e : {})).toList();
+          rows = data
+              .map((e) => RowUi.fromJson(e is Map<String, dynamic> ? e : {}))
+              .toList();
         }
       }
+      _rows = rows;
 
       _loginData = defaultLoginData(_rows);
 
@@ -247,8 +298,10 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
         }
       }
     } catch (e) {
-      // Still show the form even if loading saved data fails
-      if (widget.args.loginUi != null && widget.args.loginUi!.isNotEmpty) {
+      // 兜底：至少把本地那份 loginUi 显示出来。
+      // 注意只在 `_rows` 还是空的时候才覆盖 —— 后面读 `/getLoginInfo` 失败也会
+      // 走到这里，不能把前面已经从后端求值好的行列表冲掉。
+      if (_rows.isEmpty) {
         _rows = parseLoginUi(widget.args.loginUi);
         _loginData = defaultLoginData(_rows);
       }

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
@@ -79,10 +81,7 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
         );
 
       _mobileController = controller;
-      await controller.loadRequest(
-        Uri.parse(widget.url),
-        headers: widget.headers,
-      );
+      await _load(controller, widget.url, widget.headers);
       if (mounted) setState(() {});
     } catch (e) {
       if (!mounted) return;
@@ -90,6 +89,49 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
         _error = e.toString();
         _loading = false;
       });
+    }
+  }
+
+  /// 加载一个地址。
+  ///
+  /// 【为什么要特判 `data:text/html`】
+  /// 书源的「书源设置中心 / 更新书源 / 使用教程」这类按钮不跳外链，而是**在 JS 里
+  /// 拼一整页 HTML**，再 `java.startBrowser('data:text/html;base64,...')` 交给客户端
+  /// （见后端 `JsExtensions.startBrowser` → `App.startBrowserAwait`）。这种地址：
+  ///   - 长度可以到几十 KB（整页 HTML base64 后更大）
+  ///   - 不是网络地址，`WebView.loadUrl` 在部分 ROM 上会直接拒绝，页面全白
+  ///
+  /// 所以先按普通地址走；**失败**再自己解出 HTML 用 `loadHtmlString` 兜底。
+  /// 顺序不能反：正常 http(s) 页面必须走 `loadRequest`（要带 header、要能跳转）。
+  Future<void> _load(
+    WebViewController controller,
+    String url,
+    Map<String, String> headers,
+  ) async {
+    try {
+      await controller.loadRequest(Uri.parse(url), headers: headers);
+    } catch (_) {
+      final html = _decodeDataUrl(url);
+      if (html == null) rethrow;
+      await controller.loadHtmlString(html);
+    }
+  }
+
+  /// `data:text/html;base64,<...>` / `data:text/html,<urlencoded>` → HTML 文本
+  static String? _decodeDataUrl(String url) {
+    if (!url.startsWith('data:')) return null;
+    final comma = url.indexOf(',');
+    if (comma < 0) return null;
+    final meta = url.substring(5, comma);
+    final payload = url.substring(comma + 1);
+    if (!meta.toLowerCase().contains('html')) return null;
+    try {
+      if (meta.toLowerCase().contains('base64')) {
+        return utf8.decode(base64.decode(payload));
+      }
+      return Uri.decodeComponent(payload);
+    } catch (_) {
+      return null;
     }
   }
 

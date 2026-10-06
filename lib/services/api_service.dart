@@ -279,6 +279,19 @@ class ApiService {
     });
   }
 
+  /// 放掉后端正在等待的一次客户端回执（`WaitForResponse(id)`）。
+  ///
+  /// 后端有一批推送是**阻塞等回执**的：`get` / `head` / `post` / `webview` /
+  /// `getVerificationCode` / `getWebViewUA` / `getVerificationCodeusePhone`。
+  /// 我们没实现这些（官方 Web 客户端也只弹一句「不支持」），但**必须回一个空响应**，
+  /// 否则书源 JS 里那次调用要干等 120s 才超时 —— 用户看到的就是「点了没反应」。
+  Future<void> noCookies(String accessToken, {required String id}) async {
+    await _dio.get('/noCookies', queryParameters: {
+      'accessToken': accessToken,
+      'id': id,
+    });
+  }
+
   // ============ 搜索 ============
 
   Future<List<SearchResult>> searchBook(String accessToken, String keyword,

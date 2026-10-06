@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import '../config/constants.dart';
+import 'api_service.dart';
 
 /// 后端通过 WebSocket 主动推给客户端的一条消息。
 ///
@@ -160,6 +161,12 @@ class ReaderWsService {
               if (tip.isNotEmpty) onToast?.call(tip);
               continue;
             }
+            // 需要回执、但客户端没人处理的消息（get / head / post / webview /
+            // getVerificationCode / getWebViewUA / …）：立刻放掉，别让后端
+            // 干等 120s。官方客户端对这些也是「回个空响应 + 提示不支持」。
+            if (message.id.isNotEmpty && !message.isOpenPage) {
+              unawaited(_releaseRequest(message.id));
+            }
             if (!_pushController.isClosed) _pushController.add(message);
           }
         },
@@ -171,6 +178,20 @@ class ReaderWsService {
       _scheduleReconnect();
     } finally {
       _connecting = false;
+    }
+  }
+
+  /// 回一个空响应，释放后端 `WaitForResponse(id)` 的等待。
+  ///
+  /// 走 `/noCookies?id=<id>`（不是 `/savehtml`）—— 这是官方客户端在
+  /// 消息分发的 `default` 分支里的做法，语义就是「这条我处理不了，别等了」。
+  Future<void> _releaseRequest(String id) async {
+    final token = _token;
+    if (token == null || token.isEmpty) return;
+    try {
+      await ApiService.instance.noCookies(token, id: id);
+    } catch (_) {
+      // 放不掉也没关系：后端 120s 后会自己超时
     }
   }
 
