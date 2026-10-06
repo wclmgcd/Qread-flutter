@@ -646,15 +646,7 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
                           ListView(
                             padding: const EdgeInsets.all(16),
                             children: [
-                              // 【对齐 3.41】输入框在上面，按钮收成一整块网格排在下面
-                              // （原来是按 loginUi 顺序逐条平铺，按钮被拉成整行宽）
-                              ..._rows
-                                  .where((r) => !r.isButton)
-                                  .map(_buildRow),
-                              if (_rows.any((r) => r.isButton)) ...[
-                                const SizedBox(height: 8),
-                                _buildButtonWrap(),
-                              ],
+                              _buildLoginForm(),
                               const SizedBox(height: 24),
                               _buildActionButtons(),
                             ],
@@ -702,40 +694,96 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
     );
   }
 
-  /// 登录界面上的动作按钮 —— 3.41 是一整块自动换行的「胶囊网格」
-  Widget _buildButtonWrap() {
-    final buttons = _rows.where((r) => r.isButton).toList(growable: false);
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: [
-        for (final row in buttons)
-          OutlinedButton(
-            onPressed:
-                _runningAction == null ? () => _handleButtonAction(row) : null,
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              minimumSize: Size.zero,
-              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-            ),
-            child: Text(row.name, style: const TextStyle(fontSize: 13)),
-          ),
-      ],
+  /// 登录表单主体 —— **严格按 `loginUi` 的声明顺序**排布，输入框就夹在按钮中间。
+  ///
+  /// 【为什么不能把输入框抽到最上面】
+  /// `loginUi` 是一个**有序列表**，书源作者正是靠这个顺序组织版面的：
+  ///   - 知秋终版：…「段评分色」→「段评气泡颜色(输入)」→「修改段评气泡颜色」→
+  ///     「章名段评」…「段评分色」→「API地址(输入)」→「保存API地址」→
+  ///     「TTS音色优先级(输入)」→「保存音色优先级」…「书籍ID(输入)」→「全本后台下载」…
+  ///   - 大灰狼：「邮箱(输入)」「密码(输入)」→ 17 个按钮 →「自定义搜索源(输入)」等 4 个输入
+  /// 之前把 `!isButton` 的条目全部抽到列表最前面，于是 4 个输入框全跑到顶上，
+  /// 和书源作者排的版面完全对不上（用户看到的正是这个）。
+  ///
+  /// 【布局模型：内容宽度 + 自动换行】
+  /// 3.41 用的也是这一套：条目宽度由**文字内容**决定，一行放不下就换行，
+  /// 整行左对齐、右侧留白。`loginUi.style` 里的 `layout_flexGrow` /
+  /// `layout_flexBasisPercent` 在 3.41 里**完全没有生效**，所以这里不做百分比
+  /// 换算，直接交给 `Wrap`。证据（都在 3.41 的实机截图上量过）：
+  ///   - 知秋终版 JS 里 `{"name":"🍎 发现页模式 🍎","type":"button",
+  ///     style:{layout_flexGrow:1, layout_flexBasisPercent:1}}` —— basis 是 1.0
+  ///     （整行），可 3.41 里它和「全部」同处一行；`🍅评论设置🍅`（同样 basis=1）
+  ///     也和「最新发布」挤在一行。
+  ///   - 大灰狼 17 个按钮的 basis 全是 0.4，若生效就该等宽；实测各行胶囊总宽
+  ///     依次是 566 / 585 / 663 / 613 / 564 / 653 px（density 3），随文字长短
+  ///     变化，不等宽。`📡 发现页兼容` 单独一行时也只有文字那么宽，没有撑满。
+  ///   - 知秋「作者评论 / 热门评论 / 正文配图」看着等宽，只是因为都是四个汉字，
+  ///     与 basis 无关。
+  ///
+  /// 输入框按**整行宽**处理（3.41 实测：输入框左右边距 16dp、高度 52dp，
+  /// 横跨整个内容区）：放进 `Wrap` 后它自然独占一行，
+  /// 这就实现了「输入框夹在按钮中间」的效果。
+  Widget _buildLoginForm() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Wrap 的子项拿到的是无界主轴约束，所以整行宽必须自己算出来
+        final fullWidth = constraints.maxWidth;
+        return Wrap(
+          // 3.41 实测：胶囊水平间隙 18px / 行距 37px（density 3）→ 6dp / 12dp
+          spacing: 6,
+          runSpacing: 12,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            for (final row in _rows)
+              if (row.isButton)
+                _buildPillButton(row)
+              else
+                _buildField(row, fullWidth),
+          ],
+        );
+      },
     );
   }
 
-  Widget _buildRow(RowUi row) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+  /// 登录界面上的动作按钮 —— 3.41 是一颗颗按内容宽度排的「胶囊」
+  ///
+  /// 尺寸对着 3.41 实测值调：胶囊高 120px（40dp）、左右内边距各约 13dp、
+  /// 圆角是半高（全圆角）。字号 13sp 是反推出来的 —— 一个汉字宽 39px，
+  /// 39 / density(3) = 13。
+  Widget _buildPillButton(RowUi row) {
+    return OutlinedButton(
+      onPressed: _runningAction == null ? () => _handleButtonAction(row) : null,
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 10),
+        minimumSize: Size.zero,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+        ),
+      ),
+      child: Text(row.name, style: const TextStyle(fontSize: 13)),
+    );
+  }
+
+  /// 输入框（text / password）：占满整行
+  ///
+  /// 3.41 实测高度 52dp，所以 `isDense` + 上下各 16dp 内边距刚好；
+  /// 左右 12dp 对齐截图里 `邮箱` 距框左边的距离。
+  /// 用 `labelText` 而不是 `hintText`：两者在「空且未聚焦」时长得一样（都在框内），
+  /// 但 `labelText` 在输入后会上浮成小标签，比提示语直接消失更好认。
+  Widget _buildField(RowUi row, double width) {
+    return SizedBox(
+      width: width,
       child: TextFormField(
         initialValue: _loginData[row.name] ?? '',
         obscureText: row.isPassword,
+        style: const TextStyle(fontSize: 15),
         decoration: InputDecoration(
           labelText: row.name,
           border: const OutlineInputBorder(),
+          isDense: true,
+          contentPadding:
+              const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
         ),
         onSaved: (value) => _loginData[row.name] = value ?? '',
         validator: (value) => null,

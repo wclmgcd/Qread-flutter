@@ -6,11 +6,19 @@ class RowUi {
   final String? action;
   final Map<String, dynamic>? style;
 
+  /// 书源给输入框写的初始值（legado 的 `loginUi[].default`）。
+  ///
+  /// 例：知秋终版的 `{"name":"TTS音色优先级","type":"text",
+  /// "default":"6001,6002,4001,4003"}` —— 不读这个字段的话，
+  /// 用户看到的是空框，直接点「保存音色优先级」就把默认值清掉了。
+  final String defaultValue;
+
   const RowUi({
     required this.name,
     this.type = 'text',
     this.action,
     this.style,
+    this.defaultValue = '',
   });
 
   factory RowUi.fromJson(Map<String, dynamic> json) {
@@ -21,6 +29,7 @@ class RowUi {
       style: json['style'] is Map<String, dynamic>
           ? json['style'] as Map<String, dynamic>
           : null,
+      defaultValue: json['default']?.toString() ?? '',
     );
   }
 
@@ -47,7 +56,7 @@ Map<String, String> defaultLoginData(List<RowUi> rows) {
   final data = <String, String>{};
   for (final row in rows) {
     if (!row.isButton) {
-      data[row.name] = '';
+      data[row.name] = row.defaultValue;
     }
   }
   return data;
