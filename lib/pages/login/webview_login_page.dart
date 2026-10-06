@@ -47,10 +47,15 @@ class _WebViewLoginPageState extends State<WebViewLoginPage> {
       // CookieStore。中间不搬一次，后端就是「用户明明登录成功了，
       // 取用户信息却还是未登录」—— 这正是用户反馈的「cookie 没有同步过来」。
       // 官方 3.41 的顺序也是「WebView 登录 → 存 cookie → 再跑 login()」。
-      await CookieSyncService.instance.sync(
-        token,
-        urls: [widget.args.sourceUrl, widget.args.loginUrl],
-      );
+      // 按站点去重后逐个同步：bookSourceUrl 是书源标识、loginUrl 才是真正
+      // 被登录的页面，两者偶尔不同子域（www.qidian.com / passport.qidian.com），
+      // 但同属一个可注册域名，去重后只跑一次。
+      final seen = <String>{};
+      for (final url in [widget.args.sourceUrl, widget.args.loginUrl]) {
+        final site = CookieSyncService.registrableDomain(url);
+        if (site.isEmpty || !seen.add(site)) continue;
+        await CookieSyncService.instance.syncOne(token, url);
+      }
 
       if (_isBookSource) {
         // Trigger login() JS on backend

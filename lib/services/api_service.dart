@@ -10,6 +10,8 @@ import '../models/chapter.dart';
 import '../models/book_group.dart';
 import '../models/replace_rule.dart';
 import '../models/tts_engine.dart';
+// /getCookies、/saveCookies 的 cookie 载荷是 AES/CBC 加密的 hex（上游如此）
+import 'aes_codec.dart';
 
 class ApiService {
   static ApiService? _instance;
@@ -1459,37 +1461,40 @@ class ApiService {
     return resp.data;
   }
 
-  /// 拉取该用户**全部**书源登录 cookie。
+  /// 读取某个站点在**服务端**保存的 cookie（上游 `/getCookies`）。
   ///
-  /// 返回 `{可注册域名: "a=1; b=2"}`，例如 `{'qidian.com': '…'}`。
-  /// 【为什么是整表】后端 `CookieStore` 落盘的 key 是**被登录站点的二级域名**
-  /// （`NetworkUtils.getSubDomain`），与「哪个书源」无关 —— 一个书源可能登录
-  /// 多个站点，多个书源也可能共用同一站点。按书源逐个查根本无从下手。
-  /// 明文传输：同一条 HTTPS + accessToken，后端注释已说明理由。
-  Future<Map<String, String>> getAllCookies(String accessToken) async {
-    final resp = await _dio.get('/getAllCookies', queryParameters: {
+  /// 后端落盘的 key 是 `NetworkUtils.getSubDomain(url)`（可注册域名，
+  /// `www.qidian.com` → `qidian.com`），所以 [url] 传书源的 `bookSourceUrl`
+  /// 或 `loginUrl` 都行 —— 只要同属一个站点即可。
+  ///
+  /// 返回值是**解密后的明文** `"a=1; b=2"`。后端这一层的载荷是
+  /// `EncryptUtils.aesEncode` 出来的 hex，这里用 [AesCodec] 解开；
+  /// 服务端没有该站点 cookie 时返回空串（不是 null）。
+  Future<String> getCookies(String accessToken, String url) async {
+    final resp = await _dio.get('/getCookies', queryParameters: {
       'accessToken': accessToken,
+      'url': url,
     });
-    final data = resp.data['data'];
-    if (data is Map) {
-      return data.map((k, v) => MapEntry(k.toString(), v.toString()));
-    }
-    return {};
+    final raw = resp.data['data']?.toString() ?? '';
+    if (raw.isEmpty) return '';
+    return AesCodec.decrypt(raw);
   }
 
-  /// 上传书源登录 cookie（整表，**以客户端为准**，服务端覆盖写入）。
+  /// 把客户端 WebView 里的 cookie 写回服务端（上游 `/saveCookies`）。
   ///
-  /// 只上传客户端「本来就有的」域名 —— 冲突策略见 [CookieSyncService]。
-  Future<Map<String, dynamic>> saveAllCookies(
+  /// [cookie] 是**明文** `"a=1; b=2"`，加密在这里做：后端收到会先
+  /// `EncryptUtils.aesDecrypted` 再落盘，直接传明文会被解成乱码。
+  /// 传空串等于清掉该站点的 cookie，所以调用方要先判空。
+  Future<Map<String, dynamic>> saveCookies(
     String accessToken,
-    Map<String, String> cookies,
+    String url,
+    String cookie,
   ) async {
-    final resp = await _dio.post(
-      '/saveAllCookies',
-      queryParameters: {'accessToken': accessToken},
-      data: cookies,
-      options: _jsonBodyOptions(),
-    );
+    final resp = await _dio.post('/saveCookies', queryParameters: {
+      'accessToken': accessToken,
+      'url': url,
+      'cookie': AesCodec.encrypt(cookie),
+    });
     return Map<String, dynamic>.from(resp.data as Map);
   }
 

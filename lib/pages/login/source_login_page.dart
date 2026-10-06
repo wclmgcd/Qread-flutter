@@ -1,10 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../models/row_ui.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/reader_ws_service.dart';
+import '../reader/paragraph_comment_page.dart';
 import 'webview_login_page.dart';
 
 class SourceLoginPageArgs {
@@ -58,12 +62,144 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
   /// 正在执行的动作名（按钮上显示「检测中…」，避免用户连点）
   String? _runningAction;
 
+  /// 本次动作执行期间，后端通过 WebSocket 推回来的内容。
+  ///
+  /// 【为什么结果要从 WebSocket 拿】
+  /// 上游 `/action` 只回 `JsonResponse(true)`，**不携带任何结果**。书源 JS
+  /// 想给用户看的东西，走的是 `ws?id=<token>` 这条长连接：
+  ///   - `java.upLoginData({...})` → `upLoginData` 消息，`title` 是 JSON
+  ///   - `java.copyText("...")`    → `copyText` 消息，`title` 就是要复制的文本
+  ///   - `App.noticy`              → `noticy` 消息（后端目前没有调用方，留着对齐协议）
+  /// 官方客户端也是从这条通道收的。
+  ///
+  /// 【局限】书源 JS 里只写 `return "✅查询成功…"`、不走上面推送的，
+  /// 这条链路拿不到 —— 这是上游 `/action` 接口本身的形状决定的。
+  /// 兜底是动作结束后读一次 `/getLoginInfo`（JS 存进 userInfo 的内容）。
+  final List<String> _wsResults = [];
+  bool _actionRunning = false;
+
+  /// 进页面时 `/getLoginInfo` 读到的原始内容，用来判断动作有没有改动登录态
+  /// （没变就不必弹一遍旧信息）
+  String _initialLoginInfo = '';
+
+  StreamSubscription<WsPushMessage>? _wsSub;
+  StreamSubscription<WsPushMessage>? _toastSub;
+
   bool get _isBookSource => widget.args.type == 'bookSource';
 
   @override
   void initState() {
     super.initState();
+    // 书源 JS 的结果是走 WebSocket 推回来的（见 _wsResults 的说明），
+    // 所以登录页也要把长连接拉起来。ReaderWsService 是全局单例，
+    // 这里只订阅、不负责断开 —— 连接的生命周期归它自己管。
+    _wsSub = ReaderWsService.instance.pushStream.listen(_onWsPush);
+    _toastSub = ReaderWsService.instance.toastStream.listen(_onWsToast);
+    unawaited(ReaderWsService.instance.connect(
+      context.read<UserProvider>().token,
+    ));
     _loadLoginUi();
+  }
+
+  @override
+  void dispose() {
+    _wsSub?.cancel();
+    _toastSub?.cancel();
+    super.dispose();
+  }
+
+  // ============================================================
+  // WebSocket 推送
+  // ============================================================
+
+  void _onWsPush(WsPushMessage msg) {
+    // 书源 JS 里的 `java.startBrowser` / `startBrowserAwait` / `showBrowser`
+    // 会让后端推一条「打开网页」的消息过来 ——「书源设置中心」「更新书源」
+    // 「番茄登录」这类按钮都走它。登录页不接的话，`startBrowserAwait` 会一直
+    // 干等到 120s 超时，用户看到的就是「点了没反应」。
+    if (msg.isOpenPage) {
+      _openBackendPage(msg);
+      return;
+    }
+    switch (msg.msg) {
+      case 'upLoginData':
+        _collectWsResult(_prettyJson(msg.title), '登录信息已更新');
+        break;
+      case 'copyText':
+        final text = msg.title;
+        if (text.trim().isEmpty) break;
+        Clipboard.setData(ClipboardData(text: text));
+        _collectWsResult(text, '已复制到剪贴板');
+        if (!_actionRunning && mounted) _toast('已复制到剪贴板');
+        break;
+      case 'noticy':
+        _collectWsResult(msg.title, '后端提示');
+        break;
+    }
+  }
+
+  /// `toast` / `longToast` 提示。
+  ///
+  /// 书源按钮的结果几乎全靠 `java.longToast("✅查询成功\n用户：…")` 报出来 ——
+  /// 这是**多行文本**，SnackBar 装不下（也会一闪而过），所以按 3.41 的观感
+  /// 走弹框；单行的 `toast` 仍然用 SnackBar。
+  void _onWsToast(WsPushMessage msg) {
+    final text = msg.str.trim();
+    if (text.isEmpty) return;
+    if (msg.msg == 'longToast') {
+      _collectWsResult(text, '后端提示');
+    } else if (!_actionRunning && mounted) {
+      _toast(text);
+    }
+  }
+
+  /// 打开后端让开的网页，并用 [ParagraphCommentPage] 负责关闭时回执
+  /// `/savehtml`，释放后端的 `startBrowserAwait` 等待。
+  ///
+  /// 用整屏（`embedded: false`）而不是阅读页那种半截式弹窗：设置中心 / 更新页
+  /// 都是要整屏填的表单，半截式放不下。
+  void _openBackendPage(WsPushMessage msg) {
+    final url = msg.url.trim();
+    if (url.isEmpty || !mounted) return;
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ParagraphCommentPage(
+          url: url,
+          title: msg.title.trim().isEmpty
+              ? widget.args.sourceName
+              : msg.title.trim(),
+          headers: msg.headerMap,
+          requestId: msg.id,
+          token: context.read<UserProvider>().token,
+        ),
+      ),
+    );
+  }
+
+  void _collectWsResult(String text, String title) {
+    if (text.trim().isEmpty) return;
+    _wsResults.add(text);
+    // 动作进行中先攒着，等遮罩撤掉再统一弹，免得和遮罩抢焦点
+    if (_actionRunning || !mounted) return;
+    _showActionResult(title, text);
+  }
+
+  /// 推送内容多半是 JSON，缩进一下更好读；不是 JSON 就原样返回
+  String _prettyJson(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return '';
+    try {
+      return const JsonEncoder.withIndent('  ').convert(jsonDecode(text));
+    } catch (_) {
+      return text;
+    }
+  }
+
+  void _toast(String message) {
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 2)),
+    );
   }
 
   Future<void> _loadLoginUi() async {
@@ -93,16 +229,20 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
       _loginData = defaultLoginData(_rows);
 
       // Load existing login info
+      // 同时记下原始内容：动作执行完读 `/getLoginInfo` 兜底时，要拿它比对，
+      // 没变化就不弹（否则点「检测登录」会把进页面时就有的旧信息再弹一遍）
       if (_isBookSource) {
         final resp = await api.getSourcesLoginInfo(token, widget.args.sourceUrl);
         final data = resp['data'];
         if (data is String && data.isNotEmpty && data != '{}') {
+          _initialLoginInfo = data;
           _fillFromSaved(data);
         }
       } else {
         final resp = await api.getRssLoginInfo(token, widget.args.sourceUrl);
         final data = resp['data'];
         if (data is String && data.isNotEmpty && data != '{}') {
+          _initialLoginInfo = data;
           _fillFromSaved(data);
         }
       }
@@ -162,12 +302,13 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
 
     // Non-URL action: treat as JS, send to backend
     setState(() => _runningAction = row.name);
+    _wsResults.clear();
+    _actionRunning = true;
     try {
       final api = ApiService.instance;
       final token = context.read<UserProvider>().token ?? '';
-      final Map<String, dynamic> resp;
       if (_isBookSource) {
-        resp = await api.sourcesAction(
+        await api.sourcesAction(
           token,
           bookSourceUrl: widget.args.sourceUrl,
           action: action,
@@ -177,54 +318,59 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
         // RSS: save login info first, then execute action
         await api.putRssLoginInfo(
             token, widget.args.sourceUrl, _encodeLoginData());
-        resp = await api.rssaction(token, widget.args.sourceUrl, action);
+        await api.rssaction(token, widget.args.sourceUrl, action);
       }
-      if (!mounted) return;
 
-      // 【关键】原来这里不看返回值，一律弹一句「动作 "xxx" 已执行」——
-      // 书源 JS 抛错、或 JS 明明算出了「✅查询成功 用户:xxx …」这种结果，
-      // 用户都看不到，于是反馈「点击书源的选项根本没有用」。
-      // 官方 3.41 的做法是：把 JS 的返回值弹窗展示出来。这里照做。
-      final ok = resp['isSuccess'] != false;
-      // 书源 JS 可能返回字符串（「✅查询成功 用户:xxx …」），也可能返回
-      // 对象/数组（比如一次查询出多行信息）。后者直接 toString() 会得到
-      // Dart 的 `{a: 1}` 形式，很难看，这里统一转成缩进 JSON。
-      final raw = resp['data'];
-      final data = raw == null
-          ? ''
-          : (raw is Map || raw is List)
-              ? const JsonEncoder.withIndent('  ').convert(raw)
-              : raw.toString();
-      if (!ok) {
-        _showActionResult(
-          row.name,
-          data.isEmpty ? (resp['errorMsg']?.toString() ?? '未知错误') : data,
-          isError: true,
-        );
-      } else if (data.trim().isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('动作 "${row.name}" 已执行')),
-        );
+      // 【结果不在 HTTP 响应里】上游 `/action` 只回 `JsonResponse(true)`，
+      // 书源 JS 的结果是走 WebSocket 推回来的（见 _wsResults 的说明）。
+      // 推送和响应是两条独立的路，推送往往稍晚一点到，这里等一下再收网。
+      await Future<void>.delayed(const Duration(milliseconds: 900));
+
+      // 兜底：JS 若把结果写进了 userInfo（`source.putLoginInfo(...)`），
+      // 从 `/getLoginInfo` 能读回来。与进页面时读到的内容比对，没变就不算
+      // 结果 —— 否则点「检测登录」会把进页面时就有的旧信息再弹一遍。
+      var fallback = '';
+      try {
+        final resp = _isBookSource
+            ? await api.getSourcesLoginInfo(token, widget.args.sourceUrl)
+            : await api.getRssLoginInfo(token, widget.args.sourceUrl);
+        final data = resp['data']?.toString() ?? '';
+        if (data.isNotEmpty && data != '{}' && data != _initialLoginInfo) {
+          fallback = _prettyJson(data);
+        }
+      } catch (_) {
+        // 兜底失败不影响已经收到的推送
+      }
+
+      if (!mounted) return;
+      _actionRunning = false;
+
+      // 推送优先：书源 JS 已经用 longToast 报过结果了，就别再拿 /getLoginInfo
+      // 的兜底内容重复一遍
+      final text = _wsResults.isNotEmpty ? _wsResults.join('\n\n') : fallback;
+
+      if (text.trim().isEmpty) {
+        _toast('动作 "${row.name}" 已执行');
       } else {
-        _showActionResult(row.name, data, isError: false);
+        _showActionResult(row.name, text);
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('动作执行失败: $e')),
-        );
-      }
+      if (mounted) _toast('动作执行失败: $e');
     } finally {
+      _actionRunning = false;
       if (mounted) setState(() => _runningAction = null);
     }
   }
 
-  /// 弹出动作的执行结果（对齐 3.41：书源 JS 返回什么就显示什么）
-  void _showActionResult(String title, String text, {required bool isError}) {
+  /// 弹出动作的执行结果。
+  ///
+  /// 内容来自后端 WebSocket 推送（`upLoginData` / `copyText`）或
+  /// `/getLoginInfo` 兜底 —— 上游 `/action` 自己不返回结果，见 [_wsResults]。
+  void _showActionResult(String title, String text) {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(isError ? '❌ $title' : '✅ $title'),
+        title: Text('✅ $title'),
         content: ConstrainedBox(
           constraints: BoxConstraints(
             maxHeight: MediaQuery.of(ctx).size.height * 0.5,

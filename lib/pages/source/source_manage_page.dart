@@ -74,23 +74,25 @@ class _SourceManagePageState extends State<SourceManagePage> {
     final token = context.read<UserProvider>().token;
     if (token == null) return;
     await context.read<SourceManageProvider>().loadSources(token, refresh: true);
-    // 列表拉回来后顺手做一次 cookie 整表同步（失败不影响列表展示）：
-    //   - 服务端有、本地 WebView 没有 → 写回本地（换设备/重装后恢复登录态）；
-    //   - 本地有（刚在 WebView 里登录过）→ 推回服务端。
+    // 列表拉回来后顺手把**本地 WebView 里已有的** cookie 推到服务端
+    // （失败不影响列表展示）。只推不拉：上游是按站点读写的，每个站点一次
+    // HTTP，几百个书源全拉会打满网络；「拉」（换设备后恢复登录态）交给
+    // 用户真正打开某个书源登录页时的 syncOne 按需完成，体验没差别。
     // 书源列表是客户端唯一知道「用户会用到哪些站点」的地方，所以同步放这里。
-    unawaited(_syncCookies(token));
+    unawaited(_pushLocalCookies(token));
   }
 
-  /// 同步 cookie。`bookSourceUrl` 是书源的标识地址、`loginUrl` 才是真正被登录的
-  /// 页面 —— 两者都可能有 cookie，一起交给 [CookieSyncService] 去重。
-  Future<void> _syncCookies(String token) async {
+  /// 把本地 WebView 里已有的 cookie 批量推给服务端。
+  /// `bookSourceUrl` 是书源的标识地址、`loginUrl` 才是真正被登录的页面 ——
+  /// 两者都可能有 cookie，一起交给 [CookieSyncService] 按站点去重。
+  Future<void> _pushLocalCookies(String token) async {
     final provider = context.read<SourceManageProvider>();
     final urls = <String>[];
     for (final s in provider.sources) {
       if ((s.bookSourceUrl ?? '').isNotEmpty) urls.add(s.bookSourceUrl!);
       if ((s.loginUrl ?? '').isNotEmpty) urls.add(s.loginUrl!);
     }
-    await CookieSyncService.instance.sync(token, urls: urls);
+    await CookieSyncService.instance.pushMany(token, urls);
   }
 
   String _token() => context.read<UserProvider>().token ?? '';
@@ -611,16 +613,29 @@ class _SourceManagePageState extends State<SourceManagePage> {
 
   /// 「更多」底部菜单 —— 条目与顺序对齐 3.41。
   ///
-  /// 【3.41 会根据「有没有勾选」换一套菜单】
-  /// - 勾了书源：启用书源 / 禁用书源 / 启用发现 / 禁用发现 /
-  ///   置顶所有 / 置底所有 / 添加分组 / 删除分组
-  /// - 一个没勾：启用发现 / 禁用发现 / 置顶所有 / 置底所有 /
+  /// 【固定 10 项，不随勾选变化】
+  /// 原来这里按「有没有勾选」切成两套菜单（勾选时砍掉「检验书源 / 导出书源」），
+  /// 是**看错了参考图**：3.41 的两张截图其实是**同一个菜单的两次滚动** ——
+  /// 把菜单条带逐像素比对过，`更多2.png` 的内容正好是 `更多1.png` 下移两项，
+  /// 而且两张图的书源列表区**逐像素完全相同**（都没勾选）。所以 3.41 的菜单
+  /// 一直是这 10 项，只是高度放不下、要滚动：
+  ///
+  ///   启用书源 / 禁用书源 / 启用发现 / 禁用发现 / 置顶所有 / 置底所有 /
   ///   添加分组 / 删除分组 / 检验书源 / 导出书源
-  /// 「检验书源」「导出书源」是**对全体**做的，所以只在没勾选时出现。
+  ///
+  /// 「启用/禁用书源」在没勾选时点了没有作用，所以这里补一句提示，
+  /// 不做成一颗按下去没反应的死按钮。
   Future<void> _showBatchMoreSheet() async {
     final provider = context.read<SourceManageProvider>();
     final token = _token();
     final hasSelection = provider.selectedIds.isNotEmpty;
+
+    /// 批量操作需要先勾选；没勾就提示一下，别静默什么都不做
+    bool requireSelection() {
+      if (hasSelection) return true;
+      _toast('请先勾选书源');
+      return false;
+    }
 
     await showModalBottomSheet<void>(
       context: context,
@@ -631,24 +646,26 @@ class _SourceManagePageState extends State<SourceManagePage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (hasSelection) ...[
-                  ListTile(
-                    leading: const Icon(Icons.check_circle_outline),
-                    title: const Text('启用书源'),
-                    onTap: () {
-                      close();
+                ListTile(
+                  leading: const Icon(Icons.check_circle_outline),
+                  title: const Text('启用书源'),
+                  onTap: () {
+                    close();
+                    if (requireSelection()) {
                       provider.batchSetEnabled(token, true);
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.block),
-                    title: const Text('禁用书源'),
-                    onTap: () {
-                      close();
+                    }
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.block),
+                  title: const Text('禁用书源'),
+                  onTap: () {
+                    close();
+                    if (requireSelection()) {
                       provider.batchSetEnabled(token, false);
-                    },
-                  ),
-                ],
+                    }
+                  },
+                ),
                 ListTile(
                   leading: const Icon(Icons.explore_outlined),
                   title: const Text('启用发现'),
@@ -697,24 +714,24 @@ class _SourceManagePageState extends State<SourceManagePage> {
                     _showBatchGroupDialog(initialSt: '1');
                   },
                 ),
-                if (!hasSelection) ...[
-                  ListTile(
-                    leading: const Icon(Icons.fact_check_outlined),
-                    title: const Text('检验书源'),
-                    onTap: () {
-                      close();
-                      _verifyAllSources();
-                    },
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.ios_share),
-                    title: const Text('导出书源'),
-                    onTap: () {
-                      close();
-                      _exportAll();
-                    },
-                  ),
-                ],
+                // 「检验书源 / 导出书源」是对**全体**做的，与勾选无关，
+                // 所以一直显示（见方法头部的说明）
+                ListTile(
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('检验书源'),
+                  onTap: () {
+                    close();
+                    _verifyAllSources();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.ios_share),
+                  title: const Text('导出书源'),
+                  onTap: () {
+                    close();
+                    _exportAll();
+                  },
+                ),
               ],
             ),
           ),
@@ -951,12 +968,17 @@ class _SourceManagePageState extends State<SourceManagePage> {
     } else {
       return;
     }
-    // 登录页回来后再同步一次：网页登录成功后 cookie 落在 WebView 里，
-    // 必须推给服务端，书源的 login() JS 才能读到。
+    // 登录页回来后再同步这一个书源。
+    // WebView 那条路在 webview_login_page 里「推完再跑 login()」已经做过，
+    // 但 JS 登录那条路（loginUi）cookie 是服务端自己拿的、客户端不知道，
+    // 这里补一次双向同步，保证两边最终一致。
     if (!mounted) return;
     final token = context.read<UserProvider>().token;
     if (token != null && token.isNotEmpty) {
-      unawaited(_syncCookies(token));
+      final url = (source.bookSourceUrl ?? '').isNotEmpty
+          ? source.bookSourceUrl!
+          : (source.loginUrl ?? '');
+      unawaited(CookieSyncService.instance.syncOne(token, url));
     }
   }
 
