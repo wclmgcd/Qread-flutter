@@ -92,19 +92,6 @@ class SourceManageProvider extends ChangeNotifier {
     return sorted;
   }
 
-  Map<String, List<BookSource>> get groupedSources {
-    final groups = <String, List<BookSource>>{};
-    for (final source in filteredSources) {
-      final groupName = (source.bookSourceGroup ?? '').trim().isEmpty
-          ? '未分组'
-          : source.bookSourceGroup!.trim();
-      groups.putIfAbsent(groupName, () => []).add(source);
-    }
-    final sortedEntries = groups.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    return {for (final e in sortedEntries) e.key: e.value};
-  }
-
   // ============ Search/filter ============
 
   void setSearchQuery(String query) {

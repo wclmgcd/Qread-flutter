@@ -400,6 +400,14 @@ class PaginationEngine {
         isFirstLineOfParagraph: lineIndex == 0,
         isLastLineOfParagraph: isLastLine,
         height: lineBoxHeight, // 使用公式计算，与渲染端一致
+        justifySpacing: _justifySpacingFor(
+          lineWidth: lineMetrics[lineIndex].width,
+          maxWidth: maxWidth,
+          charCount: rawLineText.length,
+          fontSize: effectiveFontSize,
+          // 段末行按惯例不拉伸；标题是居中的，拉伸会把它推歪
+          enabled: !isLastLine && !isTitle,
+        ),
       ));
 
       currentOffset = lineEnd;
@@ -476,6 +484,15 @@ class PaginationEngine {
               isFirstLineOfParagraph: last.isFirstLineOfParagraph && i == 0,
               isLastLineOfParagraph: i == tailMetrics.length - 1,
               height: lineBoxHeight,
+              // 与主路径同一套两端对齐：让位后拆出来的**中间**行也要顶到右边距，
+              // 只有最后一行不拉伸 —— 否则这一小段会明显比别的行短一截。
+              justifySpacing: _justifySpacingFor(
+                lineWidth: tailMetrics[i].width,
+                maxWidth: tailMaxWidth,
+                charCount: raw.length,
+                fontSize: effectiveFontSize,
+                enabled: i != tailMetrics.length - 1 && !isTitle,
+              ),
             ));
             consumedChars += raw.length;
             cursor = e;
@@ -494,6 +511,36 @@ class PaginationEngine {
     }
 
     return result;
+  }
+
+  /// 两端对齐：算出这一行要补多少字距，才能让墨迹顶到右边距。
+  ///
+  /// 中文断行落在任意两字之间，每行必然剩下「不到一个字」的空白。左对齐时
+  /// 这段空白全堆在行尾 —— 用户看到的就是「右侧比左侧宽，排版应该再往右走点」。
+  /// 官方 3.41 把这截余量摊到字距里（实测每行墨迹都到右边距、左右边距相等），
+  /// 这里照做：`补量 = 剩余宽度 / 本行字数`。
+  ///
+  /// - [lineWidth]：本行实测宽度（含段首缩进，因为它也在同一行里）
+  /// - [charCount]：本行**渲染出来的**字符数（含缩进，渲染端会把缩进一起画）
+  /// - 留 1px 余量：Flutter 的 letterSpacing 会加在每个字后面（含行尾那个），
+  ///   若正好等于可用宽度，浮点误差可能让渲染端二次换行 —— 多出来那行会被
+  ///   固定高度的行框裁掉，正文看起来就像「缺了一句」。1 逻辑像素的余量
+  ///   肉眼不可见，但能把这个风险彻底消掉。
+  /// - 上限 [fontSize] * 0.2：正常余量不到 0.1em；万一某行特别短（比如只有一个
+  ///   标点），也不至于被拉成「一 个 字 一 个 字」。
+  static double _justifySpacingFor({
+    required double lineWidth,
+    required double maxWidth,
+    required int charCount,
+    required double fontSize,
+    required bool enabled,
+  }) {
+    if (!enabled || charCount <= 0 || maxWidth <= 0) return 0;
+    final slack = maxWidth - lineWidth - 1.0;
+    if (slack <= 0) return 0;
+    final spacing = slack / charCount;
+    final limit = fontSize * 0.2;
+    return spacing > limit ? limit : spacing;
   }
 
   // ============================================================

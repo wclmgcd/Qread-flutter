@@ -650,6 +650,10 @@ class ContentRenderer {
       height: effectiveLineHeight,
       fontWeight: effectiveWeight,
       fontFamily: fontFamily,
+      // 两端对齐：分页引擎按「本行剩余宽度 / 本行字数」算好的补量。
+      // 阅读页顶层已把 letterSpacing 归零，所以这里给多少就是多少，
+      // 不会被 Material 3 bodyMedium 的 0.25 叠加。段末行/标题行为 0。
+      letterSpacing: line.justifySpacing,
       // 标题叠一层同色偏移副本模拟 Medium 字重（详见 PaginationEngine 的注释）
       shadows: isTitle
           ? [
@@ -765,7 +769,7 @@ class ContentRenderer {
                   ),
               ],
             ),
-            textAlign: isTitle ? TextAlign.center : null,
+            textAlign: isTitle ? TextAlign.center : TextAlign.justify,
             style: TextStyle(
               fontSize: effectiveFontSize,
               color: theme.text,

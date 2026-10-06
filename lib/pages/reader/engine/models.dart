@@ -146,6 +146,7 @@ class TextLine {
     required this.height,
     this.isLastLineOfParagraph = false,
     this.comments = const [],
+    this.justifySpacing = 0,
   });
 
   /// 所属段落的索引
@@ -175,6 +176,19 @@ class TextLine {
   /// 段评（只挂在段落末行上，渲染在正文下方）
   final List<ParagraphComment> comments;
 
+  /// 两端对齐时要补的字距（逻辑像素，0 = 不补）。
+  ///
+  /// 【为什么需要它】
+  /// 中文没有词间空格，断行只能落在任意两字之间，于是每行都会剩下
+  /// 「不到一个字」的空白 —— 左对齐时这段空白全堆在**右边**，看起来就是
+  /// 「右侧比左侧宽」（实测：左边距 48px、右边距 101px，差一倍）。
+  /// 官方 3.41 是把这个余量**摊进字距**里，让每行墨迹都顶到右边距
+  /// （实测两边都是 ~48px），也就是两端对齐。
+  ///
+  /// 由分页引擎算好（它知道每行实测宽度和可用宽度），渲染端只负责套用；
+  /// 段末行、标题行、以及为段评气泡二次拆分出来的子行一律为 0。
+  final double justifySpacing;
+
   TextLine copyWith({
     String? text,
     int? startOffset,
@@ -183,6 +197,7 @@ class TextLine {
     bool? isLastLineOfParagraph,
     double? height,
     List<ParagraphComment>? comments,
+    double? justifySpacing,
   }) {
     return TextLine(
       paragraphIndex: paragraphIndex,
@@ -195,6 +210,7 @@ class TextLine {
       isLastLineOfParagraph: isLastLineOfParagraph ?? this.isLastLineOfParagraph,
       height: height ?? this.height,
       comments: comments ?? this.comments,
+      justifySpacing: justifySpacing ?? this.justifySpacing,
     );
   }
 }

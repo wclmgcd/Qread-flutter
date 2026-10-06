@@ -13,6 +13,7 @@ import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
 import '../../models/chapter.dart';
+import '../../models/tts_engine.dart';
 import '../../pages/bookshelf/book_source_switch_page.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/reader_provider.dart';
@@ -22,6 +23,7 @@ import '../../services/app_log.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
+import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
 import 'engine/engine.dart';
 import 'paragraph_comment_page.dart';
@@ -96,6 +98,21 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 时把这个计数 +1，控制栏就会把倒计时往后推。
   int _controllerRestartToken = 0;
 
+  /// 控制栏的**页面级**兜底倒计时。
+  ///
+  /// 用户反馈「屏幕底部的小横条还是自动无法隐藏」—— 说明只靠
+  /// `ControllerOverlay` 自己那一个倒计时仍然有失效的可能（比如某一版构建
+  /// 里那段代码没生效、或某条显示路径没走到）。这里再补一条完全独立的
+  /// 路径：两条倒计时都指向 `_hideController`，**任意一条活着**控制栏都会收，
+  /// 从「单点」变成「双保险」。
+  Timer? _controllerHideTimer;
+
+  /// 自动翻页控制条的兜底倒计时（它原来**完全没有**自动隐藏）。
+  Timer? _autoPageBarTimer;
+
+  /// 自动翻页控制条自动隐藏延时。
+  static const Duration _autoPageBarHideDelay = Duration(seconds: 4);
+
   String? _token;
   String? _bookUrl;
 
@@ -110,6 +127,9 @@ class _ReaderPageState extends State<ReaderPage> {
   void initState() {
     super.initState();
     _pageController = PageController();
+    // 阅读页进入「全屏沉浸」：把屏幕底部那条系统手势条收起来
+    // （走原生 WindowInsetsController，理由见 SystemUiService 的注释）
+    unawaited(SystemUiService.hideNavigationBar());
     _loadSettings();
     _comicScrollController.addListener(_onComicScroll);
     _tts.addListener(_onTtsStateChanged);
@@ -149,6 +169,8 @@ class _ReaderPageState extends State<ReaderPage> {
     _readerProvider?.removeListener(_onProviderChanged);
     _metaTimer?.cancel();
     _autoPageTimer?.cancel();
+    _controllerHideTimer?.cancel();
+    _autoPageBarTimer?.cancel();
     _ttsSleepTimer?.cancel();
     _wsSubscription?.cancel();
     ReaderWsService.instance.onToast = null;
@@ -159,6 +181,8 @@ class _ReaderPageState extends State<ReaderPage> {
     _pagedReaderController.dispose();
     _tts.removeListener(_onTtsStateChanged);
     _tts.stop();
+    // 离开阅读页要把系统导航栏还回来，否则整个 App 都点不到底部手势条
+    unawaited(SystemUiService.showSystemBars());
     _saveProgressSync();
     unawaited(ReadingStatsService.instance.endSession());
     super.dispose();
@@ -427,6 +451,8 @@ class _ReaderPageState extends State<ReaderPage> {
     _state.isComic = book.type == 2;
     _bookUrl = book.bookUrl;
     _tts.init();
+    // 恢复「我的 → 朗读引擎」里选中的那个 HTTP 引擎（选了它就不再走系统语音）
+    unawaited(_tts.loadSelectedHttpEngine(_token));
     // 段评靠后端 WebSocket 推送，进阅读页就把长连接拉起来
     unawaited(ReaderWsService.instance.connect(_token));
     final provider = context.read<ReaderProvider>();
@@ -880,8 +906,13 @@ class _ReaderPageState extends State<ReaderPage> {
 
   void _handleTap(TapUpDetails details, ReaderProvider provider) {
     if (_state.autoPageRunning) {
-      setState(
-          () => _state.showAutoPageControls = !_state.showAutoPageControls);
+      // 自动翻页控制条也是「点一下出来、过几秒自己收」，别再常驻
+      if (_state.showAutoPageControls) {
+        _autoPageBarTimer?.cancel();
+        setState(() => _state.showAutoPageControls = false);
+      } else {
+        _showAutoPageBar();
+      }
       return;
     }
 
@@ -1127,8 +1158,12 @@ class _ReaderPageState extends State<ReaderPage> {
 
   void _toggleController() {
     if (_state.autoPageRunning) {
-      setState(
-          () => _state.showAutoPageControls = !_state.showAutoPageControls);
+      if (_state.showAutoPageControls) {
+        _autoPageBarTimer?.cancel();
+        setState(() => _state.showAutoPageControls = false);
+      } else {
+        _showAutoPageBar();
+      }
       return;
     }
     // 已经显示 → 手动收起（并取消倒计时）；没显示 → 显示并开始倒计时
@@ -1148,10 +1183,9 @@ class _ReaderPageState extends State<ReaderPage> {
   }
 
   /// 立刻收起控制栏（手动收起、或弹出面板要腾地方时调用）
-  ///
-  /// 倒计时由 `ControllerOverlay` 自己持有，控制栏一从树上移除，
-  /// 它的 `dispose` 就会把倒计时取消，这里不用管。
   void _hideController() {
+    _controllerHideTimer?.cancel();
+    _controllerHideTimer = null;
     if (_state.showController) {
       setState(() => _state.showController = false);
     }
@@ -1164,7 +1198,30 @@ class _ReaderPageState extends State<ReaderPage> {
   void _restartControllerHideTimer() {
     // 自动翻页模式下控制栏里有「秒/页」调节，需要常驻，不参与自动隐藏
     if (!_state.showController || _state.autoPageRunning) return;
+    // 兜底倒计时（另一条在 ControllerOverlay 自己身上，见字段注释）
+    _controllerHideTimer?.cancel();
+    _controllerHideTimer = Timer(_controllerAutoHideDelay, () {
+      if (!mounted) return;
+      _hideController();
+    });
     setState(() => _controllerRestartToken++);
+  }
+
+  /// 自动翻页控制条的自动隐藏（对齐控制栏：4 秒后收起来，点屏幕再出来）
+  void _restartAutoPageBarTimer() {
+    _autoPageBarTimer?.cancel();
+    if (!_state.autoPageRunning || !_state.showAutoPageControls) return;
+    _autoPageBarTimer = Timer(_autoPageBarHideDelay, () {
+      if (!mounted) return;
+      setState(() => _state.showAutoPageControls = false);
+    });
+  }
+
+  void _showAutoPageBar() {
+    if (!_state.showAutoPageControls) {
+      setState(() => _state.showAutoPageControls = true);
+    }
+    _restartAutoPageBarTimer();
   }
 
   void _goToPreviousChapter() {
@@ -1822,6 +1879,10 @@ class _ReaderPageState extends State<ReaderPage> {
       _state.showAutoPageControls = true;
       _state.showController = false;
     });
+    // 底部那条「自动翻页 / N 秒 / 停止」原来永远不会自己收起来
+    // （用户反馈「屏幕底部的小横条还是自动无法隐藏」），这里补上自动隐藏：
+    // 4 秒后收起，点屏幕再出来。
+    _restartAutoPageBarTimer();
     _restartAutoPageTimer(provider);
   }
 
@@ -1911,6 +1972,8 @@ class _ReaderPageState extends State<ReaderPage> {
     });
     if (_state.autoPageRunning) {
       _restartAutoPageTimer(provider);
+      // 调间隔也算一次交互，把控制条的自动隐藏往后推
+      _restartAutoPageBarTimer();
     } else {
       _saveSettings();
     }
@@ -1918,6 +1981,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
   void _stopAutoPageMode() {
     _autoPageTimer?.cancel();
+    _autoPageBarTimer?.cancel();
     if (!mounted) return;
     setState(() {
       _state.autoPageRunning = false;
@@ -3072,22 +3136,46 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
-  /// 当前选中的朗读语音名（没选过就显示「系统默认」）
+  /// 当前选中的朗读引擎名（没选 HTTP 引擎就显示系统语音）
   String _currentVoiceLabel() {
+    final http = _tts.httpEngine;
+    if (http != null) return http.name;
     final id = _tts.selectedVoiceId;
-    if (id == null || id.trim().isEmpty) return '系统默认';
+    if (id == null || id.trim().isEmpty) return '系统语音';
     return id;
   }
 
-  /// 朗读引擎（语音）选择面板 —— 对齐 3.41：搜索框 + 一整列可选项。
+  /// 朗读引擎选择面板 —— 对齐 3.41：搜索框 + 一整列可选项。
   ///
-  /// 【这里列的是设备上的系统语音】本项目朗读走的是 `flutter_tts`（系统 TTS），
-  /// 所以能真正生效的「引擎」就是系统装的这些语音。后端那套 HTTP 朗读引擎
-  /// （`/getalltts`）目前还没接进播放链路，列出来选了也不会出声，就不放进来。
+  /// 【为什么要把「我的 → 朗读引擎」里的引擎列在最上面】
+  /// 上一版只列了设备上的系统语音，用户反馈「阅读引擎无法选择 —— 我的 ——
+  /// 朗读引擎里面的引擎」。后端那套 HTTP TTS 引擎（`/getalltts`）现在已经
+  /// 接进播放链路（见 TtsService：选中后由 `/tts` 合成音频、audioplayers 播放），
+  /// 所以这里把它们列出来并能真正选中生效。
   void _showTtsEngineSheet({VoidCallback? onPicked}) {
     final readerTheme = _state.currentTheme;
     final voices = _tts.voices;
+    final token = context.read<UserProvider>().token ?? '';
     var query = '';
+    var loadingEngines = true;
+    var enginesRequested = false;
+    List<TtsEngine> engines = [];
+
+    void loadEngines(StateSetter sheetSetState) {
+      // 面板在加载完成前会被搜索框的每次输入重建，不加这道闸就会并发发一堆请求
+      if (enginesRequested) return;
+      enginesRequested = true;
+      ApiService.instance.getAllTts(token).then((list) {
+        if (!mounted) return;
+        sheetSetState(() {
+          engines = list;
+          loadingEngines = false;
+        });
+      }).catchError((_) {
+        if (!mounted) return;
+        sheetSetState(() => loadingEngines = false);
+      });
+    }
 
     showModalBottomSheet(
       context: context,
@@ -3099,14 +3187,22 @@ class _ReaderPageState extends State<ReaderPage> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, sheetSetState) {
+            if (loadingEngines) loadEngines(sheetSetState);
             final q = query.trim().toLowerCase();
-            final list = voices.where((v) {
+            final engineList = engines.where((e) {
+              if (q.isEmpty) return true;
+              return e.name.toLowerCase().contains(q) ||
+                  e.url.toLowerCase().contains(q);
+            }).toList(growable: false);
+            final voiceList = voices.where((v) {
               if (q.isEmpty) return true;
               final name =
                   (v['name'] ?? v['identifier'] ?? '').toString().toLowerCase();
               final locale = (v['locale'] ?? '').toString().toLowerCase();
               return name.contains(q) || locale.contains(q);
             }).toList(growable: false);
+
+            final selectedId = _tts.httpEngine?.id;
 
             return SafeArea(
               top: false,
@@ -3132,42 +3228,92 @@ class _ReaderPageState extends State<ReaderPage> {
                       ),
                     ),
                     Expanded(
-                      child: list.isEmpty
-                          ? const Center(child: Text('没有匹配的朗读引擎'))
-                          : ListView.builder(
-                              itemCount: list.length,
-                              itemBuilder: (ctx, i) {
-                                final v = list[i];
+                      child: ListView(
+                        children: [
+                          // ---- 「我的 → 朗读引擎」里配的 HTTP 引擎 ----
+                          _ttsSectionHeader(readerTheme, '我的朗读引擎'),
+                          _ttsEngineTile(
+                            readerTheme: readerTheme,
+                            icon: Icons.phone_android,
+                            title: '系统语音（默认）',
+                            selected: selectedId == null,
+                            onTap: () async {
+                              await _tts.setHttpEngine(null);
+                              if (!mounted) return;
+                              setState(() {});
+                              Navigator.pop(sheetContext);
+                              onPicked?.call();
+                            },
+                          ),
+                          if (loadingEngines)
+                            const Padding(
+                              padding: EdgeInsets.symmetric(vertical: 12),
+                              child: Center(
+                                child: SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child:
+                                      CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              ),
+                            )
+                          else if (engineList.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                              child: Text(
+                                '还没有配置朗读引擎（我的 → 朗读引擎）',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: readerTheme.secondaryText,
+                                ),
+                              ),
+                            )
+                          else
+                            for (final e in engineList)
+                              _ttsEngineTile(
+                                readerTheme: readerTheme,
+                                icon: Icons.cloud_outlined,
+                                title: e.name,
+                                selected: selectedId == e.id,
+                                onTap: () async {
+                                  await _tts.setHttpEngine(e);
+                                  if (!mounted) return;
+                                  setState(() {});
+                                  Navigator.pop(sheetContext);
+                                  onPicked?.call();
+                                },
+                              ),
+                          // ---- 设备上的系统语音 ----
+                          _ttsSectionHeader(readerTheme, '系统语音'),
+                          if (voiceList.isEmpty)
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                              child: Text(
+                                '没有匹配的系统语音',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: readerTheme.secondaryText,
+                                ),
+                              ),
+                            )
+                          else
+                            for (final v in voiceList)
+                              Builder(builder: (_) {
                                 final id =
                                     (v['name'] ?? v['identifier'] ?? '')
                                         .toString();
-                                final locale = (v['locale'] ?? '').toString();
-                                final selected = id == _tts.selectedVoiceId;
-                                return ListTile(
-                                  dense: true,
-                                  leading: Icon(
-                                    Icons.cloud_outlined,
-                                    size: 20,
-                                    color: selected
-                                        ? const Color(0xFF009688)
-                                        : readerTheme.secondaryText,
-                                  ),
-                                  title: Text(
-                                    locale.isEmpty ? id : '$id ($locale)',
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: selected
-                                          ? const Color(0xFF009688)
-                                          : readerTheme.text,
-                                    ),
-                                  ),
-                                  trailing: selected
-                                      ? const Icon(Icons.check,
-                                          size: 18, color: Color(0xFF009688))
-                                      : null,
+                                final locale =
+                                    (v['locale'] ?? '').toString();
+                                return _ttsEngineTile(
+                                  readerTheme: readerTheme,
+                                  icon: Icons.record_voice_over_outlined,
+                                  title: locale.isEmpty
+                                      ? id
+                                      : '$id ($locale)',
+                                  selected: selectedId == null &&
+                                      id == _tts.selectedVoiceId,
                                   onTap: () async {
+                                    await _tts.setHttpEngine(null);
                                     await _tts.setVoiceById(id);
                                     if (!mounted) return;
                                     setState(() {});
@@ -3175,8 +3321,9 @@ class _ReaderPageState extends State<ReaderPage> {
                                     onPicked?.call();
                                   },
                                 );
-                              },
-                            ),
+                              }),
+                        ],
+                      ),
                     ),
                   ],
                 ),
@@ -3185,6 +3332,51 @@ class _ReaderPageState extends State<ReaderPage> {
           },
         );
       },
+    );
+  }
+
+  Widget _ttsSectionHeader(ReaderTheme readerTheme, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+      child: Text(
+        title,
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: readerTheme.secondaryText,
+        ),
+      ),
+    );
+  }
+
+  Widget _ttsEngineTile({
+    required ReaderTheme readerTheme,
+    required IconData icon,
+    required String title,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    const accent = Color(0xFF009688);
+    return ListTile(
+      dense: true,
+      leading: Icon(
+        icon,
+        size: 20,
+        color: selected ? accent : readerTheme.secondaryText,
+      ),
+      title: Text(
+        title,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(
+          fontSize: 14,
+          color: selected ? accent : readerTheme.text,
+        ),
+      ),
+      trailing: selected
+          ? const Icon(Icons.check, size: 18, color: accent)
+          : null,
+      onTap: onTap,
     );
   }
 

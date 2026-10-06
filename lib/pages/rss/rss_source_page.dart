@@ -56,12 +56,11 @@ class _RssSourcePageState extends State<RssSourcePage> {
     return Scaffold(
       appBar: _buildAppBar(provider),
       body: _buildBody(userProvider, provider),
-      floatingActionButton: provider.canEdit
-          ? FloatingActionButton(
-              onPressed: _openCreateEditor,
-              child: const Icon(Icons.add),
-            )
-          : null,
+      // 【为什么没有 FloatingActionButton】
+      // 与书源页（source_manage_page.dart）保持一致：官方 3.41 的列表页
+      // 都不挂 FAB —— 一个圆形悬浮按钮压在列表右下角，既挡内容又抢焦点。
+      // 「新建订阅源」改走右上角 ⋮ 菜单（见 _buildAppBar 的 'create'），
+      // 列表为空时还有居中的「新建订阅源」按钮兜底（见 _buildEmpty）。
     );
   }
 
@@ -96,6 +95,9 @@ class _RssSourcePageState extends State<RssSourcePage> {
           PopupMenuButton<String>(
             onSelected: (action) async {
               switch (action) {
+                case 'create':
+                  await _openCreateEditor();
+                  break;
                 case 'import':
                   _showImportDialog();
                   break;
@@ -107,10 +109,15 @@ class _RssSourcePageState extends State<RssSourcePage> {
                   break;
               }
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'import', child: Text('导入订阅源')),
-              PopupMenuItem(value: 'export', child: Text('导出全部')),
-              PopupMenuItem(value: 'refresh', child: Text('刷新')),
+            // 「新建订阅源」原先只有右下角那个 FAB 能进（空列表时才多一个
+            // 居中按钮）。FAB 撤掉后必须在这里补回入口，否则列表非空时
+            // 就没有任何新建途径了。只读账号不给这一项。
+            itemBuilder: (context) => [
+              if (provider.canEdit)
+                const PopupMenuItem(value: 'create', child: Text('新建订阅源')),
+              const PopupMenuItem(value: 'import', child: Text('导入订阅源')),
+              const PopupMenuItem(value: 'export', child: Text('导出全部')),
+              const PopupMenuItem(value: 'refresh', child: Text('刷新')),
             ],
           ),
       ],
@@ -228,42 +235,37 @@ class _RssSourcePageState extends State<RssSourcePage> {
   }
 
   Widget _buildList(RssManageProvider provider) {
-    final grouped = provider.groupedSources;
-    if (grouped.isEmpty) {
+    // 【对齐书源页 / 3.41】列表平铺，顺序就是后端返回的顺序（「置顶/置底」
+    // 调出来的次序不会被分组排序打乱）；分组名以方括号跟在订阅源名后面
+    // （见 _RssSourceTile），不再单独占一行当分组标题。
+    final list = provider.filteredSources;
+    if (list.isEmpty) {
       return const Center(child: Text('无匹配结果'));
     }
 
     return RefreshIndicator(
       onRefresh: _loadSources,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 80),
-        children: grouped.entries.map((entry) {
-          return Card(
-            margin: const EdgeInsets.only(bottom: 12),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(entry.key, style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 12),
-                  ...entry.value.map((source) => _RssSourceTile(
-                        source: source,
-                        canEdit: provider.canEdit,
-                        onToggle: () => provider.toggleEnabled(_token(), source),
-                        onDelete: () => _confirmDelete(source),
-                        onTop: () => provider.topSource(_token(), source.sourceUrl ?? ''),
-                        onBottom: () => provider.bottomSource(_token(), source.sourceUrl ?? ''),
-                        onEdit: () => _showEditDialog(provider, source),
-                        onExport: () => _exportOne(provider, source),
-                        onLogin: () => _showRssSourceLogin(source),
-                        onDebug: () => _showRssSourceDebug(source),
-                      )),
-                ],
-              ),
-            ),
+      child: ListView.builder(
+        // 底部 padding 从 80 收到 8：原来的 80 是给右下角 FAB 让位的，
+        // FAB 撤掉后留着就是一块莫名其妙的空白。
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        itemCount: list.length,
+        itemBuilder: (context, index) {
+          final source = list[index];
+          return _RssSourceTile(
+            source: source,
+            canEdit: provider.canEdit,
+            onToggle: () => provider.toggleEnabled(_token(), source),
+            onDelete: () => _confirmDelete(source),
+            onTop: () => provider.topSource(_token(), source.sourceUrl ?? ''),
+            onBottom: () =>
+                provider.bottomSource(_token(), source.sourceUrl ?? ''),
+            onEdit: () => _showEditDialog(provider, source),
+            onExport: () => _exportOne(provider, source),
+            onLogin: () => _showRssSourceLogin(source),
+            onDebug: () => _showRssSourceDebug(source),
           );
-        }).toList(),
+        },
       ),
     );
   }
@@ -487,6 +489,11 @@ class _RssSourceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 【对齐书源页 / 3.41】分组名以方括号跟在订阅源名后面（「知秋终版[QD]」），
+    // 而不是单独占一行做分组标题 —— 列表因此可以平铺，顺序也就跟后端一致。
+    final group = (source.sourceGroup ?? '').trim();
+    final title = source.sourceName ?? '未命名订阅源';
+    final label = group.isEmpty ? title : '$title[$group]';
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Container(
@@ -502,7 +509,7 @@ class _RssSourceTile extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    source.sourceName ?? '未命名订阅源',
+                    label,
                     style: Theme.of(context).textTheme.titleSmall,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,

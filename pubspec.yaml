@@ -47,6 +47,11 @@ dependencies:
   sqflite: ^2.0.2+1
   json_annotation: ^4.5.0
   flutter_tts: ^4.2.2
+  # 「我的 → 朗读引擎」里配的是 legado 格式的 **HTTP TTS 引擎**：真正发声的是
+  # 后端 `/tts` 合成出来的音频流，系统 TTS（flutter_tts）播不了这种 URL。
+  # 所以阅读页的「朗读引擎」要能选它们，就必须再带一个音频播放器。
+  # audioplayers 只做「给一个 URL 就播」，Android/iOS 都不需要额外原生配置。
+  audioplayers: ^6.0.0
   battery_plus: ^6.2.2
   file_selector: ^1.0.3
   # 已移除 pull_to_refresh: ^2.0.0 —— 该包已停维护且 sdk 锁 <3.0.0;

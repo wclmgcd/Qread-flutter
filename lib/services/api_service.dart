@@ -1459,6 +1459,40 @@ class ApiService {
     return resp.data;
   }
 
+  /// 拉取该用户**全部**书源登录 cookie。
+  ///
+  /// 返回 `{可注册域名: "a=1; b=2"}`，例如 `{'qidian.com': '…'}`。
+  /// 【为什么是整表】后端 `CookieStore` 落盘的 key 是**被登录站点的二级域名**
+  /// （`NetworkUtils.getSubDomain`），与「哪个书源」无关 —— 一个书源可能登录
+  /// 多个站点，多个书源也可能共用同一站点。按书源逐个查根本无从下手。
+  /// 明文传输：同一条 HTTPS + accessToken，后端注释已说明理由。
+  Future<Map<String, String>> getAllCookies(String accessToken) async {
+    final resp = await _dio.get('/getAllCookies', queryParameters: {
+      'accessToken': accessToken,
+    });
+    final data = resp.data['data'];
+    if (data is Map) {
+      return data.map((k, v) => MapEntry(k.toString(), v.toString()));
+    }
+    return {};
+  }
+
+  /// 上传书源登录 cookie（整表，**以客户端为准**，服务端覆盖写入）。
+  ///
+  /// 只上传客户端「本来就有的」域名 —— 冲突策略见 [CookieSyncService]。
+  Future<Map<String, dynamic>> saveAllCookies(
+    String accessToken,
+    Map<String, String> cookies,
+  ) async {
+    final resp = await _dio.post(
+      '/saveAllCookies',
+      queryParameters: {'accessToken': accessToken},
+      data: cookies,
+      options: _jsonBodyOptions(),
+    );
+    return Map<String, dynamic>.from(resp.data as Map);
+  }
+
   /// 清理所有书源缓存（书源管理 ⋮ 菜单）
   Future<Map<String, dynamic>> cleanCaches(String accessToken) async {
     final resp = await _dio

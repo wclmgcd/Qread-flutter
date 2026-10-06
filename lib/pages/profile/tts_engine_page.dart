@@ -6,6 +6,7 @@ import '../../models/tts_engine.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/storage_service.dart';
+import '../../services/tts_service.dart';
 
 /// 朗读引擎管理页
 ///
@@ -20,8 +21,11 @@ class TtsEnginePage extends StatefulWidget {
 }
 
 class _TtsEnginePageState extends State<TtsEnginePage> {
-  /// 当前选中的引擎 id（本地保存，阅读器朗读时用它去请求 /tts）
-  static const _kSelectedTts = 'tts_selected_engine_id';
+  /// 当前选中的引擎 id（本地保存，阅读器朗读时用它去请求 /tts）。
+  ///
+  /// 直接复用 [TtsService.selectedEngineKey]，别再写一份字面量 ——
+  /// 两处一旦不一致，就会出现「在我的里选了、阅读页还是旧的」。
+  static const _kSelectedTts = TtsService.selectedEngineKey;
 
   List<TtsEngine> _engines = [];
   bool _loading = true;
@@ -71,6 +75,8 @@ class _TtsEnginePageState extends State<TtsEnginePage> {
     if (id == null || id.isEmpty) return;
     final storage = await StorageService.instance;
     await storage.setString(_kSelectedTts, id);
+    // 同步给朗读服务：否则阅读页已经开着时选完不会立刻生效
+    await TtsService().setHttpEngine(engine);
     if (!mounted) return;
     setState(() => _selectedId = id);
     _toast('已选择「${engine.name}」');
@@ -122,6 +128,9 @@ class _TtsEnginePageState extends State<TtsEnginePage> {
         if (_selectedId == id) {
           final storage = await StorageService.instance;
           await storage.remove(_kSelectedTts);
+          // 只删 storage 不够：朗读服务里缓存的还是这个已被删掉的引擎，
+          // 阅读页那边会继续拿它去请求 /tts。清掉后自动退回系统语音。
+          await TtsService().setHttpEngine(null);
           _selectedId = null;
         }
         _toast('已删除');

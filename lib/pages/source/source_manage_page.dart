@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:file_selector/file_selector.dart';
@@ -9,6 +10,7 @@ import '../../models/book_source.dart';
 import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/cookie_sync_service.dart';
 import '../login/source_login_page.dart';
 import '../login/webview_login_page.dart';
 import 'book_source_editor_page.dart';
@@ -72,6 +74,23 @@ class _SourceManagePageState extends State<SourceManagePage> {
     final token = context.read<UserProvider>().token;
     if (token == null) return;
     await context.read<SourceManageProvider>().loadSources(token, refresh: true);
+    // 列表拉回来后顺手做一次 cookie 整表同步（失败不影响列表展示）：
+    //   - 服务端有、本地 WebView 没有 → 写回本地（换设备/重装后恢复登录态）；
+    //   - 本地有（刚在 WebView 里登录过）→ 推回服务端。
+    // 书源列表是客户端唯一知道「用户会用到哪些站点」的地方，所以同步放这里。
+    unawaited(_syncCookies(token));
+  }
+
+  /// 同步 cookie。`bookSourceUrl` 是书源的标识地址、`loginUrl` 才是真正被登录的
+  /// 页面 —— 两者都可能有 cookie，一起交给 [CookieSyncService] 去重。
+  Future<void> _syncCookies(String token) async {
+    final provider = context.read<SourceManageProvider>();
+    final urls = <String>[];
+    for (final s in provider.sources) {
+      if ((s.bookSourceUrl ?? '').isNotEmpty) urls.add(s.bookSourceUrl!);
+      if ((s.loginUrl ?? '').isNotEmpty) urls.add(s.loginUrl!);
+    }
+    await CookieSyncService.instance.sync(token, urls: urls);
   }
 
   String _token() => context.read<UserProvider>().token ?? '';
@@ -84,10 +103,11 @@ class _SourceManagePageState extends State<SourceManagePage> {
     return Scaffold(
       appBar: _buildAppBar(provider),
       body: _buildBody(userProvider, provider),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _openCreateEditor,
-        child: const Icon(Icons.add),
-      ),
+      // 【为什么没有 FloatingActionButton】
+      // 原来右下角有个圆形「+」新建书源，它正好压在常驻批量栏最右边那颗
+      // 「更多」上面 —— 用户反馈「右下角那个 + 挡住了」。官方 3.41 的书源页
+      // 本来就没有 FAB（见 3.41.jpg），「新建书源」走右上角 ⋮ 菜单，
+      // 空列表时还有一个居中的「新建书源」按钮兜底（见 _buildEmptyView）。
     );
   }
 
@@ -425,9 +445,9 @@ class _SourceManagePageState extends State<SourceManagePage> {
     return Column(
       children: [
         // 【对齐 3.41】顶部不再放「统计卡片 + 分组 chips」：
-        // 3.41 的书源页就是「搜索框 + 紧凑列表 + 常驻批量栏」，
-        // 分组标题以普通文字插在列表里（见 _SourceGroupSection），
-        // 按分组筛选走 AppBar 的漏斗按钮，不占列表顶部的位置。
+        // 3.41 的书源页就是「搜索框 + 平铺列表 + 常驻批量栏」。
+        // 分组名不单独占一行，而是以方括号跟在书名后面（见 _SourceTile），
+        // 这样列表能平铺、顺序与后端一致；按分组/状态筛选走 AppBar 的漏斗按钮。
         if (!provider.canEdit) _buildReadOnlyNotice(),
         Expanded(
           child: provider.sources.isEmpty
@@ -489,46 +509,52 @@ class _SourceManagePageState extends State<SourceManagePage> {
   }
 
   Widget _buildSourceList(SourceManageProvider provider) {
-    final grouped = provider.groupedSources;
-    if (grouped.isEmpty) {
-      return const Center(child: Text('无匹配结果'));
-    }
+    // 【对齐 3.41】书源列表是**平铺**的，顺序就是**后端返回的顺序**；
+    // 分组名不单独占一行，而是以方括号跟在书名后面（「知秋终版[QD]」）。
+    //
+    // 原来按分组分节（每节一个加粗标题 + 组内再排序），有两个问题：
+    //   1. 用户反馈「书源的排布顺序应该与后端相同」—— 分组一排序，后端
+    //      用「置顶/置底」调出来的顺序就全乱了；
+    //   2. 每个分组标题白占一行，一屏少看两三条。
+    // 只有用户**主动**点 AppBar 的 A-Z 时才按书名重排。
+    final list = _sortAZ
+        ? (List<BookSource>.of(provider.filteredSources)
+          ..sort((a, b) =>
+              (a.bookSourceName ?? '').compareTo(b.bookSourceName ?? '')))
+        : provider.filteredSources;
 
-    // A-Z 排序：组内按书源名排序（官方 3.41 AppBar 上的 A-Z 按钮）
-    final entries = grouped.entries.map((e) {
-      if (!_sortAZ) return MapEntry(e.key, e.value);
-      final list = List<BookSource>.of(e.value)
-        ..sort((a, b) =>
-            (a.bookSourceName ?? '').compareTo(b.bookSourceName ?? ''));
-      return MapEntry(e.key, list);
-    }).toList();
-    if (_sortAZ) {
-      entries.sort((a, b) => a.key.compareTo(b.key));
+    if (list.isEmpty) {
+      return const Center(child: Text('无匹配结果'));
     }
 
     return RefreshIndicator(
       onRefresh: _loadSources,
-      child: ListView(
-        padding: const EdgeInsets.fromLTRB(12, 0, 12, 80),
-        children: entries.map((entry) {
-          return _SourceGroupSection(
-            title: entry.key,
-            sources: entry.value,
-            provider: provider,
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+        itemCount: list.length,
+        itemBuilder: (context, index) {
+          final source = list[index];
+          return _SourceTile(
+            source: source,
             canEdit: provider.canEdit,
-            onToggleEnabled: (s) => provider.toggleEnabled(_token(), s),
-            onToggleExplore: (s) => provider.toggleExploreEnabled(_token(), s),
-            onDelete: (s) => _confirmDelete(s),
-            onTop: (s) => provider.topSourceItem(_token(), s.bookSourceUrl ?? ''),
-            onBottom: (s) => provider.bottomSourceItem(_token(), s.bookSourceUrl ?? ''),
-            onEdit: (s) => _showEditDialog(s),
-            onLogin: (s) => _showSourceLogin(s),
-            onDebug: (s) => _showSourceDebug(s),
-            isSelected: (id) => provider.selectedIds.contains(id),
-            onToggleSelect: (id) => provider.toggleSelection(id),
+            onToggleEnabled: () => provider.toggleEnabled(_token(), source),
+            onToggleExplore: () =>
+                provider.toggleExploreEnabled(_token(), source),
+            onDelete: () => _confirmDelete(source),
+            onTop: () =>
+                provider.topSourceItem(_token(), source.bookSourceUrl ?? ''),
+            onBottom: () =>
+                provider.bottomSourceItem(_token(), source.bookSourceUrl ?? ''),
+            onEdit: () => _showEditDialog(source),
+            onLogin: () => _showSourceLogin(source),
+            onDebug: () => _showSourceDebug(source),
+            selected:
+                provider.selectedIds.contains(source.bookSourceUrl ?? ''),
+            onToggleSelect: () =>
+                provider.toggleSelection(source.bookSourceUrl ?? ''),
             selectMode: provider.selectMode,
           );
-        }).toList(),
+        },
       ),
     );
   }
@@ -893,11 +919,11 @@ class _SourceManagePageState extends State<SourceManagePage> {
     }
   }
 
-  void _showSourceLogin(BookSource source) {
+  Future<void> _showSourceLogin(BookSource source) async {
     final hasLoginUi =
         (source.loginUi ?? '').isNotEmpty;
     if (hasLoginUi) {
-      Navigator.pushNamed(
+      await Navigator.pushNamed(
         context,
         AppRoutes.sourceLogin,
         arguments: SourceLoginPageArgs(
@@ -911,7 +937,7 @@ class _SourceManagePageState extends State<SourceManagePage> {
         ),
       );
     } else if ((source.loginUrl ?? '').isNotEmpty) {
-      Navigator.pushNamed(
+      await Navigator.pushNamed(
         context,
         AppRoutes.sourceWebLogin,
         arguments: WebViewLoginPageArgs(
@@ -922,6 +948,15 @@ class _SourceManagePageState extends State<SourceManagePage> {
           headers: _parseHeaderJson(source.header),
         ),
       );
+    } else {
+      return;
+    }
+    // 登录页回来后再同步一次：网页登录成功后 cookie 落在 WebView 里，
+    // 必须推给服务端，书源的 login() JS 才能读到。
+    if (!mounted) return;
+    final token = context.read<UserProvider>().token;
+    if (token != null && token.isNotEmpty) {
+      unawaited(_syncCookies(token));
     }
   }
 
@@ -1034,76 +1069,6 @@ class _SourceManagePageState extends State<SourceManagePage> {
 
 // ============ Components ============
 
-class _SourceGroupSection extends StatelessWidget {
-  final String title;
-  final List<BookSource> sources;
-  final SourceManageProvider provider;
-  final bool canEdit;
-  final void Function(BookSource) onToggleEnabled;
-  final void Function(BookSource) onToggleExplore;
-  final void Function(BookSource) onDelete;
-  final void Function(BookSource) onTop;
-  final void Function(BookSource) onBottom;
-  final void Function(BookSource) onEdit;
-  final void Function(BookSource) onLogin;
-  final void Function(BookSource) onDebug;
-  final bool Function(String) isSelected;
-  final void Function(String) onToggleSelect;
-  final bool selectMode;
-
-  const _SourceGroupSection({
-    required this.title,
-    required this.sources,
-    required this.provider,
-    required this.canEdit,
-    required this.onToggleEnabled,
-    required this.onToggleExplore,
-    required this.onDelete,
-    required this.onTop,
-    required this.onBottom,
-    required this.onEdit,
-    required this.onLogin,
-    required this.onDebug,
-    required this.isSelected,
-    required this.onToggleSelect,
-    required this.selectMode,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // 【对齐 3.41】分组不再包成 Card，标题就是一行普通文字。
-    // 原来每个分组一张卡、卡里每条书源再一个带边框的小卡，
-    // 一层套一层，一屏只能看到两三条书源。
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(14, 14, 14, 2),
-          child: Text(
-            title,
-            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-          ),
-        ),
-        ...sources.map((source) => _SourceTile(
-              source: source,
-              canEdit: canEdit,
-              onToggleEnabled: () => onToggleEnabled(source),
-              onToggleExplore: () => onToggleExplore(source),
-              onDelete: () => onDelete(source),
-              onTop: () => onTop(source),
-              onBottom: () => onBottom(source),
-              onEdit: () => onEdit(source),
-              onLogin: () => onLogin(source),
-              onDebug: () => onDebug(source),
-              selected: isSelected(source.bookSourceUrl ?? ''),
-              onToggleSelect: () => onToggleSelect(source.bookSourceUrl ?? ''),
-              selectMode: selectMode,
-            )),
-      ],
-    );
-  }
-}
-
 class _SourceTile extends StatelessWidget {
   final BookSource source;
   final bool canEdit;
@@ -1138,6 +1103,11 @@ class _SourceTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = source.enabled == true;
+    // 【对齐 3.41】分组名以方括号跟在书名后面（「知秋终版[QD]」「起点中文[起点]」），
+    // 而不是单独占一行做分组标题 —— 列表因此可以平铺，顺序也就跟后端一致了。
+    final group = (source.bookSourceGroup ?? '').trim();
+    final title = source.bookSourceName ?? '未命名书源';
+    final label = group.isEmpty ? title : '$title[$group]';
     // 【对齐 3.41】一行一条：复选框 + 名称 + 开关 + 编辑笔 + ⋮。
     //
     // 原来每条书源是一个带边框的小卡片，里面塞了 url、备注、三个状态 chip，
@@ -1164,7 +1134,7 @@ class _SourceTile extends StatelessWidget {
             ),
             Expanded(
               child: Text(
-                source.bookSourceName ?? '未命名书源',
+                label,
                 style: const TextStyle(fontSize: 15),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,

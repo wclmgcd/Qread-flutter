@@ -63,4 +63,8 @@ flutter {
 
 dependencies {
     implementation "org.jetbrains.kotlin:kotlin-stdlib"
+    // 阅读页隐藏系统导航栏用（MainActivity 里的 WindowInsetsControllerCompat）。
+    // Flutter 引擎内部也用同一个类，但引擎的依赖不保证暴露到 app 模块的
+    // **编译期** classpath，这里显式声明一次，免得 CI 上 import 解析不到。
+    implementation "androidx.core:core:1.13.1"
 }

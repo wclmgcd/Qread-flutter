@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/cookie_sync_service.dart';
 import '../../widgets/adaptive_webview.dart';
 
 class WebViewLoginPageArgs {
@@ -39,6 +40,17 @@ class _WebViewLoginPageState extends State<WebViewLoginPage> {
     try {
       final api = ApiService.instance;
       final token = context.read<UserProvider>().token ?? '';
+
+      // 【关键】先把 WebView 里的 cookie 推给服务端，再触发 login()。
+      // 网页登录是在**客户端 WebView** 里完成的，cookie 落在 WebView；
+      // 而书源 `login()` 里的 `cookie.getCookie(url)` 读的是**服务端**的
+      // CookieStore。中间不搬一次，后端就是「用户明明登录成功了，
+      // 取用户信息却还是未登录」—— 这正是用户反馈的「cookie 没有同步过来」。
+      // 官方 3.41 的顺序也是「WebView 登录 → 存 cookie → 再跑 login()」。
+      await CookieSyncService.instance.sync(
+        token,
+        urls: [widget.args.sourceUrl, widget.args.loginUrl],
+      );
 
       if (_isBookSource) {
         // Trigger login() JS on backend

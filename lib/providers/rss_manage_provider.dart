@@ -46,18 +46,11 @@ class RssManageProvider extends ChangeNotifier {
     return list;
   }
 
-  Map<String, List<RssSource>> get groupedSources {
-    final groups = <String, List<RssSource>>{};
-    for (final source in filteredSources) {
-      final groupName = (source.sourceGroup ?? '').trim().isEmpty
-          ? '未分组'
-          : source.sourceGroup!.trim();
-      groups.putIfAbsent(groupName, () => []).add(source);
-    }
-    final sortedEntries = groups.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    return {for (final entry in sortedEntries) entry.key: entry.value};
-  }
+  // 【已删除 groupedSources】
+  // 订阅源列表改成平铺（对齐书源页 / 3.41），顺序直接取 filteredSources ——
+  // 也就是后端返回的原始顺序。原来的 groupedSources 会把组名排序后重新
+  // 分节，后端用「置顶/置底」调出来的顺序会被打乱。分组名现在以方括号
+  // 跟在订阅源名后面，由 rss_source_page.dart 的 _RssSourceTile 渲染。
 
   void setSearchQuery(String value) {
     _searchQuery = value;
