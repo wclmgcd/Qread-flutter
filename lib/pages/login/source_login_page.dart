@@ -169,7 +169,9 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
   void _openBackendPage(WsPushMessage msg) {
     final url = msg.url.trim();
     if (url.isEmpty || !mounted) return;
-    final token = context.read<UserProvider>().token;
+    // `UserProvider.token` 是 `String?`，这里显式兜底成空串 ——
+    // 下面的 `syncOne` / `getSourcesLoginInfo` 收的是非空 `String`。
+    final token = context.read<UserProvider>().token ?? '';
     unawaited(
       Navigator.of(context)
           .push(
@@ -181,11 +183,12 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
                     : msg.title.trim(),
                 headers: msg.headerMap,
                 requestId: msg.id,
-                token: token,
+                token: token.isEmpty ? null : token,
               ),
             ),
           )
           .then((_) async {
+            if (token.isEmpty) return;
             // `data:` 开头的地址（书源把整页 HTML base64 塞进 URL）没有域名，
             // registrableDomain 会返回空，syncOne 内部直接跳过。
             await CookieSyncService.instance.syncOne(token, url);
@@ -199,7 +202,8 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
 
   /// 动作执行完 / 关掉后端网页后，拉一次 `/getLoginInfo` 看看内容有没有变
   Future<void> _refreshLoginInfoAfterAction() async {
-    final token = context.read<UserProvider>().token;
+    final token = context.read<UserProvider>().token ?? '';
+    if (token.isEmpty) return;
     try {
       final resp = _isBookSource
           ? await ApiService.instance.getSourcesLoginInfo(
