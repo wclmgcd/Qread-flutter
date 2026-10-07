@@ -180,10 +180,18 @@ class ReaderSelectionMenu {
 
     try {
       final resp = await ApiService.instance.addReplaceRule(accessToken, rule);
-      final ok = resp['isSuccess'] == true || resp['data'] != null;
-      if (context.mounted) {
-        _toast(context, ok ? '已加入替换净化（范围：本书）' : '添加失败，请稍后再试');
-      }
+      if (!context.mounted) return;
+      // 【不要把 errorMsg 吞掉】
+      // 后端判重是精确匹配 name，重名时返回 `JsonResponse(false, NAME_ERROR)`，
+      // NAME_ERROR = "名字重复"（中文，本来就是给用户看的）。
+      // 以前这里只显示「添加失败，请稍后再试」，用户完全不知道该怎么办。
+      final ok = resp['isSuccess'] == true;
+      _toast(
+        context,
+        ok
+            ? '已加入替换净化（范围：本书）'
+            : '添加失败：${friendlyServerMessage(resp['errorMsg']?.toString())}',
+      );
     } catch (e) {
       if (context.mounted) _toast(context, '添加失败：${friendlyError(e)}');
     }

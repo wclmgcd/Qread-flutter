@@ -69,8 +69,20 @@ class ReplaceRule {
         'scope': scope?.trim().isEmpty == true ? null : scope?.trim(),
         'scopeTitle': scopeTitle,
         'scopeContent': scopeContent,
-        'excludeScope':
-            excludeScope?.trim().isEmpty == true ? null : excludeScope?.trim(),
+        // 【必须发空串，不能发 null】
+        //
+        // 后端 `ReplaceRuleMapper.getrulebybookname` 的 WHERE 里有一句：
+        //     and exclude_scope not like #{name}
+        // SQL 三值逻辑下 `NULL NOT LIKE '%书名%'` 得到的是 NULL，不是 TRUE，
+        // 于是整行被滤掉 —— 规则建得出来、在「替换净化」列表里也看得见，
+        // 但**永远不会生效**。
+        //
+        // 2026-10 对 reader.4678553.xyz（后端 3.1.0）实测对照：
+        //   excludeScope: null → 库里存 NULL → getBookContentNew 返回的 rules 为空，
+        //                        正文「夜晚」原样不动
+        //   excludeScope: ""   → 库里存 ''   → 规则命中，正文「夜晚」被替换成 ★
+        // 官方 web 客户端也是发空串（其编译产物里就是 `if(l==null)l=""`）。
+        'excludeScope': excludeScope?.trim() ?? '',
         'isEnabled': isEnabled,
         'isRegex': isRegex,
         'timeoutMillisecond': timeoutMillisecond,
