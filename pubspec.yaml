@@ -26,6 +26,11 @@ dependencies:
   # 原生端底下仍是 dart:io 的 WebSocket（行为不变），Web 端换成浏览器的
   # WebSocket，业务代码只写一份。详见 lib/services/reader_ws_service.dart。
   web_socket_channel: ^3.0.0
+  # 本地缓存 key 的摘要（见 lib/services/local_cache_service.dart 的 scopedKey）。
+  # 【为什么显式声明】它本来就作为 web_socket_channel 的传递依赖在依赖树里，
+  # 但既然代码里直接 import 了 package:crypto，就应该按直接依赖声明 ——
+  # 否则哪天 web_socket_channel 换掉这个依赖，构建会毫无征兆地断掉。
+  crypto: ^3.0.0
   shared_preferences: ^2.0.15
   cached_network_image: ^3.2.1
   # 上游写的是 ^3.0.0-alpha.3, 那是 Dart 2 时代的 alpha; 3.0.0 正式版要求 >=3.2.0。

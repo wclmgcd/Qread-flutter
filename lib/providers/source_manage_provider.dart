@@ -186,7 +186,7 @@ class SourceManageProvider extends ChangeNotifier {
   /// 本地缓存的文件名。
   ///
   /// 按 accessToken 分作用域：换账号 / 换服务器（token 必然不同）不会串数据。
-  /// `scopedKey` 是 FNV-1a 摘要，出来是纯 hex，可以安全当文件名。
+  /// `scopedKey` 是 MD5 摘要，出来是纯 hex，可以安全当文件名。
   String _cacheKey(String accessToken) =>
       'book_sources_${LocalCacheService.instance.scopedKey(accessToken)}';
 

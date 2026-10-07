@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:crypto/crypto.dart';
+
 import 'cache_store.dart';
 
 /// 本地缓存（JSON 片段 + 章节正文）。
@@ -18,9 +20,28 @@ class LocalCacheService {
 
   final CacheStore _store = createCacheStore();
 
-  /// 把任意字符串收敛成定长 key（FNV-1a 64 位十六进制）。
+  /// 把任意字符串收敛成定长 key（MD5 十六进制，固定 32 字符）。
   /// 用途：bookUrl / accessToken 这类可能带 `?` `/` 的长串不能直接当路径。
-  String scopedKey(String raw) => _fnv1a64(raw);
+  ///
+  /// 【为什么不是手写 FNV-1a 64 位】
+  /// 原来这里自己实现了 FNV-1a，用了 `0xcbf29ce484222325` 和
+  /// `0xFFFFFFFFFFFFFFFF` 两个 64 位常量。原生端（AOT）一直没事，但
+  /// `flutter build web` 是**编译期**就挂：
+  ///   Error: The integer literal 0xcbf29ce484222325 can't be represented
+  ///   exactly in JavaScript.
+  /// 因为 dart2js 的数字就是 IEEE-754 双精度，安全整数只有 53 位，64 位
+  /// 字面量直接拒收；就算绕开字面量、改成运行时算，乘积的低位也会被精度
+  /// 吞掉，哈希退化成常量，碰撞率反而爆炸。所以这条路走不通。
+  ///
+  /// 换成 MD5 一次解决：纯 Dart 实现、不依赖平台整数宽度、web 与原生结果
+  /// 完全一致。而且 crypto 本来就作为 web_socket_channel 的传递依赖在
+  /// 依赖树里，提为直接依赖不会多装任何东西。
+  ///
+  /// 【副作用（可接受，不做迁移）】
+  /// 摘要算法变了 → 之前落盘的缓存 key 全部对不上。但这里存的**全是本地
+  /// 副本**（书源 / RSS / 发现页 / 书架列表 + 章节正文），丢了会自动回源
+  /// 重拉，不是权威数据，所以不需要写迁移逻辑。
+  String scopedKey(String raw) => md5.convert(utf8.encode(raw)).toString();
 
   Future<void> saveJson(String key, Object data) {
     return _store.writeText('$key.json', const JsonEncoder().convert(data));
@@ -114,18 +135,5 @@ class LocalCacheService {
   /// 表现就是「规则明明写进去了，正文一点变化都没有」。
   Future<void> clearBookChapterCache(String bookUrl) {
     return _store.deleteTree('reader/${scopedKey(bookUrl)}');
-  }
-
-  // -------------------------------------------------------------- 哈希
-
-  String _fnv1a64(String input) {
-    const offsetBasis = 0xcbf29ce484222325;
-    const prime = 0x100000001b3;
-    var hash = offsetBasis;
-    for (final unit in utf8.encode(input)) {
-      hash ^= unit;
-      hash = (hash * prime) & 0xFFFFFFFFFFFFFFFF;
-    }
-    return hash.toRadixString(16).padLeft(16, '0');
   }
 }
