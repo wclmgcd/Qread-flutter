@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../config/routes.dart';
+import '../pages/bookshelf/local_book_import_page.dart';
 import '../pages/source/file_import_page.dart';
 import '../services/file_open_service.dart';
 
@@ -78,13 +79,40 @@ class _FileOpenListenerState extends State<FileOpenListener>
 
     _showing = true;
     navigator
-        .push(
-          MaterialPageRoute<bool>(
-            builder: (_) => FileImportPage(file: file),
-            fullscreenDialog: true,
-          ),
-        )
+        .push(_routeFor(file))
         .whenComplete(() => _showing = false);
+  }
+
+  /// 按文件类型决定弹哪个导入页。
+  ///
+  /// 【为什么要分流】
+  /// 「打开方式」进来的可能是**书源 JSON**（文本，走 FileImportPage），
+  /// 也可能是**一本电子书**（epub / mobi，二进制，只能上传给后端解析）。
+  /// 前者读的是字符串，后者读的是文件路径，两条链路完全不同。
+  ///
+  /// 【`.txt` 为什么按内容再判一次】
+  /// txt 有两种身份：书源可以存成纯文本分享，小说也是 txt。
+  /// 内容以 `[` / `{` 开头就当归书源，否则当小说走上传。
+  MaterialPageRoute<bool> _routeFor(OpenedFile file) {
+    if (_isLocalBook(file)) {
+      return MaterialPageRoute<bool>(
+        builder: (_) => LocalBookImportPage(file: file),
+        fullscreenDialog: true,
+      );
+    }
+    return MaterialPageRoute<bool>(
+      builder: (_) => FileImportPage(file: file),
+      fullscreenDialog: true,
+    );
+  }
+
+  bool _isLocalBook(OpenedFile file) {
+    // epub / mobi / azw / azw3 / prc：没有歧义，一定是书
+    if (file.isBinaryBook) return true;
+    // 内容像书源 JSON：交给书源导入页
+    if (file.looksLikeSourceJson) return false;
+    // 剩下的只可能是 txt 小说；没有路径就没法上传，仍交给书源页去报错
+    return file.isTxt && file.path != null;
   }
 
   @override

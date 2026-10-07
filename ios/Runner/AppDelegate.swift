@@ -107,12 +107,150 @@ final class FileOpenBridge {
     let scoped = url.startAccessingSecurityScopedResource()
     defer { if scoped { url.stopAccessingSecurityScopedResource() } }
 
-    guard let data = try? Data(contentsOf: url),
-          let text = String(data: data, encoding: .utf8),
-          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    else { return nil }
+    let name = url.lastPathComponent
+    let lower = name.lowercased()
+    let isBinaryBook = lower.hasSuffix(".epub") || lower.hasSuffix(".mobi")
+      || lower.hasSuffix(".azw") || lower.hasSuffix(".azw3") || lower.hasSuffix(".prc")
 
-    return ["name": url.lastPathComponent, "content": text]
+    // 二进制书籍：原样复制一份到缓存目录，只把路径交给 Dart 去上传。
+    // 绝不能按 UTF-8 读 —— 二进制解出的 String 是 nil，整个文件会被丢掉，
+    // 用户点了「用 Qread 打开」却毫无反应。
+    if isBinaryBook {
+      guard let copied = copyToCache(url, name: name) else { return nil }
+      return ["name": name, "path": copied]
+    }
+
+    // 纯文本（书源 json / txt）：读内容给书源导入用，同时留一份路径，
+    // 万一是 txt 小说就转去上传。
+    var result: [String: String] = ["name": name]
+    if let data = try? Data(contentsOf: url),
+       let text = String(data: data, encoding: .utf8),
+       !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      result["content"] = text
+    }
+    if let copied = copyToCache(url, name: name) {
+      result["path"] = copied
+    }
+    if result["content"] == nil && result["path"] == nil { return nil }
+    return result
+  }
+
+  /// 把外部文件复制进 App 缓存目录，返回本地路径。
+  private static func copyToCache(_ url: URL, name: String) -> String? {
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("import_books", isDirectory: true)
+    try? FileManager.default.createDirectory(
+      at: dir, withIntermediateDirectories: true
+    )
+    let target = dir.appendingPathComponent(name)
+    // 同名文件重复导入时直接覆盖，否则 copyItem 会抛错
+    try? FileManager.default.removeItem(at: target)
+    do {
+      try FileManager.default.copyItem(at: url, to: target)
+      return target.path
+    } catch {
+      return nil
+    }
+  }
+}
+
+/// 「添加本地」桥：书架里主动选一个电子书文件，交给 Dart 上传。
+///
+/// 【对应关系】
+/// 通道名与方法名跟 Android 侧（MainActivity.kt）**完全一致**，
+/// 所以 Dart 那边一份 `FilePickService` 两端通用：
+///
+///   Dart → 原生：`pickBookFile`  →  返回 {path, name}，用户取消时返回 null
+///
+/// 【为什么用 .import 模式】
+/// `UIDocumentPickerViewController` 有两种模式：
+///   - `.open`   只给一个「引用」，文件仍在别的 App 沙盒里，读取要申请安全作用域；
+///   - `.import` 系统直接把文件**复制**进本 App 沙盒，URL 是本地路径，随便读。
+/// 这里要的是上传，复制一份最省事，也免去安全作用域那一套。
+///
+/// 【为什么不用 UTType / forOpeningContentTypes】
+/// 那是 iOS 14+ 的 API，而本工程 `IPHONEOS_DEPLOYMENT_TARGET = 13.0`，
+/// 用了会在 iOS 13 上直接崩。所以走 `documentTypes:` 这套旧接口 ——
+/// 它在 iOS 14+ 上标记为废弃，但仍正常工作，只是编译时有一条警告。
+final class FilePickBridge: NSObject, UIDocumentPickerDelegate {
+  static let shared = FilePickBridge()
+
+  /// 可选的 UTI。
+  ///
+  /// mobi / azw 没有系统标准 UTI，只能挂 `public.data` 兜底；
+  /// 选错格式后端会返回「当前文件格式不支持」，比让文件变灰不可选要好。
+  private static let bookTypes = [
+    "public.plain-text",        // .txt
+    "org.idpf.epub-container",  // .epub
+    "public.data"               // .mobi / .azw / .azw3 / .prc
+  ]
+
+  private var channel: FlutterMethodChannel?
+  private weak var presenter: UIViewController?
+  private var pendingResult: FlutterResult?
+
+  private override init() { super.init() }
+
+  /// 由 `QreadFlutterViewController.viewDidLoad` 调用（引擎就绪时）。
+  func attach(messenger: FlutterBinaryMessenger, presenter: UIViewController) {
+    self.presenter = presenter
+    let channel = FlutterMethodChannel(
+      name: "qread/file_pick",
+      binaryMessenger: messenger
+    )
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch call.method {
+      case "pickBookFile":
+        self.pick(result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    self.channel = channel
+  }
+
+  private func pick(result: @escaping FlutterResult) {
+    guard let presenter = presenter else {
+      result(FlutterError(code: "NO_PRESENTER", message: "界面还没准备好", details: nil))
+      return
+    }
+    if pendingResult != nil {
+      result(FlutterError(code: "BUSY", message: "已经有一个文件选择框打开了", details: nil))
+      return
+    }
+    let picker = UIDocumentPickerViewController(
+      documentTypes: FilePickBridge.bookTypes,
+      in: .import
+    )
+    picker.delegate = self
+    picker.allowsMultipleSelection = false
+    pendingResult = result
+    presenter.present(picker, animated: true)
+  }
+
+  func documentPicker(
+    _ controller: UIDocumentPickerViewController,
+    didPickDocumentsAt urls: [URL]
+  ) {
+    let result = pendingResult
+    pendingResult = nil
+    guard let result = result else { return }
+    guard let url = urls.first else {
+      result(nil)
+      return
+    }
+    result(["path": url.path, "name": url.lastPathComponent])
+  }
+
+  func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+    let result = pendingResult
+    pendingResult = nil
+    // 用户取消不是错误，回 null 让 Dart 静默处理
+    result?(nil)
   }
 }
 
@@ -165,6 +303,10 @@ class QreadFlutterViewController: FlutterViewController {
     // 放在这里而不是 AppDelegate 里，是因为只有到这一步 Flutter 引擎
     // （binaryMessenger）才真正可用。
     FileOpenBridge.shared.attach(messenger: binaryMessenger)
+
+    // 「添加本地」桥：通道名/方法名与 Android 侧 MainActivity.kt 完全一致。
+    // 需要把 self 传进去当 present 的宿主 —— 文件选择框得挂在某个控制器上。
+    FilePickBridge.shared.attach(messenger: binaryMessenger, presenter: self)
 
     let channel = FlutterMethodChannel(
       name: "qread/system_ui",

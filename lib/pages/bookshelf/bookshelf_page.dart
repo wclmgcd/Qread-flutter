@@ -11,6 +11,8 @@ import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_settings.dart';
+import '../../services/error_text.dart';
+import '../../services/file_pick_service.dart';
 import '../../services/storage_service.dart';
 import '../../widgets/book_card.dart';
 
@@ -324,10 +326,7 @@ class _BookshelfPageState extends State<BookshelfPage>
         await _refreshAllBooks();
         break;
       case 'add_local':
-        _showUnavailableDialog(
-          title: '添加本地',
-          message: '当前仓库还没有接入本地书籍导入和本地阅读链路，这个入口先保留在书架菜单里。',
-        );
+        await _addLocalBook();
         break;
       case 'backup_import':
         await _importShelfBackup();
@@ -427,6 +426,71 @@ class _BookshelfPageState extends State<BookshelfPage>
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// 添加本地书籍：选文件 → 上传给后端解析入库 → 刷新书架。
+  ///
+  /// 【为什么是「上传」而不是「本地打开」】
+  /// Qread 是瘦客户端：正文解析（epub 解 spine、mobi 解 PalmDOC、txt 分章）
+  /// 和正文渲染都在服务端。所以本地书必须交给后端解析一次，
+  /// 拿到书籍信息与章节列表写进书架，之后阅读走的是和在线书一样的接口。
+  /// 这也是后端 `/importBookPreview` 的设计意图。
+  ///
+  /// 【失败时后端给的是中文】
+  /// 比如「当前文件格式不支持」「不允许导入图书」（账号没有 AllowUpTxt 权限）。
+  /// 这些消息本来就写给用户看，直接展示；只有 `NOT_BANK` 这类英文常量需要翻译。
+  Future<void> _addLocalBook() async {
+    final token = context.read<UserProvider>().token;
+    if (token == null) {
+      _toast('请先登录');
+      return;
+    }
+
+    PickedBookFile? picked;
+    try {
+      picked = await FilePickService.instance.pickBookFile();
+    } on UnsupportedError catch (e) {
+      if (mounted) _toast('$e');
+      return;
+    } catch (e) {
+      if (mounted) _toast('打开文件选择器失败：$e');
+      return;
+    }
+    // 用户取消：静默返回，不打扰
+    if (picked == null || !mounted) return;
+
+    setState(() => _busy = true);
+    try {
+      final resp = await ApiService.instance.importBookPreview(
+        token,
+        picked.path,
+        picked.name,
+      );
+      if (resp['isSuccess'] != true) {
+        _toast('导入失败：${friendlyServerMessage(resp['errorMsg'] as String?)}');
+        return;
+      }
+      final bookName = _importedBookName(resp['data'], picked.name);
+      _addLog('已导入本地书籍《$bookName》');
+      _toast('已导入《$bookName》');
+      await _refreshBookshelf();
+    } catch (e) {
+      _toast('导入失败：${friendlyError(e)}');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 从 `/importBookPreview` 的返回体里取书名，取不到就退回文件名。
+  String _importedBookName(Object? data, String fallback) {
+    if (data is Map) {
+      final books = data['books'];
+      if (books is Map) {
+        final name = books['name']?.toString();
+        if (name != null && name.isNotEmpty) return name;
+      }
+    }
+    return fallback;
   }
 
   /// 导出书架：把当前书架导出成 JSON，可保存文件或复制到剪贴板

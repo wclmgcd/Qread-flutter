@@ -52,3 +52,21 @@ String friendlyError(Object error) {
   }
   return error.toString();
 }
+
+/// 把后端返回的 `errorMsg` 翻译成用户能看懂的一句话。
+///
+/// 后端大部分错误消息本身就是中文（「当前文件格式不支持」），原样展示即可；
+/// 只有少数是**给程序看的英文常量**（`NOT_BANK` 之类），
+/// 直接摆到界面上用户会一头雾水，所以在这里做一层替换。
+String friendlyServerMessage(String? message) {
+  final msg = message?.trim() ?? '';
+  if (msg.isEmpty) return '操作失败';
+  switch (msg) {
+    case 'NOT_BANK':
+      return '没有选到文件，请重新选择';
+    case 'SUCCESS':
+      return '成功';
+    default:
+      return msg;
+  }
+}

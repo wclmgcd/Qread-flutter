@@ -36,7 +36,8 @@
             <!-- ================= 打开方式（Open with）=================
                  没有这一段，系统「打开方式」里根本不会出现 Qread ——
                  用户从文件管理器 / 聊天软件里点「用其他应用打开」一个
-                 .json 书源文件时，列表里找不到 Qread。
+                 .json 书源文件、或者一本 epub / mobi 电子书时，
+                 列表里都找不到 Qread。
 
                  【为什么拆成两个 intent-filter】
                  第 1 个靠 **MIME 类型**匹配：Gmail、Chrome、系统下载器这类
@@ -65,6 +66,13 @@
                 <data android:scheme="file" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="text/plain" />
+                <!-- 电子书。epub / mobi 都有标准 MIME，文件管理器认得出来；
+                     octet-stream 是给 .azw3 / .prc 兜底的 —— 国产 ROM 的文件管理器
+                     对这两种常见的就是报这个，不给就会出现「点了文件列表里没有 Qread」。 -->
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-mobipocket-ebook" />
+                <data android:mimeType="application/vnd.amazon.ebook" />
+                <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
@@ -84,6 +92,15 @@
                 <data android:pathAdvancedPattern=".*\\.[tT][xX][tT]" />
                 <data android:pathPattern=".*\\.txt" />
                 <data android:pathPattern=".*\\.TXT" />
+                <data android:pathAdvancedPattern=".*\\.[eE][pP][uU][bB]" />
+                <data android:pathPattern=".*\\.epub" />
+                <data android:pathAdvancedPattern=".*\\.[mM][oO][bB][iI]" />
+                <data android:pathPattern=".*\\.mobi" />
+                <data android:pathAdvancedPattern=".*\\.[aA][zZ][wW]3?" />
+                <data android:pathPattern=".*\\.azw" />
+                <data android:pathPattern=".*\\.azw3" />
+                <data android:pathAdvancedPattern=".*\\.[pP][rR][cC]" />
+                <data android:pathPattern=".*\\.prc" />
             </intent-filter>
             <!-- ================= 分享（Send）=================
                  从文件管理器「分享」一个 json 给 Qread，
@@ -95,6 +112,9 @@
 
                 <data android:mimeType="application/json" />
                 <data android:mimeType="text/plain" />
+                <data android:mimeType="application/epub+zip" />
+                <data android:mimeType="application/x-mobipocket-ebook" />
+                <data android:mimeType="application/vnd.amazon.ebook" />
             </intent-filter>
         </activity>
         <!-- 【修复】关闭 Impeller，回退到 Skia。

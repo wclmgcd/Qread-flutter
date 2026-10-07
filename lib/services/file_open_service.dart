@@ -4,22 +4,64 @@ import 'package:flutter/services.dart';
 
 /// 一个从外部（文件管理器 / 分享）传进来的文件。
 class OpenedFile {
-  const OpenedFile({required this.name, required this.content});
+  const OpenedFile({
+    required this.name,
+    required this.content,
+    this.path,
+  });
 
   /// 文件名，用来在界面上告诉用户「在导入哪个文件」。
   final String name;
 
   /// 文件的全部文本内容（UTF-8）。
+  ///
+  /// 只对**纯文本**文件有意义（书源 json、txt 书源）。
+  /// 二进制书籍（epub / mobi）读不出文本，这里是空串 —— 那种文件走 [path]。
   final String content;
+
+  /// 文件在 App 私有目录里的真实路径。
+  ///
+  /// 【为什么需要它】
+  /// epub / mobi 是二进制格式，`String(data:encoding:.utf8)` 直接失败。
+  /// 所以原生侧对这类文件改走「复制一份到缓存目录、把路径传过来」，
+  /// Dart 侧再拿这个路径上传给后端解析。
+  /// 书源 json 这类纯文本文件也会带上它（txt 可能需要当小说上传），但没有也不影响。
+  final String? path;
+
+  /// 是不是一本「电子书」，而不是书源 / 订阅源文件。
+  ///
+  /// 只按后缀判断 epub / mobi 家族；`.txt` 有歧义（既可能是书源文本，
+  /// 也可能是小说），交给 [looksLikeSourceJson] 按内容再判一次。
+  bool get isBinaryBook {
+    final lower = name.toLowerCase();
+    return lower.endsWith('.epub') ||
+        lower.endsWith('.mobi') ||
+        lower.endsWith('.azw') ||
+        lower.endsWith('.azw3') ||
+        lower.endsWith('.prc');
+  }
+
+  bool get isTxt => name.toLowerCase().endsWith('.txt');
+
+  /// 内容看起来是不是书源 / 订阅源 JSON（以 `[` 或 `{` 开头）。
+  bool get looksLikeSourceJson {
+    final trimmed = content.trimLeft();
+    return trimmed.startsWith('[') || trimmed.startsWith('{');
+  }
 
   static OpenedFile? fromPlatform(Object? raw) {
     if (raw is! Map) return null;
     final name = raw['name']?.toString();
     final content = raw['content']?.toString();
-    if (content == null || content.trim().isEmpty) return null;
+    final path = raw['path']?.toString();
+    final hasContent = content != null && content.trim().isNotEmpty;
+    final hasPath = path != null && path.isNotEmpty;
+    // 二进制书籍只有 path、没有 content，所以两者有一个就算有效
+    if (!hasContent && !hasPath) return null;
     return OpenedFile(
-      name: (name == null || name.isEmpty) ? '导入.json' : name,
-      content: content,
+      name: (name == null || name.isEmpty) ? '导入文件' : name,
+      content: content ?? '',
+      path: hasPath ? path : null,
     );
   }
 }

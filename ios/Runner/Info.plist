@@ -48,6 +48,46 @@
 				<string>public.plain-text</string>
 			</array>
 		</dict>
+		<!-- 电子书。org.idpf.epub-container 是系统已声明的 UTI，直接引用；
+		     mobi 没有系统 UTI，得靠下面的 UTImportedTypeDeclarations 自己声明。 -->
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>电子书</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.idpf.epub-container</string>
+				<string>com.amazon.mobi</string>
+			</array>
+		</dict>
+	</array>
+	<!-- mobi 家族没有系统 UTI，必须自己声明一个，并把它和四个后缀绑起来，
+	     否则「文件」App / 分享面板里认不出 .mobi 该交给谁，Qread 不会出现。 -->
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.amazon.mobi</string>
+			<key>UTTypeDescription</key>
+			<string>Mobipocket 电子书</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>mobi</string>
+					<string>azw</string>
+					<string>azw3</string>
+					<string>prc</string>
+				</array>
+			</dict>
+		</dict>
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>

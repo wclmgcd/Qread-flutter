@@ -11,6 +11,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 /**
  * 阅读页的「全屏沉浸」：隐藏系统导航栏（底部手势条 / 三大金刚键）。
@@ -53,16 +54,48 @@ import io.flutter.plugin.common.MethodChannel
  * `receive_sharing_intent` 之类要改 pubspec 并依赖其原生实现；
  * 本仓库本机没有 Flutter SDK、无法验证 pub 解析，一旦解析失败就是 CI 红。
  * 这里的逻辑只有几十行，自己开一个 MethodChannel 更可控。
+ *
+ * ---------------------------------------------------------------------------
+ *
+ * 「添加本地」：书架里主动选一个电子书文件。
+ *
+ * 【为什么要把文件复制一份出来】
+ * 系统选择器（ACTION_OPEN_DOCUMENT）给回来的是 `content://` URI，
+ * 而 Dart 侧上传用的是 dio 的 `MultipartFile.fromFile(path)`，它要的是**真实路径**。
+ * `content://` 没法直接当路径用，所以这里先把内容拷进 App 私有缓存目录，
+ * 再把路径交给 Dart。选完的文件会一直留在 `cacheDir/import_books/`，
+ * 系统在空间紧张时会自行清理，不需要我们操心。
  */
 class MainActivity : FlutterActivity() {
 
     private val systemUiChannelName = "qread/system_ui"
     private val fileOpenChannelName = "qread/file_open"
+    private val filePickChannelName = "qread/file_pick"
+
+    private val requestPickBook = 10021
+
+    /**
+     * 选择器要展示的文件类型。
+     *
+     * 只写后缀是没用的 —— 文件选择器认 MIME。
+     * `application/octet-stream` 是兜底：不少文件管理器（尤其国产 ROM）
+     * 对 .azw3 / .prc 报的就是这个，不给它就会变成灰色不可选。
+     */
+    private val bookMimeTypes = arrayOf(
+        "text/plain",                     // .txt
+        "application/epub+zip",           // .epub
+        "application/x-mobipocket-ebook", // .mobi / .prc
+        "application/vnd.amazon.ebook",   // .azw
+        "application/octet-stream"        // .azw3 等
+    )
 
     /** 已收到但还没交给 Dart 的文件；Dart 取走后置空。 */
     private var pendingFile: Map<String, String>? = null
 
     private var fileOpenChannel: MethodChannel? = null
+
+    /** 正在等待结果的文件选择框。同一时刻只允许一个。 */
+    private var pendingPickResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -95,6 +128,14 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, filePickChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "pickBookFile" -> openBookPicker(result)
+                    else -> result.notImplemented()
+                }
+            }
 
         // 冷启动：此刻 Dart 还没起来，先攒着
         collectFromIntent(intent, deliverNow = false)
@@ -163,21 +204,38 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    /** 读一个 content:// 或 file:// 的内容。失败一律返回 null（不要崩）。 */
+    /**
+     * 读一个 content:// 或 file:// 的文件。失败一律返回 null（不要崩）。
+     *
+     * 【返回形态】
+     *   - 二进制书籍（epub / mobi）：`{name, path}` —— 内容不读，读出来也是坏的；
+     *   - 纯文本（书源 json / txt）：`{name, content, path}` —— 内容给书源导入用，
+     *     路径留着，万一是 txt 小说就转去上传。
+     *
+     * 【为什么都要复制一份】
+     * `ACTION_VIEW` 给回来的是 `content://` URI，这个 URI 的读取权限只在本次
+     * 回调期间有效，而且 dio 上传要的是真实路径。复制进缓存目录两件事一起解决。
+     */
     private fun readUri(uri: Uri): Map<String, String>? {
-        return try {
-            val content = contentResolver.openInputStream(uri)?.use { input ->
-                input.bufferedReader(Charsets.UTF_8).readText()
+        val name = displayName(uri) ?: "导入文件"
+        val copied = copyUriToCache(uri) ?: return null
+        val path = copied["path"] ?: return null
+
+        val result = mutableMapOf("name" to name, "path" to path)
+        if (isTextLike(name)) {
+            val content = try {
+                File(path).readText(Charsets.UTF_8)
+            } catch (_: Exception) {
+                null
             }
-            if (content.isNullOrBlank()) return null
-            mapOf(
-                "name" to (displayName(uri) ?: "导入.json"),
-                "content" to content,
-            )
-        } catch (_: Exception) {
-            // 权限被收回、URI 已失效、文件被删…… 都不该让 App 崩掉
-            null
+            if (!content.isNullOrBlank()) result["content"] = content
         }
+        return result
+    }
+
+    private fun isTextLike(name: String): Boolean {
+        val lower = name.lowercase()
+        return lower.endsWith(".json") || lower.endsWith(".txt")
     }
 
     /** 取文件名。`content://` 要走 OpenableColumns，`file://` 直接取末段。 */
@@ -188,6 +246,70 @@ class MainActivity : FlutterActivity() {
                 val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                 if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
             }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ==================================================================
+    // 「添加本地」的文件选择
+    // ==================================================================
+
+    private fun openBookPicker(result: MethodChannel.Result) {
+        if (pendingPickResult != null) {
+            result.error("BUSY", "已经有一个文件选择框打开了", null)
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, bookMimeTypes)
+        }
+        try {
+            pendingPickResult = result
+            startActivityForResult(intent, requestPickBook)
+        } catch (e: Exception) {
+            // 极少数精简系统上没有任何文件选择器
+            pendingPickResult = null
+            result.error("NO_PICKER", "系统里没有可用的文件选择器", e.message)
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != requestPickBook) {
+            super.onActivityResult(requestCode, resultCode, data)
+            return
+        }
+        val result = pendingPickResult
+        pendingPickResult = null
+        if (result == null) return
+
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            // 用户点了返回 / 取消：不是错误，回 null 让 Dart 静默处理
+            result.success(null)
+            return
+        }
+        val copied = copyUriToCache(uri)
+        if (copied == null) {
+            result.error("READ_FAILED", "读取所选文件失败", null)
+        } else {
+            result.success(copied)
+        }
+    }
+
+    /** 把 content:// 的内容拷进 App 缓存目录，返回 {path, name}。 */
+    private fun copyUriToCache(uri: Uri): Map<String, String>? {
+        return try {
+            val name = displayName(uri) ?: "book_${System.currentTimeMillis()}"
+            val dir = File(cacheDir, "import_books")
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, name)
+            val stream = contentResolver.openInputStream(uri) ?: return null
+            stream.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            mapOf("path" to target.absolutePath, "name" to name)
         } catch (_: Exception) {
             null
         }

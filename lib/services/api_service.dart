@@ -94,6 +94,38 @@ class ApiService {
     );
   }
 
+  // ============ 本地书籍 ============
+
+  /// 上传本地书（txt / epub / mobi / azw / azw3 / prc），后端解析、生成章节并入库。
+  ///
+  /// 返回体里 `data.books` 是书籍信息、`data.chapters` 是章节列表；
+  /// 失败时 `isSuccess=false`，`errorMsg` 是可直接展示的中文
+  /// （如「当前文件格式不支持」「不允许导入图书」）。
+  ///
+  /// 【为什么单独放宽超时】
+  /// 全局 sendTimeout 是 15s、receiveTimeout 是 60s，那是给普通接口的。
+  /// 这里一次要传整本书（几 MB），后端还要现场解压 mobi / 解析 epub、
+  /// 生成章节并写缓存，耗时远大于普通请求，沿用全局值会误报超时。
+  Future<Map<String, dynamic>> importBookPreview(
+    String accessToken,
+    String filePath,
+    String fileName,
+  ) async {
+    final formData = FormData.fromMap({
+      'file': await MultipartFile.fromFile(filePath, filename: fileName),
+    });
+    final resp = await _dio.post(
+      '/importBookPreview',
+      data: formData,
+      queryParameters: {'accessToken': accessToken},
+      options: Options(
+        sendTimeout: const Duration(minutes: 2),
+        receiveTimeout: const Duration(minutes: 2),
+      ),
+    );
+    return resp.data;
+  }
+
   // ============ 用户 ============
 
   Future<Map<String, dynamic>> login(String username, String password) async {
