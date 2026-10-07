@@ -71,6 +71,7 @@ class MainActivity : FlutterActivity() {
     private val systemUiChannelName = "qread/system_ui"
     private val fileOpenChannelName = "qread/file_open"
     private val filePickChannelName = "qread/file_pick"
+    private val dictionaryChannelName = "qread/dictionary"
 
     private val requestPickBook = 10021
 
@@ -137,6 +138,22 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        // 阅读页长按选中文字后的「字典」。
+        // 用 ACTION_PROCESS_TEXT 把选中的词交给系统里带词典 / 翻译能力的 App
+        // （和 3.41 一样）。系统里一个都没有时返回 false，Dart 侧降级到网页词典。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, dictionaryChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "lookup" -> {
+                        val text = call.argument<String>("text")?.trim().orEmpty()
+                        result.success(
+                            if (text.isEmpty()) false else openSystemDictionary(text)
+                        )
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
         // 冷启动：此刻 Dart 还没起来，先攒着
         collectFromIntent(intent, deliverNow = false)
     }
@@ -147,6 +164,33 @@ class MainActivity : FlutterActivity() {
         setIntent(intent)
         // 热启动：Dart 已经活着，直接推
         collectFromIntent(intent, deliverNow = true)
+    }
+
+    /**
+     * 把选中的文字交给系统词典。
+     *
+     * `ACTION_PROCESS_TEXT` 是 Android 6.0+ 标准的「处理这段文本」入口，
+     * 装了词典 / 翻译类 App 的设备会弹出选择器。
+     *
+     * 返回 false 表示系统里没有任何 App 能处理它 —— Dart 侧据此降级到网页词典，
+     * 而不是弹一个「无应用可执行」的空选择器。
+     */
+    @Suppress("DEPRECATION")
+    private fun openSystemDictionary(text: String): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_PROCESS_TEXT).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_PROCESS_TEXT, text)
+                putExtra(Intent.EXTRA_PROCESS_TEXT_READONLY, true)
+            }
+            if (packageManager.queryIntentActivities(intent, 0).isEmpty()) {
+                return false
+            }
+            startActivity(Intent.createChooser(intent, "词典"))
+            true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     // ==================================================================

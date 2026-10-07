@@ -27,6 +27,7 @@ import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
 import 'engine/engine.dart';
 import 'paragraph_comment_page.dart';
+import 'reader_selection_menu.dart';
 import 'reader_state.dart';
 import 'widgets/reader_fonts.dart';
 import 'widgets/widgets.dart';
@@ -70,6 +71,13 @@ class _ReaderPageState extends State<ReaderPage> {
 
   late PageController _pageController;
   final PagedReaderController _pagedReaderController = PagedReaderController();
+
+  /// 当前是否有文字被选中（`SelectionArea` 的选区状态）。
+  /// 用它让「单击」在选区存在时只做「取消选中」，不翻页。
+  bool _hasSelection = false;
+
+  /// 最近一次 `SelectionArea` 的状态对象，用来主动清除选区。
+  SelectableRegionState? _selectionState;
   final ScrollController _comicScrollController = ScrollController();
   final ScrollController _novelScrollController = ScrollController();
   final TtsService _tts = TtsService();
@@ -905,6 +913,14 @@ class _ReaderPageState extends State<ReaderPage> {
   // ============================================================
 
   void _handleTap(TapUpDetails details, ReaderProvider provider) {
+    // 有文字被选中时，单击只用来「取消选中」。
+    // 否则用户点空白处想收起选区，页面却先翻走了。
+    if (_hasSelection) {
+      _hasSelection = false;
+      _selectionState?.clearSelection();
+      return;
+    }
+
     if (_state.autoPageRunning) {
       // 自动翻页控制条也是「点一下出来、过几秒自己收」，别再常驻
       if (_state.showAutoPageControls) {
@@ -933,6 +949,15 @@ class _ReaderPageState extends State<ReaderPage> {
     // 控制栏正显示着的时候翻页，把自动隐藏倒计时往后推，
     // 免得用户连翻几页时工具条在半路被收走
     if (_state.showController) _restartControllerHideTimer();
+  }
+
+  /// 书内全文搜索点中某条结果后跳过去。
+  ///
+  /// `charOffset` 是「该章纯文本里的字符位置」，而 `_openChapter` 的
+  /// `chapterPosition` 用的是同一套字符坐标（分页引擎的
+  /// `PageSlice.startPosition` 就是字符下标），所以直接传即可。
+  Future<void> _jumpToSearchResult(int chapterIndex, int charOffset) {
+    return _openChapter(chapterIndex, chapterPosition: charOffset);
   }
 
   Duration _pageTurnDuration() {
@@ -1297,10 +1322,40 @@ class _ReaderPageState extends State<ReaderPage> {
               return Stack(
                 children: [
                   Positioned.fill(
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque,
-                      onTapUp: (details) => _handleTap(details, provider),
-                      child: _buildContent(provider),
+                    // 【选中文字：SelectionArea 在外，GestureDetector 在内】
+                    //
+                    // 手势竞技场里 hit test 是「从内层往外层」收集识别器的，
+                    // 所以内层的 GestureDetector 会先拿到单击 —— 单击翻页 /
+                    // 唤出控制栏的行为**不受影响**。
+                    //
+                    // 长按则归 SelectionArea：它注册的是 LongPress，长按一旦
+                    // 触发就赢得竞技场，「长按选中 + 拖拽调整手柄」可用；
+                    // 未长按的水平拖动同理仍归 PagedReader 的 HorizontalDrag。
+                    //
+                    // 反过来写（GestureDetector 在外）会让单击被 SelectionArea
+                    // 吃掉（它拿单击来清除选区），翻页直接失效。
+                    child: SelectionArea(
+                      // 记下选区状态：单击时若存在选区，只取消选中、不翻页
+                      onSelectionChanged: (content) =>
+                          _hasSelection = content != null,
+                      contextMenuBuilder: (ctx, selectionState) {
+                        _selectionState = selectionState;
+                        return ReaderSelectionMenu.build(
+                          context: ctx,
+                          state: selectionState,
+                          book: provider.book!,
+                          accessToken: _token ?? '',
+                          chapters: provider.chapters,
+                          loadChapterText: (index) =>
+                              provider.peekChapterContent(_token ?? '', index),
+                          onJumpToResult: _jumpToSearchResult,
+                        );
+                      },
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTapUp: (details) => _handleTap(details, provider),
+                        child: _buildContent(provider),
+                      ),
                     ),
                   ),
                   // 亮度：盖一层黑色蒙版（不动系统亮度），只压暗正文区

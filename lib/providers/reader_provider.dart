@@ -107,6 +107,33 @@ class ReaderProvider extends ChangeNotifier {
     return text;
   }
 
+  /// 供「书内全文搜索」使用：**只读**缓存 / 网络，不写入 `_prefetchCache`。
+  ///
+  /// 为什么不能直接用 `getChapterContent`：它会往 `_prefetchCache` 里塞内容，
+  /// 而那个 map 只在 `prefetchAround` 里按「当前章前后几章」裁剪。全文搜索会
+  /// 把整本书几千章都读一遍 —— 走 `getChapterContent` 就等于把几千章正文
+  /// 全留在内存里。这里只读不存，搜完即弃。
+  Future<String> peekChapterContent(String accessToken, int chapterIndex) async {
+    if (_book == null ||
+        chapterIndex < 0 ||
+        chapterIndex >= _chapters.length) {
+      return '';
+    }
+
+    final cached = await _readCachedChapterContent(chapterIndex);
+    if (cached != null) return cached;
+
+    final data = await ApiService.instance.getBookContentNew(
+      accessToken,
+      _book!.bookUrl ?? '',
+      chapterIndex,
+      _book!.origin ?? '',
+      bookname: _book!.name,
+      useReplaceRule: _book!.useReplaceRule == false ? 0 : 1,
+    );
+    return data['text']?.toString() ?? '';
+  }
+
   Future<void> markReadChapter(String accessToken, int chapterIndex) async {
     if (_book == null || chapterIndex < 0) return;
     _readChapters.add(chapterIndex);

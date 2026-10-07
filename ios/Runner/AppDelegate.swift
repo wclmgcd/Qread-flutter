@@ -308,6 +308,29 @@ class QreadFlutterViewController: FlutterViewController {
     // 需要把 self 传进去当 present 的宿主 —— 文件选择框得挂在某个控制器上。
     FilePickBridge.shared.attach(messenger: binaryMessenger, presenter: self)
 
+    // 阅读页长按选中文字后的「字典」桥：通道名/方法名与 Android 侧完全一致。
+    // iOS 走系统词典 UIReferenceLibraryViewController（Android 那边是
+    // ACTION_PROCESS_TEXT），两边对 Dart 都暴露成 lookup(text) -> bool。
+    let dictChannel = FlutterMethodChannel(
+      name: "qread/dictionary",
+      binaryMessenger: binaryMessenger
+    )
+    dictChannel.setMethodCallHandler { [weak self] call, result in
+      switch call.method {
+      case "lookup":
+        let args = call.arguments as? [String: Any]
+        let text = (args?["text"] as? String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if text.isEmpty {
+          result(false)
+        } else {
+          result(self?.openSystemDictionary(text) ?? false)
+        }
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+
     let channel = FlutterMethodChannel(
       name: "qread/system_ui",
       binaryMessenger: binaryMessenger
@@ -334,6 +357,24 @@ class QreadFlutterViewController: FlutterViewController {
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// 把选中的文字交给系统词典。
+  ///
+  /// 返回 false 表示系统词典里查不到这个词（`dictionaryHasDefinition` 为 false），
+  /// Dart 侧据此降级到网页词典 —— 而不是弹一个空白的词典页。
+  private func openSystemDictionary(_ text: String) -> Bool {
+    guard UIReferenceLibraryViewController.dictionaryHasDefinition(forTerm: text) else {
+      return false
+    }
+    let controller = UIReferenceLibraryViewController(term: text)
+    // 要挂到「当前最上层」的控制器上，否则在对话框/弹层之上 present 不出来
+    var host: UIViewController = self
+    while let presented = host.presentedViewController {
+      host = presented
+    }
+    host.present(controller, animated: true)
+    return true
   }
 
   private func setHomeIndicatorHidden(_ hidden: Bool) {
