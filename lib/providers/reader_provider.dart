@@ -3,6 +3,7 @@ import '../models/book.dart';
 import '../models/chapter.dart';
 import '../services/api_service.dart';
 import '../services/local_cache_service.dart';
+import '../services/error_text.dart';
 import '../services/storage_service.dart';
 
 class ReaderProvider extends ChangeNotifier {
@@ -71,7 +72,7 @@ class ReaderProvider extends ChangeNotifier {
         await getChapterContent(accessToken, initialIndex);
       }
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       _loadingChapters = false;
       notifyListeners();
     }

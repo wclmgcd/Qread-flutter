@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -6,6 +7,7 @@ import '../../config/routes.dart';
 import '../../models/rss_source.dart';
 import '../../providers/rss_manage_provider.dart';
 import '../../providers/user_provider.dart';
+import '../../services/cookie_sync_service.dart';
 import '../login/source_login_page.dart';
 import '../login/webview_login_page.dart';
 import 'rss_source_editor_page.dart';
@@ -43,7 +45,36 @@ class _RssSourcePageState extends State<RssSourcePage> {
   Future<void> _loadSources() async {
     final token = context.read<UserProvider>().token;
     if (token == null) return;
-    await context.read<RssManageProvider>().loadSources(token, refresh: true);
+    // 与书源页一致：不传 refresh，先上本地缓存再后台拉网络。
+    await context.read<RssManageProvider>().loadSources(token);
+    // 列表拉回来后顺手把**本地 WebView 里已有的** cookie 推到服务端。
+    //
+    // 【为什么订阅源页也要做这一步】
+    // 订阅源（RSS）的取数是在**后端**跑的，读的是服务端的 CookieStore；
+    // 而用户登录是在**客户端 WebView** 里完成的，cookie 落在 WebView 的
+    // cookie jar。中间不搬一次，后端就是「明明登录过了，取订阅内容还是未登录」
+    // —— 这正是「订阅源里的登录状态没有同步过来」。
+    //
+    // 书源页（source_manage_page.dart）一直有这一步，订阅源页漏了；
+    // 只在「点登录 → 关页面」那一次调用 `syncOne` 是不够的：
+    // 换设备、重装、或 cookie 是别处（网页端/官方 App）登录时，
+    // 本地 WebView 里本来就有 cookie，但没有任何时机会推上去。
+    unawaited(_pushLocalCookies(token));
+  }
+
+  /// 把本地 WebView 里已有的 cookie 批量推给服务端。
+  ///
+  /// `sourceUrl` 是订阅源标识、`loginUrl` 才是真正被登录的页面 ——
+  /// 两者都可能有 cookie，一起交给 [CookieSyncService] 按站点去重
+  /// （每个站点一次 HTTP，去重后通常远小于订阅源条数）。
+  Future<void> _pushLocalCookies(String token) async {
+    final provider = context.read<RssManageProvider>();
+    final urls = <String>[];
+    for (final s in provider.sources) {
+      if ((s.sourceUrl ?? '').isNotEmpty) urls.add(s.sourceUrl!);
+      if ((s.loginUrl ?? '').isNotEmpty) urls.add(s.loginUrl!);
+    }
+    await CookieSyncService.instance.pushMany(token, urls);
   }
 
   String _token() => context.read<UserProvider>().token ?? '';
@@ -365,10 +396,10 @@ class _RssSourcePageState extends State<RssSourcePage> {
     );
   }
 
-  void _showRssSourceLogin(RssSource source) {
+  Future<void> _showRssSourceLogin(RssSource source) async {
     final hasLoginUi = (source.loginUi ?? '').isNotEmpty;
     if (hasLoginUi) {
-      Navigator.pushNamed(
+      await Navigator.pushNamed(
         context,
         AppRoutes.sourceLogin,
         arguments: SourceLoginPageArgs(
@@ -382,7 +413,7 @@ class _RssSourcePageState extends State<RssSourcePage> {
         ),
       );
     } else if ((source.loginUrl ?? '').isNotEmpty) {
-      Navigator.pushNamed(
+      await Navigator.pushNamed(
         context,
         AppRoutes.sourceWebLogin,
         arguments: WebViewLoginPageArgs(
@@ -393,6 +424,26 @@ class _RssSourcePageState extends State<RssSourcePage> {
           headers: _parseHeaderJson(source.header),
         ),
       );
+    } else {
+      return;
+    }
+
+    // 登录页回来后再同步这一个订阅源 —— 与书源页
+    // （source_manage_page.dart 的 `_showSourceLogin`）保持完全一致。
+    //
+    // WebView 那条路在 `webview_login_page` 里「推完 cookie 再跑 login()」
+    // 已经做过一次；但 JS 登录（loginUi）那条路的 cookie 是**服务端**自己拿的，
+    // 客户端不知道，这里补一次双向同步，保证两边最终一致。
+    //
+    // 原来这个方法签名是 `void`，没有 await，返回后什么都不做 ——
+    // 用户反馈的「订阅源里的登录状态没有同步过来」就有这一份原因。
+    if (!mounted) return;
+    final token = context.read<UserProvider>().token;
+    if (token != null && token.isNotEmpty) {
+      final url = (source.sourceUrl ?? '').isNotEmpty
+          ? source.sourceUrl!
+          : (source.loginUrl ?? '');
+      unawaited(CookieSyncService.instance.syncOne(token, url));
     }
   }
 

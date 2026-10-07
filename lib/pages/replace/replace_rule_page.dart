@@ -10,6 +10,7 @@ import '../../config/routes.dart';
 import '../../models/replace_rule.dart';
 import '../../providers/replace_rule_provider.dart';
 import '../../providers/user_provider.dart';
+import '../../services/api_service.dart';
 import 'replace_rule_editor_page.dart';
 
 class ReplaceRulePage extends StatefulWidget {
@@ -437,7 +438,13 @@ class _ReplaceRulePageState extends State<ReplaceRulePage> {
 
   Future<void> _importFromUrl(String url) async {
     try {
-      final resp = await Dio().get<String>(
+      // 必须显式给超时：`Dio()` 的默认 connectTimeout / receiveTimeout 都是
+      // **null（永不超时）**，链接卡住时这个页面会一直转圈、连重试入口都没有。
+      final resp = await Dio(BaseOptions(
+        connectTimeout: ApiService.kConnectTimeout,
+        receiveTimeout: ApiService.kReceiveTimeout,
+        sendTimeout: ApiService.kSendTimeout,
+      )).get<String>(
         url,
         options: Options(responseType: ResponseType.plain),
       );

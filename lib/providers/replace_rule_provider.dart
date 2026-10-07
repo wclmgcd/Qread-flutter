@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/replace_rule.dart';
 import '../services/api_service.dart';
+import '../services/error_text.dart';
 
 class ReplaceRuleProvider extends ChangeNotifier {
   static const ungroupedFilter = '__ungrouped__';
@@ -143,7 +144,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
         ..addAll(fetched);
       _rules.sort((a, b) => a.order.compareTo(b.order));
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();
@@ -162,7 +163,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -183,7 +184,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -206,7 +207,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -226,7 +227,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -243,7 +244,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -265,7 +266,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -287,7 +288,7 @@ class ReplaceRuleProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }

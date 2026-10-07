@@ -6,6 +6,7 @@ import '../../models/rss_article.dart';
 import '../../models/rss_source.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/error_text.dart';
 import 'rss_article_detail_page.dart';
 import 'rss_web_page.dart';
 
@@ -127,7 +128,7 @@ class _RssArticleListPageState extends State<RssArticleListPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e);
       });
     } finally {
       if (mounted) {
@@ -177,7 +178,7 @@ class _RssArticleListPageState extends State<RssArticleListPage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e);
       });
     } finally {
       if (mounted) {

@@ -1,7 +1,11 @@
 package com.qread.qread
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import android.view.View
+import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -27,14 +31,42 @@ import io.flutter.plugin.common.MethodChannel
  * `BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE`：从 API 30 一直有效到 Android 16，
  * 且「滑一下临时出现、松手又自己收回去」，就是用户要的「自动隐藏」。
  * 状态栏保持不动（3.41 阅读时状态栏也是显示的）。
+ *
+ * ---------------------------------------------------------------------------
+ *
+ * 「打开方式」：把外部传来的 .json 文件交给 Dart 侧。
+ *
+ * 【为什么需要】
+ * Manifest 里加了 VIEW / SEND 的 intent-filter 之后，系统「打开方式」里会出现
+ * Qread。但**光有 intent-filter 不够** —— 还得有人真的把那个文件读出来、
+ * 交给 Dart。这里就是这个「人」。
+ *
+ * 【两条路径，别搞混】
+ *   - 冷启动（App 没在跑）：`configureFlutterEngine` 时 intent 里就有文件，
+ *     但此刻 Dart 还没起来、方法通道还没人接。所以先**攒进 pendingFile**，
+ *     等 Dart 主动调 `getInitialFile` 来取。
+ *   - 热启动（App 已在后台）：走 `onNewIntent`，Dart 已经活着，
+ *     直接 `invokeMethod("onFileOpened", …)` 推过去。
+ *     万一推送失败（Dart 侧 handler 还没挂上），退回 pendingFile 兜底。
+ *
+ * 【为什么不引第三方插件】
+ * `receive_sharing_intent` 之类要改 pubspec 并依赖其原生实现；
+ * 本仓库本机没有 Flutter SDK、无法验证 pub 解析，一旦解析失败就是 CI 红。
+ * 这里的逻辑只有几十行，自己开一个 MethodChannel 更可控。
  */
 class MainActivity : FlutterActivity() {
 
-    private val channelName = "qread/system_ui"
+    private val systemUiChannelName = "qread/system_ui"
+    private val fileOpenChannelName = "qread/file_open"
+
+    /** 已收到但还没交给 Dart 的文件；Dart 取走后置空。 */
+    private var pendingFile: Map<String, String>? = null
+
+    private var fileOpenChannel: MethodChannel? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, systemUiChannelName)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "hideNavigationBar" -> {
@@ -48,7 +80,122 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        fileOpenChannel =
+            MethodChannel(flutterEngine.dartExecutor.binaryMessenger, fileOpenChannelName)
+        fileOpenChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                // Dart 侧就绪后主动来取「冷启动带进来的那个文件」。
+                // 取走即清空 —— 否则用户下次从后台切回来会重复弹一次导入框。
+                "getInitialFile" -> {
+                    val file = pendingFile
+                    pendingFile = null
+                    result.success(file)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // 冷启动：此刻 Dart 还没起来，先攒着
+        collectFromIntent(intent, deliverNow = false)
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // 必须 setIntent，否则 getIntent() 还是旧的（框架不会自动更新）
+        setIntent(intent)
+        // 热启动：Dart 已经活着，直接推
+        collectFromIntent(intent, deliverNow = true)
+    }
+
+    // ==================================================================
+    // 「打开方式」/「分享」的文件读取
+    // ==================================================================
+
+    private fun collectFromIntent(intent: Intent?, deliverNow: Boolean) {
+        val payload = readFileFromIntent(intent) ?: return
+        val channel = fileOpenChannel
+        if (deliverNow && channel != null) {
+            channel.invokeMethod("onFileOpened", payload, object : MethodChannel.Result {
+                override fun success(result: Any?) {}
+
+                override fun error(errorCode: String, errorMessage: String?, errorDetails: Any?) {
+                    pendingFile = payload
+                }
+
+                override fun notImplemented() {
+                    pendingFile = payload
+                }
+            })
+        } else {
+            pendingFile = payload
+        }
+    }
+
+    /**
+     * 从 intent 里取出文件内容。
+     *
+     * 支持两种入口：
+     *   - `ACTION_VIEW`：点「用其他应用打开」，文件在 `intent.data`（content:// 或 file://）
+     *   - `ACTION_SEND`：点「分享」，正文在 `EXTRA_TEXT`（纯文本分享），
+     *     或者附件在 `EXTRA_STREAM`（文件分享）
+     */
+    private fun readFileFromIntent(intent: Intent?): Map<String, String>? {
+        if (intent == null) return null
+        return when (intent.action) {
+            Intent.ACTION_VIEW -> intent.data?.let { readUri(it) }
+
+            Intent.ACTION_SEND -> {
+                // 纯文本分享优先：微信/浏览器「分享」过来的往往就是正文
+                val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+                if (!text.isNullOrBlank()) {
+                    return mapOf("name" to "分享内容.json", "content" to text)
+                }
+                // IntentCompat 而不是 getParcelableExtra：后者在 API 33+ 已废弃，
+                // 直接用会在 targetSdk 35 下报 deprecation 警告
+                val stream: Uri? = IntentCompat.getParcelableExtra(
+                    intent, Intent.EXTRA_STREAM, Uri::class.java
+                )
+                stream?.let { readUri(it) }
+            }
+
+            else -> null
+        }
+    }
+
+    /** 读一个 content:// 或 file:// 的内容。失败一律返回 null（不要崩）。 */
+    private fun readUri(uri: Uri): Map<String, String>? {
+        return try {
+            val content = contentResolver.openInputStream(uri)?.use { input ->
+                input.bufferedReader(Charsets.UTF_8).readText()
+            }
+            if (content.isNullOrBlank()) return null
+            mapOf(
+                "name" to (displayName(uri) ?: "导入.json"),
+                "content" to content,
+            )
+        } catch (_: Exception) {
+            // 权限被收回、URI 已失效、文件被删…… 都不该让 App 崩掉
+            null
+        }
+    }
+
+    /** 取文件名。`content://` 要走 OpenableColumns，`file://` 直接取末段。 */
+    private fun displayName(uri: Uri): String? {
+        if (uri.scheme != "content") return uri.lastPathSegment
+        return try {
+            contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0 && cursor.moveToFirst()) cursor.getString(index) else null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    // ==================================================================
+    // 全屏沉浸
+    // ==================================================================
 
     private fun hideNavigationBar() {
         val window = window ?: return

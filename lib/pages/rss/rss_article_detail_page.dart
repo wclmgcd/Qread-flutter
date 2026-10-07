@@ -7,6 +7,7 @@ import '../../models/rss_article.dart';
 import '../../models/rss_source.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/error_text.dart';
 import '../../widgets/adaptive_webview.dart';
 
 class RssArticleDetailPageArgs {
@@ -64,7 +65,7 @@ class _RssArticleDetailPageState extends State<RssArticleDetailPage> {
       _enableJs = data['enableJs'] == true;
       _htmlUrl = '${AppConstants.apiBase}/getRssContenthtml?id=$id';
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       if (mounted) {
         setState(() {

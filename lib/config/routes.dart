@@ -43,6 +43,18 @@ import '../services/app_settings.dart';
 final RouteObserver<ModalRoute<void>> appRouteObserver =
     RouteObserver<ModalRoute<void>>();
 
+/// 全局 Navigator key。
+///
+/// 【为什么需要】
+/// 「用其他应用打开一个 json」这个事件是从**原生侧**推过来的，
+/// 触发时机完全不受路由控制 —— 可能在冷启动第一帧之前就到了。
+/// 那种时刻能拿到的只有这个全局 key：`MaterialApp.builder` 里的 context
+/// 位于 Navigator **之上**，`Navigator.of(context)` 会直接失败，
+/// 必须用 `appNavigatorKey.currentState` 才能往导航栈上压页面。
+///
+/// 见 `lib/widgets/file_open_listener.dart`。
+final GlobalKey<NavigatorState> appNavigatorKey = GlobalKey<NavigatorState>();
+
 class AppRoutes {
   static const String home = '/';
   static const String login = '/login';

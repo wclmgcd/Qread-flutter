@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import '../services/error_text.dart';
+
 typedef CustomSchemeHandler = Future<void> Function(String url);
 
 /// 跨端 WebView 封装。
@@ -86,7 +88,7 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e);
         _loading = false;
       });
     }

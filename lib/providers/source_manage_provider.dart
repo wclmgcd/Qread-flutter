@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/book_source.dart';
 import '../services/api_service.dart';
+import '../services/error_text.dart';
+import '../services/local_cache_service.dart';
 
 class SourceManageProvider extends ChangeNotifier {
   List<BookSource> _sources = [];
@@ -180,13 +183,67 @@ class SourceManageProvider extends ChangeNotifier {
 
   // ============ Data loading ============
 
+  /// 本地缓存的文件名。
+  ///
+  /// 按 accessToken 分作用域：换账号 / 换服务器（token 必然不同）不会串数据。
+  /// `scopedKey` 是 FNV-1a 摘要，出来是纯 hex，可以安全当文件名。
+  String _cacheKey(String accessToken) =>
+      'book_sources_${LocalCacheService.instance.scopedKey(accessToken)}';
+
+  /// 打开书源管理时先用本地缓存把列表铺上。
+  ///
+  /// 【为什么需要】
+  /// 之前每次进这个页面都走全量网络：`/getCanSource` + `/getBookSourcesPage`
+  /// + 按 md5 逐页拉 `/getBookSourcesNew`。哪怕只改了 0 条也要等一个来回，
+  /// 用户看到的就是「每次打开都要刷新一会」。而 3.41 是**本地数据库**，
+  /// 打开即有 —— 这里用一份本地 JSON 快照把差距补上。
+  ///
+  /// 只铺内存里还是空的时候；已经有数据（比如刚在这个会话里拉过）就不覆盖，
+  /// 免得把用户刚改的状态回滚成旧的。
+  Future<void> _restoreFromCache(String accessToken) async {
+    if (_sources.isNotEmpty) return;
+    final cached =
+        await LocalCacheService.instance.readJsonObject(_cacheKey(accessToken));
+    if (cached == null) return;
+    final raw = cached['sources'];
+    if (raw is! List) return;
+    final restored = <BookSource>[];
+    for (final item in raw) {
+      if (item is Map) {
+        restored.add(BookSource.fromJson(Map<String, dynamic>.from(item)));
+      }
+    }
+    if (restored.isEmpty) return;
+    _sources = restored;
+    if (cached['canEdit'] is bool) _canEdit = cached['canEdit'] as bool;
+    notifyListeners();
+  }
+
+  /// 网络拉回来之后写一份快照，下次打开就能立刻显示。
+  ///
+  /// 写失败不影响主流程（缓存只是加速，不是数据源），所以整个吞掉异常。
+  Future<void> _saveToCache(String accessToken) async {
+    try {
+      await LocalCacheService.instance.saveJson(_cacheKey(accessToken), {
+        'canEdit': _canEdit,
+        'sources': _sources.map((s) => s.toJson()).toList(),
+      });
+    } catch (_) {}
+  }
+
   Future<void> loadSources(String accessToken, {bool refresh = false}) async {
     if (_loading) return;
     _loading = true;
     _error = null;
-    if (refresh) _sources = [];
     notifyListeners();
 
+    // 1. 先上缓存 —— 页面打开即有内容，不用等网络
+    if (!refresh) {
+      await _restoreFromCache(accessToken);
+    }
+
+    // 2. 再拉网络。拉回来就覆盖并刷新缓存；失败就保留缓存那份，
+    //    不要把整页变成错误页（错误只在列表为空时才展示）。
     try {
       final permissionFuture = ApiService.instance.getCanSource(accessToken);
       final pageData = await ApiService.instance.getBookSourcesPage(accessToken);
@@ -215,8 +272,9 @@ class SourceManageProvider extends ChangeNotifier {
       // 整表重拉之后，服务端返回的就是权威结果，之前记的「已删除」
       // 不再需要（万一用户在别处又导入回来了，也不该继续被隐藏）
       _removedSourceUrls.clear();
+      unawaited(_saveToCache(accessToken));
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();
@@ -234,13 +292,14 @@ class SourceManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         source.enabled = st == 1;
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       _error = result['errorMsg'] ?? '操作失败';
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -259,11 +318,12 @@ class SourceManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         source.enabledExplore = !(source.enabledExplore == true);
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -278,13 +338,14 @@ class SourceManageProvider extends ChangeNotifier {
         // 记下来，发现页据此把这条也摘掉
         _removedSourceUrls.add(id);
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       _error = result['errorMsg'] ?? '删除失败';
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -299,7 +360,7 @@ class SourceManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -314,7 +375,7 @@ class SourceManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -333,13 +394,14 @@ class SourceManageProvider extends ChangeNotifier {
         // 记下来，发现页据此把这些也摘掉
         _removedSourceUrls.addAll(ids);
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       _error = result['errorMsg'] ?? '批量删除失败';
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -358,11 +420,12 @@ class SourceManageProvider extends ChangeNotifier {
         }
         _selectedIds.clear();
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -381,11 +444,12 @@ class SourceManageProvider extends ChangeNotifier {
         }
         _selectedIds.clear();
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -402,7 +466,7 @@ class SourceManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -419,7 +483,7 @@ class SourceManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -443,7 +507,7 @@ class SourceManageProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -463,7 +527,7 @@ class SourceManageProvider extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -489,7 +553,7 @@ class SourceManageProvider extends ChangeNotifier {
       }
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -499,7 +563,7 @@ class SourceManageProvider extends ChangeNotifier {
     try {
       return await ApiService.instance.getbookSources(accessToken, id);
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -516,7 +580,7 @@ class SourceManageProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }

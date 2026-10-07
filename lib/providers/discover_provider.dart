@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/book_source.dart';
 import '../services/api_service.dart';
+import '../services/error_text.dart';
 import '../services/local_cache_service.dart';
 
 class DiscoverProvider extends ChangeNotifier {
@@ -64,7 +65,7 @@ class DiscoverProvider extends ChangeNotifier {
           .toList();
       await _saveLocalCache(accessToken);
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();

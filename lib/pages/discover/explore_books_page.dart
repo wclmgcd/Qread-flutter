@@ -6,6 +6,7 @@ import '../../models/search_result.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
+import '../../services/error_text.dart';
 
 class ExploreBooksPageArgs {
   final String title;
@@ -104,7 +105,7 @@ class _ExploreBooksPageState extends State<ExploreBooksPage> {
       });
     } catch (e) {
       setState(() {
-        _error = e.toString();
+        _error = friendlyError(e);
       });
     } finally {
       setState(() {

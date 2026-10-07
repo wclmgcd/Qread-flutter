@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/rss_source.dart';
 import '../models/rss_article.dart';
 import '../services/api_service.dart';
+import '../services/error_text.dart';
 import '../services/local_cache_service.dart';
 
 class RssProvider extends ChangeNotifier {
@@ -59,7 +60,7 @@ class RssProvider extends ChangeNotifier {
       _sources = allSources;
       await _saveLocalCache(accessToken);
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();
@@ -99,7 +100,7 @@ class RssProvider extends ChangeNotifier {
       );
       _articles[sourceId] = list;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();

@@ -73,7 +73,10 @@ class _SourceManagePageState extends State<SourceManagePage> {
   Future<void> _loadSources() async {
     final token = context.read<UserProvider>().token;
     if (token == null) return;
-    await context.read<SourceManageProvider>().loadSources(token, refresh: true);
+    // 不传 refresh：让 provider 先把本地缓存铺上（打开即有内容），
+    // 再在后台拉网络覆盖。原来这里写死 refresh: true，等于每次都从零等一个
+    // 完整往返，用户看到的就是「每次打开都要刷新一会」。
+    await context.read<SourceManageProvider>().loadSources(token);
     // 列表拉回来后顺手把**本地 WebView 里已有的** cookie 推到服务端
     // （失败不影响列表展示）。只推不拉：上游是按站点读写的，每个站点一次
     // HTTP，几百个书源全拉会打满网络；「拉」（换设备后恢复登录态）交给

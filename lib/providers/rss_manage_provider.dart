@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../models/rss_source.dart';
 import '../services/api_service.dart';
+import '../services/error_text.dart';
+import '../services/local_cache_service.dart';
 
 class RssManageProvider extends ChangeNotifier {
   List<RssSource> _sources = [];
@@ -62,13 +65,54 @@ class RssManageProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 本地缓存文件名（按 accessToken 分作用域，换账号不串数据）。
+  String _cacheKey(String accessToken) =>
+      'rss_sources_${LocalCacheService.instance.scopedKey(accessToken)}';
+
+  /// 打开订阅源管理时先用本地缓存铺列表。
+  ///
+  /// 与书源页同因同治：原来每次打开都走 `/getRssSourcessPage` + 逐页
+  /// `/getRssSourcessNew`，必然转一会儿圈；3.41 是本地库，打开即有。
+  Future<void> _restoreFromCache(String accessToken) async {
+    if (_sources.isNotEmpty) return;
+    final cached =
+        await LocalCacheService.instance.readJsonObject(_cacheKey(accessToken));
+    if (cached == null) return;
+    final raw = cached['sources'];
+    if (raw is! List) return;
+    final restored = <RssSource>[];
+    for (final item in raw) {
+      if (item is Map) {
+        restored.add(RssSource.fromJson(Map<String, dynamic>.from(item)));
+      }
+    }
+    if (restored.isEmpty) return;
+    _sources = restored;
+    if (cached['canEdit'] is bool) _canEdit = cached['canEdit'] as bool;
+    notifyListeners();
+  }
+
+  Future<void> _saveToCache(String accessToken) async {
+    try {
+      await LocalCacheService.instance.saveJson(_cacheKey(accessToken), {
+        'canEdit': _canEdit,
+        'sources': _sources.map((s) => s.toJson()).toList(),
+      });
+    } catch (_) {}
+  }
+
   Future<void> loadSources(String accessToken, {bool refresh = false}) async {
     if (_loading) return;
     _loading = true;
     _error = null;
-    if (refresh) _sources = [];
     notifyListeners();
 
+    // 1. 先上缓存，页面打开即有内容
+    if (!refresh) {
+      await _restoreFromCache(accessToken);
+    }
+
+    // 2. 再拉网络；失败时保留缓存那份，不整页变错误页
     try {
       final canEditFuture = ApiService.instance.getRssCanEdit(accessToken);
       final pageData = await ApiService.instance.getRssSourcesPage(accessToken);
@@ -95,8 +139,9 @@ class RssManageProvider extends ChangeNotifier {
 
       _canEdit = await canEditFuture;
       _sources = allSources;
+      unawaited(_saveToCache(accessToken));
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();
@@ -119,7 +164,7 @@ class RssManageProvider extends ChangeNotifier {
       notifyListeners();
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -148,13 +193,14 @@ class RssManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         source.enabled = !(source.enabled == true);
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       _error = result['errorMsg']?.toString() ?? '操作失败';
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -166,13 +212,14 @@ class RssManageProvider extends ChangeNotifier {
       if (result['isSuccess'] == true) {
         _sources.removeWhere((source) => source.sourceUrl == id);
         notifyListeners();
+        unawaited(_saveToCache(accessToken));
         return true;
       }
       _error = result['errorMsg']?.toString() ?? '删除失败';
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -187,7 +234,7 @@ class RssManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -202,7 +249,7 @@ class RssManageProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -212,7 +259,7 @@ class RssManageProvider extends ChangeNotifier {
     try {
       return await ApiService.instance.getRssType(accessToken, id);
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -228,7 +275,7 @@ class RssManageProvider extends ChangeNotifier {
       }
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -242,7 +289,7 @@ class RssManageProvider extends ChangeNotifier {
       }
       return null;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return null;
     }
@@ -263,7 +310,7 @@ class RssManageProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }

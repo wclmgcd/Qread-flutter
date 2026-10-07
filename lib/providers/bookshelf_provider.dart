@@ -3,6 +3,7 @@ import '../models/book.dart';
 import '../models/book_group.dart';
 import '../services/api_service.dart';
 import '../services/app_settings.dart';
+import '../services/error_text.dart';
 import '../services/local_cache_service.dart';
 
 class BookshelfProvider extends ChangeNotifier {
@@ -150,7 +151,7 @@ class BookshelfProvider extends ChangeNotifier {
       _currentPage++;
       await _saveLocalCache(accessToken);
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
     } finally {
       _loading = false;
       notifyListeners();
@@ -210,7 +211,7 @@ class BookshelfProvider extends ChangeNotifier {
       }
       notifyListeners();
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
     }
   }
@@ -226,7 +227,7 @@ class BookshelfProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -245,7 +246,7 @@ class BookshelfProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -264,7 +265,7 @@ class BookshelfProvider extends ChangeNotifier {
       notifyListeners();
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -285,7 +286,7 @@ class BookshelfProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }
@@ -297,7 +298,7 @@ class BookshelfProvider extends ChangeNotifier {
       _books.removeWhere((b) => bookUrls.contains(b.bookUrl));
       notifyListeners();
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
     }
   }
@@ -312,7 +313,7 @@ class BookshelfProvider extends ChangeNotifier {
       }
       return false;
     } catch (e) {
-      _error = e.toString();
+      _error = friendlyError(e);
       notifyListeners();
       return false;
     }

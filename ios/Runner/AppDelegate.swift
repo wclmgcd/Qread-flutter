@@ -8,7 +8,111 @@ import Flutter
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
+    // 冷启动：从「用其他应用打开」进来的文件，URL 在 launchOptions 里。
+    // 此刻 Flutter 引擎还没建好，FileOpenBridge 会先把它攒起来，
+    // 等 Dart 侧就绪后自己来取（见 FileOpenBridge.attach / getInitialFile）。
+    if let url = launchOptions?[.url] as? URL {
+      FileOpenBridge.shared.handle(url: url)
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
+  }
+
+  /// 热启动：App 已在后台时，从「打开方式」/「分享」进来的文件走这里。
+  ///
+  /// 必须调 `super` —— FlutterAppDelegate 自己也要处理一遍（url_launcher 等
+  /// 插件依赖它）。这里只是**顺带**把文件抄一份给 FileOpenBridge。
+  override func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey: Any] = [:]
+  ) -> Bool {
+    FileOpenBridge.shared.handle(url: url)
+    return super.application(app, open: url, options: options)
+  }
+}
+
+/// 「打开方式」桥：把外部传来的 .json 文件交给 Dart。
+///
+/// 【对应关系】
+/// 通道名与方法名跟 Android 侧（MainActivity.kt）**完全一致**，
+/// 所以 Dart 那边一份 `FileOpenService` 两端通用：
+///
+///   Dart → 原生：`getInitialFile`            取「冷启动带进来的那个文件」
+///   原生 → Dart：`onFileOpened`              推「热启动进来的文件」
+///
+/// 【为什么需要 pending 缓冲】
+/// iOS 也是「先拿到文件、后建好 Flutter 引擎」：
+/// `didFinishLaunchingWithOptions` 比 `QreadFlutterViewController.viewDidLoad`
+/// 早。所以文件先存进 `pending`，等通道挂上、Dart 来取。
+///
+/// 【为什么不引第三方插件】
+/// 同 Android 侧：本机没有 Flutter SDK，改 pubspec 无法本地验证依赖解析，
+/// 一旦解析失败就是 CI 红。这里逻辑很短，自己开通道更可控。
+final class FileOpenBridge {
+  static let shared = FileOpenBridge()
+
+  private var channel: FlutterMethodChannel?
+  private var pending: [String: String]?
+
+  private init() {}
+
+  /// 由 `QreadFlutterViewController.viewDidLoad` 调用（引擎就绪时）。
+  func attach(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(
+      name: "qread/file_open",
+      binaryMessenger: messenger
+    )
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch call.method {
+      case "getInitialFile":
+        // 取走即清空，否则用户下次从后台切回来会重复弹一次导入框
+        let file = self.pending
+        self.pending = nil
+        result(file)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    self.channel = channel
+  }
+
+  /// 收到一个文件：能直接推就推，推不了（Dart 还没挂 handler）就攒着。
+  func deliver(_ file: [String: String]) {
+    guard let channel = channel else {
+      pending = file
+      return
+    }
+    channel.invokeMethod("onFileOpened", arguments: file) { [weak self] result in
+      // Dart 侧 handler 还没注册时，引擎会回一个 FlutterError
+      // （MethodNotImplemented）。这时退回 pending，等 Dart 来取。
+      if result is FlutterError {
+        self?.pending = file
+      }
+    }
+  }
+
+  /// 读一个「打开方式」进来的 URL 并把内容交给 Dart。
+  func handle(url: URL) {
+    guard let file = FileOpenBridge.read(url) else { return }
+    deliver(file)
+  }
+
+  private static func read(_ url: URL) -> [String: String]? {
+    // 文件是通过「打开方式」传进来的，位于本 App 沙盒之外，
+    // 必须先申请安全作用域访问权，否则 Data(contentsOf:) 直接抛权限错误。
+    let scoped = url.startAccessingSecurityScopedResource()
+    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+
+    guard let data = try? Data(contentsOf: url),
+          let text = String(data: data, encoding: .utf8),
+          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return nil }
+
+    return ["name": url.lastPathComponent, "content": text]
   }
 }
 
@@ -56,6 +160,12 @@ class QreadFlutterViewController: FlutterViewController {
 
   override func viewDidLoad() {
     super.viewDidLoad()
+
+    // 「打开方式」桥：通道名/方法名与 Android 侧 MainActivity.kt 完全一致。
+    // 放在这里而不是 AppDelegate 里，是因为只有到这一步 Flutter 引擎
+    // （binaryMessenger）才真正可用。
+    FileOpenBridge.shared.attach(messenger: binaryMessenger)
+
     let channel = FlutterMethodChannel(
       name: "qread/system_ui",
       binaryMessenger: binaryMessenger

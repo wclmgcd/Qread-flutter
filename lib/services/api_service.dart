@@ -17,12 +17,39 @@ class ApiService {
   static ApiService? _instance;
   late Dio _dio;
 
+  /// 建连超时：15s。
+  ///
+  /// 对齐 legado 的 `HttpHelper.kt`（`connectTimeout(15, SECONDS)`）。
+  /// 建连慢到这个程度基本就是网络本身不通，再等也没意义。
+  static const Duration kConnectTimeout = Duration(seconds: 15);
+
+  /// 收数据超时：60s。
+  ///
+  /// 【为什么从 15s 提到 60s】
+  /// 用户报过 `DioException [receive timeout]: The request took longer than
+  /// 0:00:15.000000 to receive data`。15s 对**首字节**是够的，但这里的
+  /// `receiveTimeout` 卡的是「两次收到数据之间的间隔」——
+  /// 而这套后端有大量**同步阻塞**的接口：
+  ///   - `/getBookSourcesPage` 之后要按 md5 逐页拉 `/getBookSourcesNew`；
+  ///   - 搜索 / 换源 / 章节列表是后端去抓目标站，慢站动辄十几秒；
+  ///   - `java.startBrowserAwait` 这类动作后端会**干等用户关网页**
+  ///     （后端 `ApiWebSocket.WaitForResponse` 默认等 120s）。
+  /// 只要中途 15s 没有新字节，dio 就掐断 —— 用户看到的就是「严重网络连接失败」。
+  ///
+  /// legado 官方客户端给读超时的就是 **60s**（`readTimeout(60, SECONDS)`），
+  /// 而写超时/建连超时都是 15s。这里按同一套来。
+  static const Duration kReceiveTimeout = Duration(seconds: 60);
+
+  /// 发数据超时：15s（同样对齐 legado 的 `writeTimeout(15, SECONDS)`）。
+  static const Duration kSendTimeout = Duration(seconds: 15);
+
   ApiService._() {
     _dio = Dio(BaseOptions(
       baseUrl: AppConstants.apiBase,
       // dio 5 起 connectTimeout / receiveTimeout 的类型从 int 变成 Duration
-      connectTimeout: const Duration(milliseconds: 15000),
-      receiveTimeout: const Duration(milliseconds: 15000),
+      connectTimeout: kConnectTimeout,
+      receiveTimeout: kReceiveTimeout,
+      sendTimeout: kSendTimeout,
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
     ));
     _dio.interceptors
@@ -783,8 +810,11 @@ class ApiService {
   Future<String> fetchRemoteText(String url,
       {Map<String, String>? headers}) async {
     final resp = await Dio(BaseOptions(
-      connectTimeout: const Duration(milliseconds: 15000),
-      receiveTimeout: const Duration(milliseconds: 15000),
+      // 这里拉的是**第三方**地址（书源 JSON 的下载链接），不是自家后端，
+      // 慢站很常见，所以用同一套「建连 15s / 收数据 60s」。
+      connectTimeout: kConnectTimeout,
+      receiveTimeout: kReceiveTimeout,
+      sendTimeout: kSendTimeout,
       responseType: ResponseType.plain,
       followRedirects: true,
       headers: headers,

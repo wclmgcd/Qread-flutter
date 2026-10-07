@@ -32,6 +32,70 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- ================= 打开方式（Open with）=================
+                 没有这一段，系统「打开方式」里根本不会出现 Qread ——
+                 用户从文件管理器 / 聊天软件里点「用其他应用打开」一个
+                 .json 书源文件时，列表里找不到 Qread。
+
+                 【为什么拆成两个 intent-filter】
+                 第 1 个靠 **MIME 类型**匹配：Gmail、Chrome、系统下载器这类
+                 知道媒体类型的来源，会带上 `application/json`。
+                 第 2 个靠 **文件后缀**匹配：不少文件管理器（尤其国产 ROM 的
+                 「文件管理」）只给 `content://` URI + `*/*`，不带 json 类型，
+                 这时只能靠 pathPattern 兜住。
+
+                 【为什么第 2 个必须写 android:host="*"】
+                 Android 的匹配规则里，`pathPattern` / `pathPrefix` 这些
+                 **只有在同时声明了 host 时才会被考虑**。只写 scheme + path
+                 是匹配不上的（这是官方文档里的一句话，很容易漏）。
+
+                 【pathAdvancedPattern 是给谁用的】
+                 它要求 API 31+，支持 `[jJ]` 这种字符组写法，
+                 一次就能覆盖 .json/.JSON/.Json；旧系统上这个属性会被忽略，
+                 所以下面同时保留了 `pathPattern` 的大小写两份。
+                 写法与 legado 官方 `FileAssociationActivity` 完全一致。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/json" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:host="*" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <!-- 必须有 */*，否则只看后缀是匹配不上的 -->
+                <data android:mimeType="*/*" />
+
+                <data android:pathAdvancedPattern=".*\\.[jJ][sS][oO][nN]" />
+                <data android:pathPattern=".*\\.json" />
+                <data android:pathPattern=".*\\.JSON" />
+                <data android:pathAdvancedPattern=".*\\.[tT][xX][tT]" />
+                <data android:pathPattern=".*\\.txt" />
+                <data android:pathPattern=".*\\.TXT" />
+            </intent-filter>
+            <!-- ================= 分享（Send）=================
+                 从文件管理器「分享」一个 json 给 Qread，
+                 以及从浏览器/微信「分享文本」把书源 JSON 直接甩过来。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data android:mimeType="application/json" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
         <!-- 【修复】关闭 Impeller，回退到 Skia。
              Android 上 Flutter 默认用 Impeller（Vulkan 后端）。部分 GPU 驱动上

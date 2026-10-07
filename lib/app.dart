@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import 'config/theme.dart';
 import 'config/routes.dart';
 import 'providers/theme_provider.dart';
+import 'widgets/file_open_listener.dart';
 
 class App extends StatelessWidget {
   const App({Key? key}) : super(key: key);
@@ -20,6 +21,9 @@ class App extends StatelessWidget {
         initialRoute: '/',
         routes: AppRoutes.routes,
         onGenerateRoute: AppRoutes.onGenerateRoute,
+        // 「用其他应用打开 / 分享到 Qread」时，靠它往导航栈上压导入页。
+        // 必须是全局 key：builder 里的 context 在 Navigator 之上。
+        navigatorKey: appNavigatorKey,
         // 让页面能感知「上层路由被 pop、自己重新露出来」——
         // 书架靠它在从阅读页返回时重排列表（见 AppRoutes.appRouteObserver）。
         navigatorObservers: [appRouteObserver],
@@ -31,7 +35,8 @@ class App extends StatelessWidget {
           return AnnotatedRegion<SystemUiOverlayStyle>(
             value:
                 isDark ? AppTheme.darkOverlayStyle : AppTheme.lightOverlayStyle,
-            child: child ?? const SizedBox.shrink(),
+            // 包在 Navigator 外层：外部打开的文件在任何页面都能弹导入框
+            child: FileOpenListener(child: child ?? const SizedBox.shrink()),
           );
         },
       ),
