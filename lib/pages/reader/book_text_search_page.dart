@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 
 import '../../models/book.dart';
 import '../../models/chapter.dart';
-import '../../services/error_text.dart';
 
 /// 一条命中结果。
 class BookSearchHit {

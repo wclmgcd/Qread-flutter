@@ -76,6 +76,12 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 用它让「单击」在选区存在时只做「取消选中」，不翻页。
   bool _hasSelection = false;
 
+  /// 当前选中的纯文本（已 trim）。
+  ///
+  /// `SelectableRegionState` 没有公开「取选中文本」的方法，唯一官方通道是
+  /// `SelectionArea.onSelectionChanged`，所以在这里接住、给选中菜单用。
+  String _selectedText = '';
+
   /// 最近一次 `SelectionArea` 的状态对象，用来主动清除选区。
   SelectableRegionState? _selectionState;
   final ScrollController _comicScrollController = ScrollController();
@@ -919,6 +925,7 @@ class _ReaderPageState extends State<ReaderPage> {
     // 否则用户点空白处想收起选区，页面却先翻走了。
     if (_hasSelection) {
       _hasSelection = false;
+      _selectedText = '';
       _selectionState?.clearSelection();
       return;
     }
@@ -1337,14 +1344,21 @@ class _ReaderPageState extends State<ReaderPage> {
                     // 反过来写（GestureDetector 在外）会让单击被 SelectionArea
                     // 吃掉（它拿单击来清除选区），翻页直接失效。
                     child: SelectionArea(
-                      // 记下选区状态：单击时若存在选区，只取消选中、不翻页
-                      onSelectionChanged: (content) =>
-                          _hasSelection = content != null,
+                      // 记下选中的文字与选区状态：
+                      //   - 选区存在时，单击只「取消选中」、不翻页；
+                      //   - 选中菜单（复制/字典/过滤/搜索）要拿这段文字。
+                      // SelectableRegionState 没有公开的取文本方法，只能从这里拿。
+                      onSelectionChanged: (content) {
+                        final text = content?.plainText.trim() ?? '';
+                        _selectedText = text;
+                        _hasSelection = text.isNotEmpty;
+                      },
                       contextMenuBuilder: (ctx, selectionState) {
                         _selectionState = selectionState;
                         return ReaderSelectionMenu.build(
                           context: ctx,
                           state: selectionState,
+                          selectedText: () => _selectedText,
                           book: provider.book!,
                           accessToken: _token ?? '',
                           chapters: provider.chapters,

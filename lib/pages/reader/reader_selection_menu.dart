@@ -41,10 +41,19 @@ class ReaderSelectionMenu {
   /// 构造选区上方的那条工具栏。
   ///
   /// [state] 是 `SelectionArea` 的 `contextMenuBuilder` 回调给的状态对象，
-  /// 既能拿到选中文本，也带着选区锚点（工具栏靠它自动定位到选区上方）。
+  /// 只用来取**选区锚点**（工具栏靠它自动定位到选区上方）。
+  ///
+  /// 【为什么选中文本要单独传进来，而不是从 state 上取】
+  /// `SelectableRegionState` 并没有公开「取当前选中文本」的方法 —— 它只暴露
+  /// `clearSelection()` / `contextMenuAnchors` / `contextMenuButtonItems` 等，
+  /// 内部那个 `getSelectedContent()` 在私有的 delegate 上，外部拿不到。
+  /// 官方给的通道是 `SelectionArea.onSelectionChanged`（回调 `SelectedContent?`），
+  /// 所以由调用方 reader_page 捕获，这里传一个**取值闭包**进来：
+  /// 每次按钮被点时才去读，不会因为工具栏被复用而读到上一次的旧文字。
   static Widget build({
     required BuildContext context,
     required SelectableRegionState state,
+    required String Function() selectedText,
     required Book book,
     required String accessToken,
     required List<Chapter> chapters,
@@ -58,21 +67,21 @@ class ReaderSelectionMenu {
           label: '复制',
           onPressed: () {
             ContextMenuController.removeAny();
-            _copy(context, state);
+            _copy(context, selectedText());
           },
         ),
         ContextMenuButtonItem(
           label: '字典',
           onPressed: () {
             ContextMenuController.removeAny();
-            _dictionary(context, state);
+            _dictionary(context, selectedText());
           },
         ),
         ContextMenuButtonItem(
           label: '过滤',
           onPressed: () {
             ContextMenuController.removeAny();
-            _filter(context, state, book, accessToken);
+            _filter(context, selectedText(), book, accessToken);
           },
         ),
         ContextMenuButtonItem(
@@ -81,7 +90,7 @@ class ReaderSelectionMenu {
             ContextMenuController.removeAny();
             _search(
               context,
-              state,
+              selectedText(),
               book,
               accessToken,
               chapters,
@@ -94,16 +103,10 @@ class ReaderSelectionMenu {
     );
   }
 
-  /// 当前选中的纯文本（已 trim）。空串表示没有有效选择。
-  static String _selectedText(SelectableRegionState state) {
-    return (state.getSelectedContent()?.plainText ?? '').trim();
-  }
-
   // ------------------------------------------------------------------ 复制
 
-  static Future<void> _copy(
-      BuildContext context, SelectableRegionState state) async {
-    final text = _selectedText(state);
+  static Future<void> _copy(BuildContext context, String raw) async {
+    final text = raw.trim();
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
     if (context.mounted) _toast(context, '已复制');
@@ -111,9 +114,8 @@ class ReaderSelectionMenu {
 
   // ------------------------------------------------------------------ 字典
 
-  static Future<void> _dictionary(
-      BuildContext context, SelectableRegionState state) async {
-    final text = _selectedText(state);
+  static Future<void> _dictionary(BuildContext context, String raw) async {
+    final text = raw.trim();
     if (text.isEmpty) return;
 
     try {
@@ -142,11 +144,11 @@ class ReaderSelectionMenu {
   /// 弹窗 → 写入「替换净化」。
   static Future<void> _filter(
     BuildContext context,
-    SelectableRegionState state,
+    String raw,
     Book book,
     String accessToken,
   ) async {
-    final selected = _selectedText(state);
+    final selected = raw.trim();
     if (selected.isEmpty) return;
 
     final result = await showFilterRuleDialog(context, pattern: selected);
@@ -196,14 +198,14 @@ class ReaderSelectionMenu {
 
   static Future<void> _search(
     BuildContext context,
-    SelectableRegionState state,
+    String raw,
     Book book,
     String accessToken,
     List<Chapter> chapters,
     Future<String> Function(int chapterIndex) loadChapterText,
     void Function(int chapterIndex, int charOffset) onJumpToResult,
   ) async {
-    final keyword = _selectedText(state);
+    final keyword = raw.trim();
     if (keyword.isEmpty) return;
 
     await Navigator.of(context).push(
