@@ -291,10 +291,17 @@ class QreadFlutterViewController: FlutterViewController {
     return homeIndicatorHidden
   }
 
-  /// 由本控制器自己决定，不要再去问子控制器
-  override var childViewControllerForHomeIndicatorAutoHidden: UIViewController? {
-    return nil
-  }
+  // 【注意】这里原本还有一个 override：
+  //     override var childViewControllerForHomeIndicatorAutoHidden: UIViewController? { nil }
+  // 它的实现就是 `return nil`，而这**正是 UIKit 的默认行为**（由本控制器自己
+  // 决定，不去问子控制器），所以删掉之后行为完全一致。
+  //
+  // 为什么必须删、而不是改名：Xcode 26 的 SDK 把它重命名成了
+  // `childForHomeIndicatorAutoHidden`，旧名字直接变成**编译错误** ——
+  //   Swift Compiler Error: 'childViewControllerForHomeIndicatorAutoHidden'
+  //   has been renamed to 'childForHomeIndicatorAutoHidden'
+  // 而改成新名字又会让旧 Xcode 编不过（新名字在老 SDK 里不存在）。
+  // 既然它本来就是多余的，删掉是唯一在新旧 Xcode 上都能编过的做法。
 
   override func viewDidLoad() {
     super.viewDidLoad()
