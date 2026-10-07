@@ -284,12 +284,24 @@ class ApiService {
     return resp.data['data']?.toString() ?? '';
   }
 
+  /// 取正文。
+  ///
+  /// 【`type` 为什么默认 0 且必须发出去】
+  /// 后端的净化判断是 `if (type == 0 && bookname 非空 && useReplaceRule == 1)`，
+  /// 而 `type` 在 Kotlin 侧是可空 `Int?` —— **`null == 0` 是 false**，
+  /// 所以只要客户端不发 `type`，「替换净化」就**永远不执行**。
+  ///
+  /// 注意别被后端内部骗了：取正文时它写的是 `type ?: 0`（null 当 0 用），
+  /// 所以**不传 type 正文照样能拿到**，只是净化被静默跳过 —— 这正是这个 bug
+  /// 藏了很久、看起来「功能正常只是净化没反应」的原因。
+  ///
+  /// 传 0 不改变缓存行为：`type != 1` 才走缓存，0 和 null 在这里等价。
   Future<Map<String, dynamic>> getBookContentNew(
     String accessToken,
     String bookUrl,
     int chapterIndex,
     String sourceUrl, {
-    int? type,
+    int type = 0,
     String? bookname,
     int? useReplaceRule,
   }) async {
@@ -298,7 +310,7 @@ class ApiService {
       'url': bookUrl,
       'index': chapterIndex,
       'bookSourceUrl': sourceUrl,
-      if (type != null) 'type': type,
+      'type': type,
       if (bookname != null) 'bookname': bookname,
       if (useReplaceRule != null) 'useReplaceRule': useReplaceRule,
     });

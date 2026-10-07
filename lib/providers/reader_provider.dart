@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/book.dart';
 import '../models/chapter.dart';
 import '../services/api_service.dart';
+import '../services/app_settings.dart';
 import '../services/local_cache_service.dart';
 import '../services/error_text.dart';
 import '../services/storage_service.dart';
@@ -16,7 +17,14 @@ class ReaderProvider extends ChangeNotifier {
   // Prefetch cache: chapterIndex -> content text
   final Map<int, String> _prefetchCache = {};
 
-  bool get useReplaceRule => _book?.useReplaceRule != false;
+  /// 净化是否生效：**书级开关和全局开关都要开着**。
+  ///
+  /// 【为什么必须把全局开关也纳入】
+  /// 「我的 → 阅读偏好 → 替换净化」那个总开关以前只写进 `AppSettings`，
+  /// 而这里只看书级的 `book.useReplaceRule` —— 于是全局关掉之后毫无效果，
+  /// 那个开关等于是个摆设（`AppSettings.useReplaceRule` 全仓只有 UI 在读）。
+  bool get useReplaceRule =>
+      (_book?.useReplaceRule != false) && AppSettings.instance.useReplaceRule;
 
   Book? get book => _book;
   List<Chapter> get chapters => _chapters;
@@ -49,7 +57,7 @@ class ReaderProvider extends ChangeNotifier {
         _book!.bookUrl ?? '',
         _book!.origin ?? '',
         bookname: _book!.name,
-        useReplaceRule: _book!.useReplaceRule == false ? 0 : 1,
+        useReplaceRule: useReplaceRule ? 1 : 0,
       );
       final readFuture = _safeBookread(accessToken, _book!.bookUrl ?? '');
 
@@ -108,7 +116,10 @@ class ReaderProvider extends ChangeNotifier {
       chapterIndex,
       _book!.origin ?? '',
       bookname: _book!.name,
-      useReplaceRule: _book!.useReplaceRule == false ? 0 : 1,
+      // 【必须是 getter，不能写成 `_book!.useReplaceRule == false ? 0 : 1`】
+      // 后者只看书级开关，全局开关（我的 → 阅读偏好 → 替换净化）就被绕过了 ——
+      // 这正是「全局关掉净化却没反应」的原因。三处调用点必须统一。
+      useReplaceRule: useReplaceRule ? 1 : 0,
     );
     final text = data['text']?.toString() ?? '';
     _prefetchCache[chapterIndex] = text;
@@ -138,7 +149,8 @@ class ReaderProvider extends ChangeNotifier {
       chapterIndex,
       _book!.origin ?? '',
       bookname: _book!.name,
-      useReplaceRule: _book!.useReplaceRule == false ? 0 : 1,
+      // 同 getChapterContent：走 getter，让全局开关也管到这里。
+      useReplaceRule: useReplaceRule ? 1 : 0,
     );
     return data['text']?.toString() ?? '';
   }
