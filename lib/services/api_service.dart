@@ -1225,6 +1225,105 @@ class ApiService {
     return resp.data;
   }
 
+  // ============ 浏览历史 / 搜索历史（跨端同步） ============
+  //
+  // 这两份数据原来是纯本地的（SharedPreferences），换设备就没了。
+  // 现在落到服务端，iOS / 安卓 / 浏览器 / Windows 读的是同一份。
+  // 客户端仍保留本地缓存做离线兜底，见 BrowsingHistoryService。
+
+  /// 拉取服务端的浏览历史。每条是 Book 的 JSON 原文。
+  Future<List<String>> getBrowsingHistory(String accessToken) async {
+    final resp = await _dio.get('/getBrowsingHistory', queryParameters: {
+      'accessToken': accessToken,
+    });
+    final data = resp.data['data'];
+    if (data is List) {
+      return data
+          .map((e) => e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false);
+    }
+    return const [];
+  }
+
+  /// 上传一条浏览历史。`bookJson` 是 Book 的 JSON 原文 ——
+  /// 服务端只从中取 `bookUrl` 当键，其余原样存，两边字段不用对齐。
+  Future<void> addBrowsingHistory(String accessToken, String bookJson) async {
+    await _dio.post(
+      '/addBrowsingHistory',
+      queryParameters: {'accessToken': accessToken},
+      data: bookJson,
+      options: _plainTextBodyOptions(),
+    );
+  }
+
+  Future<void> delBrowsingHistory(String accessToken, String bookUrl) async {
+    await _dio.post('/delBrowsingHistory', queryParameters: {
+      'accessToken': accessToken,
+      'bookUrl': bookUrl,
+    });
+  }
+
+  Future<void> clearBrowsingHistory(String accessToken) async {
+    await _dio.post('/clearBrowsingHistory', queryParameters: {
+      'accessToken': accessToken,
+    });
+  }
+
+  /// 批量上传本地历史 —— 老版本客户端首次升级时用（本地几十条、服务端还空着）。
+  Future<void> pushBrowsingHistory(
+      String accessToken, List<String> bookJsons) async {
+    final list = <dynamic>[];
+    for (final json in bookJsons) {
+      try {
+        list.add(jsonDecode(json));
+      } catch (_) {
+        // 单条坏了就跳过，不要把整批上传带崩
+      }
+    }
+    if (list.isEmpty) return;
+    await _dio.post(
+      '/pushBrowsingHistory',
+      queryParameters: {'accessToken': accessToken},
+      data: jsonEncode(list),
+      options: _plainTextBodyOptions(),
+    );
+  }
+
+  Future<List<String>> getSearchHistory(String accessToken) async {
+    final resp = await _dio.get('/getSearchHistory', queryParameters: {
+      'accessToken': accessToken,
+    });
+    final data = resp.data['data'];
+    if (data is List) {
+      return data
+          .map((e) => e.toString())
+          .where((s) => s.isNotEmpty)
+          .toList(growable: false);
+    }
+    return const [];
+  }
+
+  Future<void> addSearchHistory(String accessToken, String keyword) async {
+    await _dio.post('/addSearchHistory', queryParameters: {
+      'accessToken': accessToken,
+      'keyword': keyword,
+    });
+  }
+
+  Future<void> delSearchHistory(String accessToken, String keyword) async {
+    await _dio.post('/delSearchHistory', queryParameters: {
+      'accessToken': accessToken,
+      'keyword': keyword,
+    });
+  }
+
+  Future<void> clearSearchHistory(String accessToken) async {
+    await _dio.post('/clearSearchHistory', queryParameters: {
+      'accessToken': accessToken,
+    });
+  }
+
   Future<Map<String, dynamic>> topReplaceRule(
       String accessToken, String id) async {
     final resp = await _dio.post('/topReplaceRule', queryParameters: {

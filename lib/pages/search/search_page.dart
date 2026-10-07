@@ -42,7 +42,9 @@ class _SearchPageState extends State<SearchPage> {
   /// 最近一次搜索词（切换模糊/精确或改书源后自动重搜）
   String _lastKeyword = '';
 
-  /// 搜索历史（最多 20 条，存 SharedPreferences）
+  /// 搜索历史（最多 20 条）。
+  /// 本地这份只是**离线兜底缓存**，权威数据在服务端（见 _loadHistory），
+  /// 这样 iOS / 安卓 / 浏览器 / Windows 各端看到的是同一份历史。
   static const _kHistory = 'search_history';
   List<String> _history = [];
 
@@ -125,32 +127,88 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   // ------------------------------------------------------------ 搜索历史
+  //
+  // 存服务端（iOS / 安卓 / 浏览器 / Windows 共享同一份），本地留一份做离线兜底。
+  // 老版本的数据（本地有、服务端还空着）会在 _loadHistory 里推上去做首次同步。
+  //
+  // 【token 必须在第一个 await 之前取】否则会踩
+  // `use_build_context_synchronously` —— 本仓库把 warning 当 fatal。
 
   Future<void> _loadHistory() async {
-    final storage = await StorageService.instance;
-    final raw = storage.readString(_kHistory);
-    if (raw == null || raw.isEmpty) return;
+    final token = context.read<UserProvider>().token;
+    final local = await _readLocalHistory();
+    if (mounted && local.isNotEmpty) setState(() => _history = local);
+
+    if (token == null) return;
     try {
-      final list = (jsonDecode(raw) as List).map((e) => '$e').toList();
-      if (mounted) setState(() => _history = list);
+      final remote = await ApiService.instance.getSearchHistory(token);
+      if (remote.isNotEmpty) {
+        if (mounted) setState(() => _history = remote);
+        await _writeLocalHistory(remote);
+      } else if (local.isNotEmpty) {
+        // 服务端空、本地有 → 首次升级，逐条推上去
+        for (final kw in local) {
+          try {
+            await ApiService.instance.addSearchHistory(token, kw);
+          } catch (_) {}
+        }
+      }
     } catch (_) {
-      // 历史损坏就忽略，不影响搜索
+      // 离线 / 服务端异常：继续用本地那份
     }
   }
 
   Future<void> _pushHistory(String keyword) async {
+    final token = context.read<UserProvider>().token;
     final list = <String>[
       keyword,
       ..._history.where((h) => h != keyword),
     ].take(20).toList();
     if (mounted) setState(() => _history = list);
-    final storage = await StorageService.instance;
-    await storage.setString(_kHistory, jsonEncode(list));
+    await _writeLocalHistory(list);
+
+    if (token == null) return;
+    try {
+      await ApiService.instance.addSearchHistory(token, keyword);
+    } catch (_) {}
   }
 
   Future<void> _removeHistory(String keyword) async {
+    final token = context.read<UserProvider>().token;
     final list = _history.where((h) => h != keyword).toList();
-    setState(() => _history = list);
+    if (mounted) setState(() => _history = list);
+    await _writeLocalHistory(list);
+
+    if (token == null) return;
+    try {
+      await ApiService.instance.delSearchHistory(token, keyword);
+    } catch (_) {}
+  }
+
+  Future<void> _clearHistory() async {
+    final token = context.read<UserProvider>().token;
+    if (mounted) setState(() => _history = []);
+    await _writeLocalHistory(const []);
+
+    if (token == null) return;
+    try {
+      await ApiService.instance.clearSearchHistory(token);
+    } catch (_) {}
+  }
+
+  Future<List<String>> _readLocalHistory() async {
+    final storage = await StorageService.instance;
+    final raw = storage.readString(_kHistory);
+    if (raw == null || raw.isEmpty) return const [];
+    try {
+      return (jsonDecode(raw) as List).map((e) => '$e').toList();
+    } catch (_) {
+      // 历史损坏就忽略，不影响搜索
+      return const [];
+    }
+  }
+
+  Future<void> _writeLocalHistory(List<String> list) async {
     final storage = await StorageService.instance;
     await storage.setString(_kHistory, jsonEncode(list));
   }
@@ -497,10 +555,20 @@ class _SearchPageState extends State<SearchPage> {
       }
       return ListView(
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
-            child: Text('搜索历史',
-                style: TextStyle(fontSize: 13, color: Colors.grey)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 0),
+            child: Row(
+              children: [
+                const Text('搜索历史',
+                    style: TextStyle(fontSize: 13, color: Colors.grey)),
+                const Spacer(),
+                // 对齐 3.41：历史标题右侧一个「清除」，一次清完（各端同步清）
+                TextButton(
+                  onPressed: _clearHistory,
+                  child: const Text('清除'),
+                ),
+              ],
+            ),
           ),
           ..._history.map(
             (h) => ListTile(

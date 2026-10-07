@@ -424,7 +424,10 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
   }
 
   Future<void> _showBrowsingHistorySheet() async {
-    final history = await BrowsingHistoryService.instance.loadHistory();
+    // 带 token 才会从服务端拉（各端一致）；没有 token 时退回本地缓存
+    final history = await BrowsingHistoryService.instance.loadHistory(
+      accessToken: context.read<UserProvider>().token,
+    );
     if (!mounted) return;
 
     showModalBottomSheet<void>(

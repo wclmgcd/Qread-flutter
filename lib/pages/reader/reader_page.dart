@@ -453,9 +453,11 @@ class _ReaderPageState extends State<ReaderPage> {
   void _initBook() {
     final book = ModalRoute.of(context)?.settings.arguments as Book?;
     if (book == null) return;
-    unawaited(BrowsingHistoryService.instance.recordBook(book));
     ReadingStatsService.instance.startSession();
     _token = context.read<UserProvider>().token;
+    // 记浏览历史要带 token —— 服务端按用户存，才能跨端同步。
+    // 顺序上必须放在 _token 赋值之后。
+    unawaited(BrowsingHistoryService.instance.recordBook(_token, book));
     _state.isComic = book.type == 2;
     _bookUrl = book.bookUrl;
     _tts.init();
