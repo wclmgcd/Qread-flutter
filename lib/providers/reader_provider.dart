@@ -42,27 +42,27 @@ class ReaderProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      _chapters = await ApiService.instance.getChapterListNew(
+      // 【并行发这两个请求】章节列表和「已读章节」互不依赖，串行等于白白
+      // 多等一个 RTT。打开书的首屏等待主要由这两个决定（正文另算）。
+      final chaptersFuture = ApiService.instance.getChapterListNew(
         accessToken,
         _book!.bookUrl ?? '',
         _book!.origin ?? '',
         bookname: _book!.name,
         useReplaceRule: _book!.useReplaceRule == false ? 0 : 1,
       );
+      final readFuture = _safeBookread(accessToken, _book!.bookUrl ?? '');
 
-      try {
-        final readStr = await ApiService.instance.getBookread(
-          accessToken,
-          _book!.bookUrl ?? '',
-        );
-        if (readStr.isNotEmpty) {
-          _readChapters = readStr
-              .split(',')
-              .map((s) => int.tryParse(s.trim()) ?? -1)
-              .where((i) => i >= 0)
-              .toSet();
-        }
-      } catch (_) {}
+      _chapters = await chaptersFuture;
+
+      final readStr = await readFuture;
+      if (readStr.isNotEmpty) {
+        _readChapters = readStr
+            .split(',')
+            .map((s) => int.tryParse(s.trim()) ?? -1)
+            .where((i) => i >= 0)
+            .toSet();
+      }
 
       _loadingChapters = false;
       notifyListeners();
@@ -75,6 +75,15 @@ class ReaderProvider extends ChangeNotifier {
       _error = friendlyError(e);
       _loadingChapters = false;
       notifyListeners();
+    }
+  }
+
+  /// 读「已读章节」失败不该影响打开书 —— 兜成空串。
+  Future<String> _safeBookread(String accessToken, String bookUrl) async {
+    try {
+      return await ApiService.instance.getBookread(accessToken, bookUrl);
+    } catch (_) {
+      return '';
     }
   }
 
