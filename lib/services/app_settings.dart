@@ -116,6 +116,23 @@ class AppSettings extends ChangeNotifier {
   static const _kMultiScreen = 'app_multi_screen';
   static const _kDefaultCover = 'app_default_cover';
 
+  /// 阅读正文的最大宽度（逻辑像素），以及它的启用开关。
+  ///
+  /// 官方网页版在「阅读界面 → 间距设置」面板最下面有这一项，形状是
+  /// **「最大宽度 [600] [开关]」+ 一条滑动条**（默认开、默认 600）——
+  /// 之所以带开关，是因为它只在宽屏上才有意义：手机上屏宽本来就小于 600，
+  /// 限不限都一样，所以给个总开关让你能彻底关掉。
+  ///
+  /// 【为什么默认开】官方截图里开关是打开状态，且宽屏上一行太长确实很难读，
+  /// 默认开是更好的开箱体验；窄屏上开了也等于没开，没有副作用。
+  static const _kReaderMaxWidth = 'app_reader_max_width';
+  static const _kReaderMaxWidthEnabled = 'app_reader_max_width_enabled';
+
+  /// 「最大宽度」滑动条的取值范围与默认值（对齐官方网页版）
+  static const int readerMaxWidthMin = 300;
+  static const int readerMaxWidthMax = 1600;
+  static const int readerMaxWidthDefault = 600;
+
   /// 翻页方式。**故意复用阅读器的 key**（`reader_page.dart` 里的
   /// `_keyPageAnimType`），这样在「阅读偏好 → 翻页设置」里改完，
   /// 下次进阅读器就能读到同一个值，不需要两边同步状态。
@@ -147,6 +164,8 @@ class AppSettings extends ChangeNotifier {
   bool _showDiscover = true;
   bool _multiScreen = false;
   bool _defaultCover = false;
+  int _readerMaxWidth = readerMaxWidthDefault;
+  bool _readerMaxWidthEnabled = true;
   String _pageAnimType = 'cover';
 
   // ---- getter ----
@@ -165,6 +184,8 @@ class AppSettings extends ChangeNotifier {
   bool get showDiscover => _showDiscover;
   bool get multiScreen => _multiScreen;
   bool get defaultCover => _defaultCover;
+  int get readerMaxWidth => _readerMaxWidth;
+  bool get readerMaxWidthEnabled => _readerMaxWidthEnabled;
   String get pageAnimType => _pageAnimType;
   String get pageAnimTypeLabel => pageAnimTypes[_pageAnimType] ?? '覆盖';
 
@@ -191,6 +212,8 @@ class AppSettings extends ChangeNotifier {
     _showDiscover = p.getBool(_kShowDiscover) ?? true;
     _multiScreen = p.getBool(_kMultiScreen) ?? false;
     _defaultCover = p.getBool(_kDefaultCover) ?? false;
+    _readerMaxWidth = p.getInt(_kReaderMaxWidth) ?? readerMaxWidthDefault;
+    _readerMaxWidthEnabled = p.getBool(_kReaderMaxWidthEnabled) ?? true;
     _pageAnimType = p.getString(_kPageAnimType) ?? 'cover';
     _loaded = true;
     notifyListeners();
@@ -236,6 +259,20 @@ class AppSettings extends ChangeNotifier {
     _useReplaceRule = v;
     notifyListeners();
     (await SharedPreferences.getInstance()).setBool(_kUseReplaceRule, v);
+  }
+
+  Future<void> setReaderMaxWidth(int v) async {
+    _readerMaxWidth = v.clamp(readerMaxWidthMin, readerMaxWidthMax);
+    notifyListeners();
+    (await SharedPreferences.getInstance())
+        .setInt(_kReaderMaxWidth, _readerMaxWidth);
+  }
+
+  Future<void> setReaderMaxWidthEnabled(bool v) async {
+    _readerMaxWidthEnabled = v;
+    notifyListeners();
+    (await SharedPreferences.getInstance())
+        .setBool(_kReaderMaxWidthEnabled, v);
   }
 
   Future<void> setReplaceLocalStorage(bool v) async {

@@ -1071,10 +1071,20 @@ class _BookshelfPageState extends State<BookshelfPage>
   Widget _buildCompactGrid(List<Book> books) {
     return RefreshIndicator(
       onRefresh: _refreshBookshelf,
+      // 【为什么列数要算，而不是写死 3】
+      // 写死 3 列在手机上正好（每列约 120dp），但浏览器窗口一宽，3 列就变成
+      // 每列 400dp+，封面被撑得巨大 —— 官方网页版没有这个问题。
+      //
+      // 这里换成「每列**最多**约 130dp」的委托：手机屏宽下算出来仍是 3 列
+      // （行为不变），窗口越宽列数越多、封面尺寸基本不变。
+      //
+      // 【为什么不用「按宽度算列数再 clamp」】那种写法必须给上限，而上限一旦
+      // 定死，超宽屏上又会被上限卡住、封面重新变大。`maxCrossAxisExtent`
+      // 让列数随宽度无限增长，封面尺寸恒定 —— 正是想要的效果。
       child: GridView.builder(
         padding: const EdgeInsets.fromLTRB(16, 12, 16, 20),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
+        gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: 130,
           childAspectRatio: 0.58,
           crossAxisSpacing: 16,
           mainAxisSpacing: 18,

@@ -20,6 +20,7 @@ import '../../providers/reader_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_log.dart';
+import '../../services/app_settings.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
@@ -1623,64 +1624,106 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// 「最大宽度」设置换算出来的**左右额外留白**（逻辑像素，单侧）。
+  ///
+  /// 官方网页版在「阅读界面 → 间距设置」面板最下面是这一项：一个开关 + 一条
+  /// 滑动条，默认开、默认 600。宽屏上一行太长很难读，把正文挤到中间就舒服很多。
+  ///
+  /// 【为什么窄屏不用管】手机上屏宽本来就小于 600，`(屏宽 - 600) / 2` 是负数，
+  /// clamp 到 0 —— 和没加这个设置时**完全一致**。所以手机和浏览器可以共用
+  /// 同一个值，不需要按平台分支。
+  ///
+  /// 【为什么三种内容模式都走这里】漫画 / 滚动 / 分页各有一套排版，如果各写
+  /// 一份同样的算式，哪天调了默认值或改了算法，很容易只改两处漏一处 ——
+  /// 表现就是「某种翻页方式下最大宽度不生效」，极难排查。
+  ///
+  /// 注意算的是「额外」留白：正文两侧还要再加上用户自己的「左右边距」
+  /// (`_state.horizontalPadding`)，所以最终正文宽度是
+  /// `min(屏宽, 最大宽度) - 2 × 左右边距`，三种模式一致。
+  double _readerSideExtra() {
+    final settings = AppSettings.instance;
+    if (!settings.readerMaxWidthEnabled) return 0.0;
+    final maxWidth = settings.readerMaxWidth.toDouble();
+    return ((MediaQuery.of(context).size.width - maxWidth) / 2)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+  }
+
   Widget _buildPagedNovelContent(ReaderProvider provider) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = Size(constraints.maxWidth, constraints.maxHeight);
-        if (_state.pagedViewportSize == null ||
-            (_state.pagedViewportSize!.width - size.width).abs() > 1 ||
-            (_state.pagedViewportSize!.height - size.height).abs() > 1) {
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!mounted) return;
-            setState(() => _state.pagedViewportSize = size);
-            _rebuildPages(provider);
-          });
-        }
-
-        if (_state.pages.isEmpty) {
-          return const Center(child: CircularProgressIndicator());
-        }
-
-        final chapterTitle = _displayedChapter(provider)?.title ??
-            provider.book?.durChapterTitle ??
-            '';
-
-        return PagedReader(
-          key: ValueKey('chapter_${_state.laidOutChapterIndex}'),
-          pages: _state.pages,
-          pageController: _pageController,
-          manualController: _pagedReaderController,
-          theme: _state.currentTheme,
-          fontSize: _state.fontSize,
-          lineHeight: _state.lineHeight,
-          chapterTitle: chapterTitle,
-          currentPage: _state.currentPage,
-          totalPages: _state.pages.length,
-          ttsParagraphIndex: _state.ttsParagraphIndex,
-          timeLabel: _state.formatTime(),
-          batteryLabel: _state.batteryLabel(),
-          showTopBar: _state.showTopBar,
-          showBottomBar: _state.showBottomBar,
-          showPageNumber: _state.showPageNumber,
-          horizontalPadding: _state.horizontalPadding,
-          topPadding: _state.topPadding,
-          paragraphSpacing: _state.paragraphSpacing,
-          firstLineIndent: _state.firstLineIndent,
-          animType: _state.pageAnimType,
-          fontFamily: _state.textFontFamily,
-          fontWeight: _state.textFontWeight,
-          onCommentTap:
-              _state.showParagraphComment ? _openParagraphComment : null,
-          onPageChanged: (page) {
-            final position =
-                _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
-            setState(() {
-              _state.currentPage = page;
-              _state.chapterPosition = position;
+    // 【最大宽度】Padding 必须在 LayoutBuilder **外面**。
+    //
+    // 这里的分页不是渲染时算的：外层 LayoutBuilder 把 constraints.maxWidth
+    // 存进 `_state.pagedViewportSize`，`_rebuildPages` 按它把整章切成一页页，
+    // `PagedReader` 只是把**已经排好版**的 page 画出来。
+    //
+    // 所以如果把 Padding 套在 LayoutBuilder 里面，constraints.maxWidth 永远是
+    // 全屏宽 → 分页按全屏切 → 再被 Padding 挤窄 → 正文右侧直接被裁掉，
+    // 而且拖动滑动条时尺寸没变、不会重新分页。
+    // 套在外面之后，LayoutBuilder 看到的就是限宽后的宽度，分页与渲染一致，
+    // 拖滑动条也会因为尺寸变化自动触发重新分页。
+    return Padding(
+      padding: EdgeInsets.symmetric(horizontal: _readerSideExtra()),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final size = Size(constraints.maxWidth, constraints.maxHeight);
+          if (_state.pagedViewportSize == null ||
+              (_state.pagedViewportSize!.width - size.width).abs() > 1 ||
+              (_state.pagedViewportSize!.height - size.height).abs() > 1) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              setState(() => _state.pagedViewportSize = size);
+              _rebuildPages(provider);
             });
-          },
-        );
-      },
+          }
+
+          if (_state.pages.isEmpty) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final chapterTitle = _displayedChapter(provider)?.title ??
+              provider.book?.durChapterTitle ??
+              '';
+
+          // 左右留白已经由外面的 Padding 统一加过了，这里直接铺满限宽后的区域。
+          // 注意：那块留白落在 PagedReader 的 GestureDetector 之外，点那里不翻页；
+          // 中间正文区和它自己的左右点击区照常工作。
+          return PagedReader(
+            key: ValueKey('chapter_${_state.laidOutChapterIndex}'),
+            pages: _state.pages,
+            pageController: _pageController,
+            manualController: _pagedReaderController,
+            theme: _state.currentTheme,
+            fontSize: _state.fontSize,
+            lineHeight: _state.lineHeight,
+            chapterTitle: chapterTitle,
+            currentPage: _state.currentPage,
+            totalPages: _state.pages.length,
+            ttsParagraphIndex: _state.ttsParagraphIndex,
+            timeLabel: _state.formatTime(),
+            batteryLabel: _state.batteryLabel(),
+            showTopBar: _state.showTopBar,
+            showBottomBar: _state.showBottomBar,
+            showPageNumber: _state.showPageNumber,
+            horizontalPadding: _state.horizontalPadding,
+            topPadding: _state.topPadding,
+            paragraphSpacing: _state.paragraphSpacing,
+            firstLineIndent: _state.firstLineIndent,
+            animType: _state.pageAnimType,
+            fontFamily: _state.textFontFamily,
+            fontWeight: _state.textFontWeight,
+            onCommentTap:
+                _state.showParagraphComment ? _openParagraphComment : null,
+            onPageChanged: (page) {
+              final position =
+                  _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
+              setState(() {
+                _state.currentPage = page;
+                _state.chapterPosition = position;
+              });
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -1704,7 +1747,10 @@ class _ReaderPageState extends State<ReaderPage> {
       pageIndicator: _state.pageIndicatorLabel(),
       timeLabel: _state.formatTime(),
       batteryLabel: _state.batteryLabel(),
-      horizontalPadding: _state.horizontalPadding,
+      // 【最大宽度】ScrollReader 内部没有 LayoutBuilder，宽度完全由这里传进去的
+      // horizontalPadding 决定，所以直接把额外留白并进去即可（和漫画模式同一套）。
+      // 这个 Padding 同时套住了正文和底部状态栏，两者一起收窄，视觉上是一致的。
+      horizontalPadding: _state.horizontalPadding + _readerSideExtra(),
       topPadding: _state.topPadding,
       paragraphSpacing: _state.paragraphSpacing,
       firstLineIndent: _state.firstLineIndent,
@@ -1732,6 +1778,14 @@ class _ReaderPageState extends State<ReaderPage> {
       '|${_state.theme}',
     );
 
+    // 【最大宽度】宽屏上一行太长很难读，用左右 padding 把正文挤到中间。
+    //
+    // 为什么用 padding 而不是给正文包 Center + ConstrainedBox：这样只动这一处，
+    // 背景色仍然是全宽的、底部状态栏也不受影响。
+    //
+    // 漫画不限制：图片本来就该铺满。
+    final sideExtra = isComic ? 0.0 : _readerSideExtra();
+
     return Column(
       children: [
         Expanded(
@@ -1740,8 +1794,11 @@ class _ReaderPageState extends State<ReaderPage> {
             // 左右/上方边距跟随设置 (原先硬编码 16 / 12)
             padding: isComic
                 ? EdgeInsets.zero
-                : EdgeInsets.fromLTRB(_state.horizontalPadding,
-                    _state.topPadding, _state.horizontalPadding, 12),
+                : EdgeInsets.fromLTRB(
+                    _state.horizontalPadding + sideExtra,
+                    _state.topPadding,
+                    _state.horizontalPadding + sideExtra,
+                    12),
             children: [
               Html(
                 key: htmlSettingsKey,
@@ -2874,109 +2931,178 @@ class _ReaderPageState extends State<ReaderPage> {
 
             return SafeArea(
               top: false,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 36,
-                        height: 4,
-                        margin: const EdgeInsets.only(bottom: 12),
-                        decoration: BoxDecoration(
-                          color: Colors.grey.withValues(alpha: 0.3),
-                          borderRadius: BorderRadius.circular(2),
+              // 【为什么要能滚】showModalBottomSheet 默认把高度卡在屏幕的
+              // 9/16。这个面板本来就快顶到上限了，加上「最大宽度」一行 + 一条
+              // 滑动条之后必然超 —— 不套滚动的话，矮屏（手机横屏、浏览器窗口
+              // 拉矮）上会直接报 RenderFlex overflow，最后一项被切掉。
+              // 套上之后超出的部分滚动即可，其他面板也是这么做的。
+              child: SingleChildScrollView(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 36,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 12),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withValues(alpha: 0.3),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
                         ),
                       ),
-                    ),
-                    const Text('间距设置',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 16),
+                      const Text('间距设置',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.w600)),
+                      const SizedBox(height: 16),
 
-                    // ---- 行距 ----
-                    _SettingRow(
-                      label: '行距',
-                      value: _state.lineHeight.toStringAsFixed(1),
-                      child: Slider(
-                        value: _state.lineHeight,
-                        min: 1.2,
-                        max: 2.6,
-                        divisions: 14,
-                        label: _state.lineHeight.toStringAsFixed(1),
-                        onChanged: (v) => commit(() => _state.lineHeight = v,
-                            rebuildPages: true),
+                      // ---- 行距 ----
+                      _SettingRow(
+                        label: '行距',
+                        value: _state.lineHeight.toStringAsFixed(1),
+                        child: Slider(
+                          value: _state.lineHeight,
+                          min: 1.2,
+                          max: 2.6,
+                          divisions: 14,
+                          label: _state.lineHeight.toStringAsFixed(1),
+                          onChanged: (v) => commit(() => _state.lineHeight = v,
+                              rebuildPages: true),
+                        ),
                       ),
-                    ),
 
-                    // ---- 段间距 ----
-                    _SettingRow(
-                      label: '段间距',
-                      value: _state.paragraphSpacing.round().toString(),
-                      child: Slider(
-                        value: _state.paragraphSpacing,
-                        min: 4,
-                        max: 24,
-                        // 步长 1px：默认值 7 必须正好落在刻度上，
-                        // 否则滑块一拖就会跳到邻近的偶数上
-                        divisions: 20,
-                        label: _state.paragraphSpacing.round().toString(),
-                        onChanged: (v) => commit(
-                            () => _state.paragraphSpacing = v,
-                            rebuildPages: true),
+                      // ---- 段间距 ----
+                      _SettingRow(
+                        label: '段间距',
+                        value: _state.paragraphSpacing.round().toString(),
+                        child: Slider(
+                          value: _state.paragraphSpacing,
+                          min: 4,
+                          max: 24,
+                          // 步长 1px：默认值 7 必须正好落在刻度上，
+                          // 否则滑块一拖就会跳到邻近的偶数上
+                          divisions: 20,
+                          label: _state.paragraphSpacing.round().toString(),
+                          onChanged: (v) => commit(
+                              () => _state.paragraphSpacing = v,
+                              rebuildPages: true),
+                        ),
                       ),
-                    ),
 
-                    // ---- 首行空格 ----
-                    _SettingRow(
-                      label: '首行空格',
-                      value: _state.firstLineIndent.round().toString(),
-                      child: Slider(
-                        value: _state.firstLineIndent,
-                        min: 0,
-                        max: 4,
-                        divisions: 4,
-                        label: _state.firstLineIndent.round().toString(),
-                        onChanged: (v) => commit(
-                            () => _state.firstLineIndent = v,
-                            rebuildPages: true),
+                      // ---- 首行空格 ----
+                      _SettingRow(
+                        label: '首行空格',
+                        value: _state.firstLineIndent.round().toString(),
+                        child: Slider(
+                          value: _state.firstLineIndent,
+                          min: 0,
+                          max: 4,
+                          divisions: 4,
+                          label: _state.firstLineIndent.round().toString(),
+                          onChanged: (v) => commit(
+                              () => _state.firstLineIndent = v,
+                              rebuildPages: true),
+                        ),
                       ),
-                    ),
 
-                    // ---- 左右边距 ----
-                    _SettingRow(
-                      label: '左右边距',
-                      value: _state.horizontalPadding.round().toString(),
-                      child: Slider(
-                        value: _state.horizontalPadding,
-                        min: 8,
-                        max: 48,
-                        divisions: 10,
-                        label: _state.horizontalPadding.round().toString(),
-                        onChanged: (v) => commit(
-                            () => _state.horizontalPadding = v,
-                            rebuildPages: true),
+                      // ---- 左右边距 ----
+                      _SettingRow(
+                        label: '左右边距',
+                        value: _state.horizontalPadding.round().toString(),
+                        child: Slider(
+                          value: _state.horizontalPadding,
+                          min: 8,
+                          max: 48,
+                          divisions: 10,
+                          label: _state.horizontalPadding.round().toString(),
+                          onChanged: (v) => commit(
+                              () => _state.horizontalPadding = v,
+                              rebuildPages: true),
+                        ),
                       ),
-                    ),
 
-                    // ---- 上方边距 ----
-                    _SettingRow(
-                      label: '上方边距',
-                      value: _state.topPadding.round().toString(),
-                      child: Slider(
-                        value: _state.topPadding,
-                        min: 0,
-                        max: 48,
-                        // 步长 2px：默认值 10 要正好落在刻度上
-                        divisions: 24,
-                        label: _state.topPadding.round().toString(),
-                        onChanged: (v) => commit(() => _state.topPadding = v,
-                            rebuildPages: true),
+                      // ---- 上方边距 ----
+                      _SettingRow(
+                        label: '上方边距',
+                        value: _state.topPadding.round().toString(),
+                        child: Slider(
+                          value: _state.topPadding,
+                          min: 0,
+                          max: 48,
+                          // 步长 2px：默认值 10 要正好落在刻度上
+                          divisions: 24,
+                          label: _state.topPadding.round().toString(),
+                          onChanged: (v) => commit(() => _state.topPadding = v,
+                              rebuildPages: true),
+                        ),
                       ),
-                    ),
-                  ],
+
+                      // ---- 最大宽度 ----
+                      // 官方这一项的形状是「最大宽度  [600]  [开关]」+ 下面一条
+                      // 占满整行的滑动条（前四项的滑动条是跟在标签后面的，这一项
+                      // 不是 —— 因为它的开关占掉了标签右侧的位置）。
+                      //
+                      // 【为什么要有开关】限宽只在宽屏上才有意义：手机上屏宽本来
+                      // 就小于 600，开不开都一样。给个总开关，想铺满整屏时可以
+                      // 彻底关掉，不用把滑动条拖到最大值去凑。
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Row(
+                          children: [
+                            const SizedBox(
+                              width: 52,
+                              child: Text('最大宽度',
+                                  style: TextStyle(fontSize: 15)),
+                            ),
+                            const Spacer(),
+                            Text(
+                              '${AppSettings.instance.readerMaxWidth}',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            const SizedBox(width: 4),
+                            Switch(
+                              value: AppSettings.instance.readerMaxWidthEnabled,
+                              onChanged: (v) => commit(
+                                  () => AppSettings.instance
+                                      .setReaderMaxWidthEnabled(v),
+                                  rebuildPages: true),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Slider(
+                        value: AppSettings.instance.readerMaxWidth
+                            .toDouble()
+                            .clamp(
+                              AppSettings.readerMaxWidthMin.toDouble(),
+                              AppSettings.readerMaxWidthMax.toDouble(),
+                            ),
+                        min: AppSettings.readerMaxWidthMin.toDouble(),
+                        max: AppSettings.readerMaxWidthMax.toDouble(),
+                        divisions: (AppSettings.readerMaxWidthMax -
+                                AppSettings.readerMaxWidthMin) ~/
+                            50,
+                        label: '${AppSettings.instance.readerMaxWidth}',
+                        // 关掉开关时把滑动条置灰（onChanged 传 null），但**保留
+                        // 当前数值** —— 再打开时还是原来那个宽度，不用重新拖一遍。
+                        // 这里显式写出 `double v`：三元表达式一边是闭包一边是
+                        // null，靠上下文推断虽然也行，但写清楚更稳。
+                        onChanged: AppSettings.instance.readerMaxWidthEnabled
+                            ? (double v) => commit(
+                                  () => AppSettings.instance
+                                      .setReaderMaxWidth(v.round()),
+                                  rebuildPages: true,
+                                )
+                            : null,
+                      ),
+                    ],
+                  ),
                 ),
               ),
             );
@@ -3029,6 +3155,7 @@ class _ReaderPageState extends State<ReaderPage> {
                     // 「字体」和「翻页」两行已挪回主设置面板 —— 那里才是完整的
                     // 选项列表（含宋体 / 滚动 / 无）。这里不再重复渲染，
                     // 否则同一个设置在两个地方各出现一次，看起来像重复项。
+                    // 「最大宽度」同理，已挪到「间距设置」面板（官方就在那儿）。
 
                     // ---- 段评 ----
                     SwitchListTile(
