@@ -1,21 +1,30 @@
 name: Build Web
 
-# 出「网页版」客户端 —— 用来替换后端仓库里的 `src/main/resources/static/`。
+# 出「网页版」客户端的**验证**工作流。
 #
-# 【为什么需要自己出一份网页版】
-# 浏览器打开 `https://<你的后端>/` 时，后端把 `src/main/resources/static/`
-# 里的文件原样发出去，浏览器跑的就是那份**已经编译好的** `main.dart.js`。
-# 那份是官方编译产物：它的浏览历史 / 搜索历史只写浏览器本地的 IndexedDB，
-# 一个历史接口都不调，所以后端加多少接口都不会同步。
-# 想让它认识 `/getBrowsingHistory` 这些接口，只能**换掉那份 JS** —— 也就是
-# 用本仓库的源码 `flutter build web`，产物覆盖到后端的 static 目录。
+# ============================================================
+# 先看定位，别和部署搞混
+# ============================================================
+# 网页版产物最终要放进**后端仓库**的 `src/main/resources/static/` ——
+# 浏览器打开后端站点时，跑的就是那个目录里的 main.dart.js。
 #
-# 【怎么部署（手动，三步）】
-#   1. 在 Actions 里跑本工作流，下载产物 `qread-web`（一个 zip）
-#   2. 解压后把里面的文件**整体覆盖**到后端仓库 `src/main/resources/static/`
-#      （先把旧的 main.dart.js / main.dart.js_N.part.js / assets 删干净，
-#       官方产物有分片文件，残留会和新的 index.html 对不上）
-#   3. 提交后端仓库 → 重新构建镜像并部署
+# 但产物只能在**有 Flutter 源码的地方**构建：后端仓库里一个 .dart 文件都没有，
+# 只有编好的 JS（等于手上只有 .jar 没有 .java），在那儿根本没法 `flutter build`。
+# 所以构建和部署被分在两个仓库：
+#
+#   本文件（Qread-flutter/.github/workflows/web.yml）
+#       → 改前端代码时自动跑，**只验证能不能编过**
+#   read/.github/workflows/build-web.yml
+#       → 真出产物 + 直接覆盖 static/ + 提交（在后端仓库点一次按钮即可）
+#
+# 也就是说：**部署不用再回这个仓库下载 zip 了**。本工作流留着，是为了在 push
+# 时尽早发现「编不过」—— 这次 Web 构建失败（64 位整数字面量）就是它抓到的。
+# 想手动拿一份产物来检查，仍然可以跑本工作流并下载 `qread-web`。
+#
+# 【为什么必须自己出一份网页版】
+# 后端 static 里那份是官方编译产物：它的浏览历史 / 搜索历史只写浏览器本地的
+# IndexedDB，一个历史接口都不调，所以后端加多少接口都不会同步。
+# 想让它认识 `/getBrowsingHistory` 这些接口，只能**换掉那份 JS**。
 #
 # 【注意】这份产物会取代官方网页版的界面（包括它那颗「清理历史记录」），
 # 换来的是「浏览器端和安卓 / iOS / Windows 同账号同后端可以同步历史」。
@@ -59,12 +68,18 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
 
-      # 【这一步是本工作流的主要目的之一】
-      # Web 编译对 `dart:io` 是**硬失败**：任何被引用到的文件只要 import 了
-      # dart:io，`flutter build web` 就会报
-      #   "Error: Dart library 'dart:io' is not available on this platform."
-      # 所以 analyze 不阻塞、但 build 必须过 —— 有平台相关的代码没走条件导入，
-      # 这里会直接红，比在浏览器里报运行时错误好定位得多。
+      # 【analyze 不阻塞，但 build 必须过】
+      # 本地没装 Flutter SDK 时，只有这一步能查出「平台相关的编译错误」。
+      #
+      # ⚠️ 先纠正一个常见误判：`dart:io` 在 Web 上**是能编过的**（用到才运行时
+      #    报错），不会报 "Dart library 'dart:io' is not available on this
+      #    platform"。真正**编译期**就炸的是另外两类：
+      #      1. 64 位整数字面量 —— dart2js 的 int 就是 IEEE-754 双精度，安全
+      #         整数只有 53 位，`0xcbf29ce484222325` 这种直接被拒：
+      #           Error: The integer literal 0x... can't be represented
+      #           exactly in JavaScript.
+      #      2. `dart:html` / `package:web` —— 这两个反过来在**原生端**编不过。
+      #    push 前可以先本地 grep 一遍（见 flutter-dart-local-validation 技能第 13 节）。
       - name: flutter analyze (不阻塞)
         run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
 
