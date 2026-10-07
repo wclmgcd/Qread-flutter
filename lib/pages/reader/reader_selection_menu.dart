@@ -161,9 +161,21 @@ class ReaderSelectionMenu {
     }
 
     final bookName = book.name?.trim() ?? '';
+
+    // 【为什么写入前要先查一次已有规则】
+    // 后端 `addReplaceRule` 的判重是**精确匹配 name**
+    // （`getrulebyname`: `WHERE userid=? AND name=?`），主键又是
+    // `Md5(userid + name)` —— 同名必然同 id，没法靠清空 id 绕过判重：
+    //   - id 为空 → 走 insert，撞名直接抛 NAME_ERROR（"名字重复"）
+    //   - id 非空 → 走 update，但仍会拿 name 查一遍，查到别的 id 就抛
+    // 所以「同一段文字再点一次过滤（想改替换内容）」必须**显式带上已有那条的 id**，
+    // 否则用户永远只能拿到一句"名字重复"。
+    final identity = await _resolveRuleIdentity(accessToken, bookName, pattern);
+    final existing = identity.existing;
+
     final rule = ReplaceRule(
-      // 名字取「过滤:」+ 内容前 12 字，方便在替换净化列表里认出来
-      name: '过滤:${_shorten(pattern)}',
+      id: existing?.id,
+      name: identity.name,
       pattern: pattern,
       replacement: result.replacement,
       // 【替换范围 = 本书名】后端按 scope LIKE '%书名%' 匹配，
@@ -175,7 +187,8 @@ class ReaderSelectionMenu {
       // 用户输入的 `(` `\` `+` 这类字符不会被当成正则元字符。
       isRegex: false,
       isEnabled: true,
-      order: 0,
+      // 更新时保留原排序，别把用户手动置顶过的规则打回 0
+      order: existing?.order ?? 0,
     );
 
     try {
@@ -189,12 +202,79 @@ class ReaderSelectionMenu {
       _toast(
         context,
         ok
-            ? '已加入替换净化（范围：本书）'
+            ? (existing != null ? '已更新本书的过滤规则' : '已加入替换净化（范围：本书）')
             : '添加失败：${friendlyServerMessage(resp['errorMsg']?.toString())}',
       );
     } catch (e) {
       if (context.mounted) _toast(context, '添加失败：${friendlyError(e)}');
     }
+  }
+
+  /// 决定这次「过滤」是**更新已有的那条**还是**新增一条**，并给出不撞名的规则名。
+  ///
+  /// 命中条件：`scope == 本书名` 且 `pattern == 选中内容`。
+  /// 用 (scope, pattern) 而不是只看 pattern —— 同一段文字在不同书里是两条独立规则。
+  static Future<({ReplaceRule? existing, String name})> _resolveRuleIdentity(
+    String accessToken,
+    String bookName,
+    String pattern,
+  ) async {
+    final base = '过滤:${_shorten(pattern)}';
+
+    final List<ReplaceRule> rules;
+    try {
+      rules = await _fetchAllRules(accessToken);
+    } catch (_) {
+      // 拉列表失败不该阻断主流程：退化成按默认名新增。
+      // 万一真撞名，后端会返回 NAME_ERROR，上面会原样透出给用户。
+      return (existing: null, name: base);
+    }
+
+    final usedNames = <String>{};
+    ReplaceRule? existing;
+    for (final r in rules) {
+      usedNames.add(r.name);
+      if (existing == null &&
+          r.pattern == pattern &&
+          (r.scope?.trim() ?? '') == bookName) {
+        existing = r;
+      }
+    }
+    if (existing != null) return (existing: existing, name: existing.name);
+
+    // 名字取「过滤:」+ 内容前 12 字，方便在替换净化列表里认出来。
+    // 但 `_shorten` 会截断 —— 不同文字的前 12 字可能一样，所以撞了就加 (2)、(3)…
+    var name = base;
+    var n = 2;
+    while (usedNames.contains(name)) {
+      name = '$base ($n)';
+      n++;
+    }
+    return (existing: null, name: name);
+  }
+
+  /// 拉全量替换规则。
+  ///
+  /// 后端按 50 条一页分页：先 `/getReplaceRulesPage` 拿 `{page, md5}`，
+  /// 再按 md5 逐页 `/getReplaceRulesNew`（该接口有 60s 缓存，缓存键含 md5，
+  /// 而 md5 每次改规则都会刷新，所以这里读到的不会是旧列表）。
+  static Future<List<ReplaceRule>> _fetchAllRules(String accessToken) async {
+    final pageData = await ApiService.instance.getReplaceRulesPage(accessToken);
+    final data = pageData['data'] ?? pageData;
+    final md5 = data['md5']?.toString();
+    final totalPages = int.tryParse(data['page']?.toString() ?? '1') ?? 1;
+
+    final all = <ReplaceRule>[];
+    for (var page = 1; page <= totalPages; page++) {
+      final chunk = await ApiService.instance.getReplaceRulesNew(
+        accessToken,
+        md5: md5,
+        page: page,
+      );
+      if (chunk.isEmpty) break;
+      all.addAll(chunk);
+    }
+    return all;
   }
 
   static String _shorten(String text) {
