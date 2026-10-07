@@ -59,6 +59,11 @@ class ReaderSelectionMenu {
     required List<Chapter> chapters,
     required Future<String> Function(int chapterIndex) loadChapterText,
     required void Function(int chapterIndex, int charOffset) onJumpToResult,
+    /// 规则写入成功后的回调 —— 调用方负责**作废本地章节缓存并重取当前章**。
+    ///
+    /// 不做这一步的话，「过滤」会看起来完全没生效：`getChapterContent` 命中
+    /// 本地缓存就直接返回，而那份缓存是**加规则之前**抓下来的正文。
+    required Future<void> Function() onRuleChanged,
   }) {
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: state.contextMenuAnchors,
@@ -81,7 +86,7 @@ class ReaderSelectionMenu {
           label: '过滤',
           onPressed: () {
             ContextMenuController.removeAny();
-            _filter(context, selectedText(), book, accessToken);
+            _filter(context, selectedText(), book, accessToken, onRuleChanged);
           },
         ),
         ContextMenuButtonItem(
@@ -147,6 +152,7 @@ class ReaderSelectionMenu {
     String raw,
     Book book,
     String accessToken,
+    Future<void> Function() onRuleChanged,
   ) async {
     final selected = raw.trim();
     if (selected.isEmpty) return;
@@ -193,18 +199,52 @@ class ReaderSelectionMenu {
 
     try {
       final resp = await ApiService.instance.addReplaceRule(accessToken, rule);
-      if (!context.mounted) return;
       // 【不要把 errorMsg 吞掉】
       // 后端判重是精确匹配 name，重名时返回 `JsonResponse(false, NAME_ERROR)`，
       // NAME_ERROR = "名字重复"（中文，本来就是给用户看的）。
       // 以前这里只显示「添加失败，请稍后再试」，用户完全不知道该怎么办。
       final ok = resp['isSuccess'] == true;
-      _toast(
-        context,
-        ok
-            ? (existing != null ? '已更新本书的过滤规则' : '已加入替换净化（范围：本书）')
-            : '添加失败：${friendlyServerMessage(resp['errorMsg']?.toString())}',
-      );
+      if (!ok) {
+        if (context.mounted) {
+          _toast(
+            context,
+            '添加失败：${friendlyServerMessage(resp['errorMsg']?.toString())}',
+          );
+        }
+        return;
+      }
+
+      // 【必须顺带打开本书的净化开关】
+      // 服务端 `ReadController.getBookContent` 里是
+      //   `if (type == 0 && !bookname.isNullOrBlank() && useReplaceRule == 1)`
+      // 才应用规则 —— 本书开关关着的时候，规则写进去了也**一条都不会执行**，
+      // 用户看到的依旧是「过滤不起效」。既然用户主动点了「过滤」，那就是要把
+      // 这本书的净化打开，这里一并置 1，并同步改掉本地 Book 对象。
+      var enabledNow = false;
+      if (book.useReplaceRule == false) {
+        try {
+          await ApiService.instance.updateUseReplaceRule(
+            accessToken,
+            url: book.bookUrl ?? '',
+            useReplaceRule: 1,
+          );
+          book.useReplaceRule = true;
+          enabledNow = true;
+        } catch (_) {
+          // 开关没打开不致命：规则已经写进去了，阅读页菜单里也能手动开
+        }
+      }
+
+      if (context.mounted) {
+        _toast(
+          context,
+          (existing != null ? '已更新本书的过滤规则' : '已加入替换净化（范围：本书）') +
+              (enabledNow ? '，并已开启本书净化' : ''),
+        );
+      }
+      // 规则变了 → 本地缓存的正文已经过期，必须让调用方清缓存并重取当前章。
+      // 少了这一步，用户看到的就是「过滤写进去了但正文毫无变化」。
+      await onRuleChanged();
     } catch (e) {
       if (context.mounted) _toast(context, '添加失败：${friendlyError(e)}');
     }

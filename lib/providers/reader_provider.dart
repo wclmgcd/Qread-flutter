@@ -182,6 +182,26 @@ class ReaderProvider extends ChangeNotifier {
     _prefetchCache.clear();
   }
 
+  /// 「替换净化」规则变了（用户在阅读页点了「过滤」）—— 本地缓存的正文必须作废。
+  ///
+  /// 【为什么需要这个】
+  /// `getChapterContent` 是「命中缓存就直接返回，不再请求后端」，而缓存目录
+  /// 只按 `replace_on` / `replace_off` 分，**不带规则版本**。于是：
+  ///   1. 用户读到第 300 章 → 这一章按「当时的规则」缓存了下来；
+  ///   2. 用户长按选字 →「过滤」→ 规则写进服务端；
+  ///   3. 界面读的还是第 1 步那份缓存 → **正文毫无变化**。
+  /// 用户看到的就是「过滤不起效」，其实规则早就生效了，只是客户端没重新取。
+  ///
+  /// 清掉之后由调用方重取当前章即可。
+  Future<void> invalidateChapterCacheAfterReplaceRuleChange() async {
+    _prefetchCache.clear();
+    final bookUrl = _book?.bookUrl;
+    if (bookUrl != null && bookUrl.isNotEmpty) {
+      await LocalCacheService.instance.clearBookChapterCache(bookUrl);
+    }
+    notifyListeners();
+  }
+
   Future<void> saveProgress(
     String accessToken, {
     required int chapterIndex,

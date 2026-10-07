@@ -103,6 +103,26 @@ class LocalCacheService {
     }
   }
 
+  /// 清掉某本书的**全部**章节缓存（`replace_on` 和 `replace_off` 两个目录一起）。
+  ///
+  /// 【什么时候必须调】
+  /// 「替换净化」规则变了之后 —— 用户点了阅读页的「过滤」就属于这种。
+  ///
+  /// 【为什么】
+  /// 缓存目录只按「有没有应用净化」分成 `replace_on` / `replace_off` 两级，
+  /// **不带规则版本**。所以加规则之前缓存下来的正文里是**没有替换过**的文字，
+  /// 而 `ReaderProvider.getChapterContent` 命中缓存就直接返回、不再请求后端 ——
+  /// 表现就是「规则明明写进去了，正文一点变化都没有」。
+  Future<void> clearBookChapterCache(String bookUrl) async {
+    final root = await _rootDir();
+    final dir = Directory(
+      '${root.path}${Platform.pathSeparator}reader${Platform.pathSeparator}${scopedKey(bookUrl)}',
+    );
+    if (await dir.exists()) {
+      await dir.delete(recursive: true);
+    }
+  }
+
   Future<File> _jsonFile(String key) async {
     final root = await _rootDir();
     return File('${root.path}${Platform.pathSeparator}$key.json');

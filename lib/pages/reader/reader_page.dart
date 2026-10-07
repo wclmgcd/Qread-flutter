@@ -658,6 +658,31 @@ class _ReaderPageState extends State<ReaderPage> {
   // 章节加载
   // ============================================================
 
+  /// 「过滤」写入规则后调用：作废本地章节缓存，再重取当前章。
+  ///
+  /// 【为什么必须这么做】
+  /// `ReaderProvider.getChapterContent` 命中缓存就直接返回，而缓存目录只按
+  /// `replace_on` / `replace_off` 分，**不带规则版本**。所以加规则之前缓存下来的
+  /// 正文里是没被替换过的文字 —— 用户点了「过滤」却看到正文毫无变化，
+  /// 会以为功能坏了（实际规则早就生效，只是界面读的是旧缓存）。
+  Future<void> _onReplaceRuleChanged() async {
+    final provider = _readerProvider;
+    if (provider == null || !mounted) return;
+    await provider.invalidateChapterCacheAfterReplaceRuleChange();
+    if (!mounted) return;
+    // 预排版缓存里同样是「旧规则下」的正文，一并作废
+    _state.layoutCache.clear();
+    _state.prefetchedNextLayout = null;
+    _state.prefetchedNextChapterIndex = -1;
+    _state.prefetchedPrevLayout = null;
+    _state.prefetchedPrevChapterIndex = -1;
+    setState(() {});
+    await _openChapter(
+      _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0),
+      chapterPosition: _state.chapterPosition,
+    );
+  }
+
   Future<void> _openChapter(
     int chapterIndex, {
     int chapterPosition = 0,
@@ -1365,6 +1390,7 @@ class _ReaderPageState extends State<ReaderPage> {
                           loadChapterText: (index) =>
                               provider.peekChapterContent(_token ?? '', index),
                           onJumpToResult: _jumpToSearchResult,
+                          onRuleChanged: _onReplaceRuleChanged,
                         );
                       },
                       child: GestureDetector(
@@ -2323,7 +2349,50 @@ class _ReaderPageState extends State<ReaderPage> {
   // 底部弹窗
   // ============================================================
 
+  /// 目录弹层首帧之后把列表滚到当前章。
+  ///
+  /// 首帧时 controller 可能还没 attach（`hasClients == false`），所以按帧重试几次；
+  /// 仍然失败就放弃 —— 只是没定位，不该把页面搞崩。
+  void _jumpChapterListTo(
+    ScrollController controller,
+    double offset, {
+    int attempt = 0,
+  }) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!controller.hasClients) {
+        if (attempt < 5) {
+          _jumpChapterListTo(controller, offset, attempt: attempt + 1);
+        }
+        return;
+      }
+      final max = controller.position.maxScrollExtent;
+      controller.jumpTo(offset.clamp(0.0, max));
+    });
+  }
+
   void _showChapterList(ReaderProvider provider) {
+    // 【打开目录要停在「正在读的这一章」】
+    // 之前列表从第 1 章开始列，用户得自己往下滑几百章才能找到当前位置。
+    //
+    // 定位靠 `index * 条目高度`，而 `ListView.builder` 在条目高度不一时算不准，
+    // 所以这里给 ListView 设**固定 itemExtent**（每个条目就是一行 14px 文字，
+    // Material 的 dense 单行 ListTile 正好 48），再用同一个常量算偏移 —— 精确。
+    //
+    // 【为什么要乘系统字号】`itemExtent` 会把条目压成**紧约束**，而 ListTile 的高度
+    // 会随系统「字体大小」变大。系统字号调到很大时，48 装不下 14px 文字就会出
+    // overflow 条纹。跟着放大只是留白变多，定位依然精确。
+    final textScale = MediaQuery.textScalerOf(context).scale(1.0);
+    final tileExtent = 48.0 * (textScale < 1.0 ? 1.0 : textScale);
+    final chapterCount = provider.chapters.length;
+    final currentIndex = chapterCount == 0
+        ? 0
+        : _state
+            .displayedChapterIndex(provider.book?.durChapterIndex ?? 0)
+            .clamp(0, chapterCount - 1);
+
+    // 只跳一次。sheet 因任何原因重建时不能再跳，否则用户手动滚一半会被弹回去。
+    var jumped = false;
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -2336,6 +2405,10 @@ class _ReaderPageState extends State<ReaderPage> {
         maxChildSize: 0.9,
         expand: false,
         builder: (context, scrollController) {
+          if (!jumped) {
+            jumped = true;
+            _jumpChapterListTo(scrollController, currentIndex * tileExtent);
+          }
           return Column(
             children: [
               Padding(
@@ -2355,6 +2428,7 @@ class _ReaderPageState extends State<ReaderPage> {
               Expanded(
                 child: ListView.builder(
                   controller: scrollController,
+                  itemExtent: tileExtent,
                   itemCount: provider.chapters.length,
                   itemBuilder: (context, index) {
                     final chapter = provider.chapters[index];
@@ -3861,14 +3935,17 @@ class _ReaderPageState extends State<ReaderPage> {
         useReplaceRule: 1,
       );
       provider.book?.useReplaceRule = true;
-      await _openChapter(
-          _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0),
-          chapterPosition: _state.chapterPosition);
+      // 【不能只 _openChapter】
+      // `_prefetchCache` 只按 chapterIndex 存，**不带净化开关**；缓存目录虽然分了
+      // `replace_on` / `replace_off`，但内存里的 `_prefetchCache` 会先命中。
+      // 所以刚把开关从关打到开时，如果只重开当前章，正文读到的还是关着时的旧内容
+      // —— 表现就是「点了应用净化，正文一点没变」。
+      // `_onReplaceRuleChanged` 会把内存缓存 + 磁盘缓存 + 预排版缓存一起作废。
+      await _onReplaceRuleChanged();
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已应用净化规则并刷新当前章节')),
       );
-      setState(() {});
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

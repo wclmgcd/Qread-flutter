@@ -423,53 +423,133 @@ class _ProfilePageState extends State<ProfilePage> with WidgetsBindingObserver {
     }
   }
 
+  /// 一个「确认删除」对话框，确认返回 true。
+  Future<bool> _confirm(
+    BuildContext context, {
+    required String title,
+    required String message,
+    required String action,
+  }) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
   Future<void> _showBrowsingHistorySheet() async {
+    final token = context.read<UserProvider>().token;
     // 带 token 才会从服务端拉（各端一致）；没有 token 时退回本地缓存
-    final history = await BrowsingHistoryService.instance.loadHistory(
-      accessToken: context.read<UserProvider>().token,
+    var history = await BrowsingHistoryService.instance.loadHistory(
+      accessToken: token,
     );
     if (!mounted) return;
 
-    showModalBottomSheet<void>(
+    await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: SizedBox(
-          height: MediaQuery.of(sheetContext).size.height * 0.72,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(18, 8, 18, 10),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '浏览历史',
-                        style: Theme.of(sheetContext).textTheme.titleLarge,
-                      ),
+      builder: (sheetContext) => StatefulBuilder(
+        // StatefulBuilder：清空 / 删除之后要把列表**就地**刷掉，
+        // 而不是关掉弹层让用户再点一次进来。
+        builder: (sheetContext, setSheetState) {
+          /// 改完服务端后重新拉一份，顺带把「X 本」计数刷新。
+          /// 服务端为准，所以这里必须真的再请求一次，不能只改本地列表。
+          Future<void> reload() async {
+            final refreshed = await BrowsingHistoryService.instance
+                .loadHistory(accessToken: token);
+            if (!sheetContext.mounted) return;
+            setSheetState(() => history = refreshed);
+          }
+
+          Future<void> clearAll() async {
+            final ok = await _confirm(
+              sheetContext,
+              title: '清空浏览历史？',
+              message: '会同时清空服务端记录，各端都会同步生效。',
+              action: '清空',
+            );
+            if (!ok) return;
+            await BrowsingHistoryService.instance.clearHistory(token);
+            await reload();
+          }
+
+          Future<void> deleteOne(Book book) async {
+            final ok = await _confirm(
+              sheetContext,
+              title: '删除这条记录？',
+              message: book.name ?? '',
+              action: '删除',
+            );
+            if (!ok) return;
+            await BrowsingHistoryService.instance
+                .removeBook(token, book.bookUrl ?? '');
+            await reload();
+          }
+
+          return SafeArea(
+            child: SizedBox(
+              height: MediaQuery.of(sheetContext).size.height * 0.72,
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(18, 8, 8, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '浏览历史',
+                            style: Theme.of(sheetContext).textTheme.titleLarge,
+                          ),
+                        ),
+                        Text(
+                          '${history.length} 本',
+                          style: Theme.of(sheetContext).textTheme.bodySmall,
+                        ),
+                        // 清空入口 —— 官方客户端的历史页右上角就有这颗垃圾桶，
+                        // 之前这里完全没有删除入口，历史只能越攒越多。
+                        IconButton(
+                          tooltip: '清空浏览历史',
+                          icon: const Icon(Icons.delete_outline),
+                          onPressed: history.isEmpty ? null : clearAll,
+                        ),
+                      ],
                     ),
-                    Text(
-                      '${history.length} 本',
-                      style: Theme.of(sheetContext).textTheme.bodySmall,
-                    ),
-                  ],
-                ),
+                  ),
+                  Expanded(
+                    child: history.isEmpty
+                        ? const Center(child: Text('还没有浏览历史'))
+                        : ListView.separated(
+                            padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
+                            itemCount: history.length,
+                            separatorBuilder: (_, __) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (_, index) => _HistoryBookTile(
+                              book: history[index],
+                              // 长按删单条（官方是长按进多选，这里直接给单条删除，
+                              // 少一层交互）。顶部垃圾桶负责清空全部。
+                              onLongPress: () => deleteOne(history[index]),
+                            ),
+                          ),
+                  ),
+                ],
               ),
-              Expanded(
-                child: history.isEmpty
-                    ? const Center(child: Text('还没有浏览历史'))
-                    : ListView.separated(
-                        padding: const EdgeInsets.fromLTRB(14, 0, 14, 16),
-                        itemCount: history.length,
-                        separatorBuilder: (_, __) => const SizedBox(height: 10),
-                        itemBuilder: (_, index) =>
-                            _HistoryBookTile(book: history[index]),
-                      ),
-              ),
-            ],
-          ),
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -961,7 +1041,10 @@ class _QuickActionCard extends StatelessWidget {
 class _HistoryBookTile extends StatelessWidget {
   final Book book;
 
-  const _HistoryBookTile({required this.book});
+  /// 长按删除这一条。为 null 时退化成「只能点进去看」。
+  final VoidCallback? onLongPress;
+
+  const _HistoryBookTile({required this.book, this.onLongPress});
 
   @override
   Widget build(BuildContext context) {
@@ -991,6 +1074,7 @@ class _HistoryBookTile extends StatelessWidget {
           Navigator.pop(context);
           Navigator.pushNamed(context, '/reader', arguments: book);
         },
+        onLongPress: onLongPress,
         child: Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
