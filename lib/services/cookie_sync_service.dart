@@ -32,7 +32,14 @@ class CookieSyncService {
   CookieSyncService._();
   static final CookieSyncService instance = CookieSyncService._();
 
-  final WebViewCookieManager _cookieManager = WebViewCookieManager();
+  /// 【懒建，不能在字段初始化时就构造】
+  /// `WebViewCookieManager()` 内部要 `WebViewPlatform.instance`，
+  /// 而 webview_flutter **没有 Web 实现**，在浏览器里构造会直接抛。
+  /// 做成字段初始化的话，`CookieSyncService.instance` 一被访问就炸，
+  /// 连不相关的页面都会受牵连。
+  WebViewCookieManager? _cookieManagerInstance;
+  WebViewCookieManager get _cookieManager =>
+      _cookieManagerInstance ??= WebViewCookieManager();
 
   /// 单个书源的一次同步：本地有就推上去，本地没有就把服务端的拉下来。
   ///
@@ -41,6 +48,9 @@ class CookieSyncService {
   /// 紧随其后的 `login()` 能读到刚拿到的 cookie。
   Future<void> syncOne(String accessToken, String url) async {
     if (accessToken.isEmpty || url.trim().isEmpty) return;
+    // 【Web 上直接跳过】浏览器里没有可读的 WebView cookie jar ——
+    // cookie 归浏览器自己管，webview_flutter 也没有 Web 实现。
+    if (kIsWeb) return;
     try {
       final local = await _readLocal(url);
       if (local.isNotEmpty) {
@@ -65,6 +75,8 @@ class CookieSyncService {
   /// **去重后的站点数**有关；按可注册域名去重后通常远小于书源条数。
   Future<void> pushMany(String accessToken, Iterable<String> urls) async {
     if (accessToken.isEmpty) return;
+    // 同上：Web 端没有可读的 WebView cookie jar
+    if (kIsWeb) return;
     final sites = <String>{};
     for (final url in urls) {
       final site = registrableDomain(url);

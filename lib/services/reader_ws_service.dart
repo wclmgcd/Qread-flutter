@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../config/constants.dart';
 import 'api_service.dart';
@@ -95,7 +96,19 @@ class ReaderWsService {
 
   static final ReaderWsService instance = ReaderWsService._();
 
-  WebSocket? _socket;
+  /// 【为什么用 WebSocketChannel 而不是 dart:io 的 WebSocket】
+  /// `dart:io` 在 Web 上不存在，直接用 `WebSocket.connect` 会让
+  /// `flutter build web` **编译期就失败**。`web_socket_channel` 是 Dart 官方
+  /// 维护的跨平台封装：原生端底下就是 `dart:io` 的 WebSocket（行为不变），
+  /// Web 端换成浏览器的 `WebSocket`，我们这边只写一份代码。
+  WebSocketChannel? _socket;
+
+  /// 【为什么要自己记一个 bool】
+  /// `WebSocketChannel` 没有同步可读的 readyState（连接是异步的，
+  /// 靠 `await channel.ready` 才知道成没成），所以用这个标记记录状态，
+  /// 在「ready 成功 / onDone / onError」三处维护。
+  bool _connected = false;
+
   String? _token;
   bool _enabled = false;
   int _retryCount = 0;
@@ -121,8 +134,7 @@ class ReaderWsService {
   /// 需要弹提示时回调（由页面注册）
   void Function(String message)? onToast;
 
-  bool get isConnected =>
-      _socket != null && _socket!.readyState == WebSocket.open;
+  bool get isConnected => _connected;
 
   /// 建立长连接（重复调用是安全的）
   Future<void> connect(String? token) async {
@@ -139,16 +151,21 @@ class ReaderWsService {
     if (token == null || token.isEmpty) return;
     _connecting = true;
     try {
-      await _socket?.close();
+      await _socket?.sink.close();
     } catch (_) {}
     _socket = null;
+    _connected = false;
 
     try {
-      final socket = await WebSocket.connect(_wsUrl(token))
-          .timeout(const Duration(seconds: 15));
+      final socket = WebSocketChannel.connect(Uri.parse(_wsUrl(token)));
+      // 【必须 await ready 再 listen】`WebSocketChannel.connect` 是
+      // 「立刻返回、后台去连」，不等 ready 就直接 listen 的话，
+      // 连不上时只会静静等到 onError，下面这个 15s 超时也就失去意义了。
+      await socket.ready.timeout(const Duration(seconds: 15));
       _socket = socket;
+      _connected = true;
       _retryCount = 0;
-      socket.listen(
+      socket.stream.listen(
         (data) {
           final text = data is String ? data : utf8.decode(data as List<int>);
           for (final line in text.split('\n')) {
@@ -170,11 +187,18 @@ class ReaderWsService {
             if (!_pushController.isClosed) _pushController.add(message);
           }
         },
-        onDone: _scheduleReconnect,
-        onError: (_) => _scheduleReconnect(),
+        onDone: () {
+          _connected = false;
+          _scheduleReconnect();
+        },
+        onError: (_) {
+          _connected = false;
+          _scheduleReconnect();
+        },
         cancelOnError: true,
       );
     } catch (_) {
+      _connected = false;
       _scheduleReconnect();
     } finally {
       _connecting = false;
@@ -213,9 +237,10 @@ class ReaderWsService {
     _reconnectTimer = null;
     _retryCount = 0;
     try {
-      await _socket?.close();
+      await _socket?.sink.close();
     } catch (_) {}
     _socket = null;
+    _connected = false;
   }
 
   void dispose() {

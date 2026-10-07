@@ -1,6 +1,8 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import '../services/error_text.dart';
@@ -45,6 +47,14 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
   @override
   void initState() {
     super.initState();
+    // 【Web 上绝对不能碰 webview_flutter】
+    // 那个包**没有 Web 实现**，`WebViewController()` 会因为
+    // `WebViewPlatform.instance == null` 直接抛异常。
+    // 而且浏览器里本来也不该再嵌一层 webview —— 直接给「新标签打开」的入口。
+    if (kIsWeb) {
+      _loading = false;
+      return;
+    }
     _initMobile();
   }
 
@@ -143,6 +153,7 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
 
   @override
   Widget build(BuildContext context) {
+    if (kIsWeb) return _buildWebFallback();
     if (_error != null) {
       return _buildError();
     }
@@ -156,6 +167,47 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
         Positioned.fill(child: body),
         if (_loading) const Center(child: CircularProgressIndicator()),
       ],
+    );
+  }
+
+  /// Web 端替代品：不嵌 webview，只给一个「在浏览器中打开」的入口。
+  ///
+  /// 各调用点（书源登录、段评、RSS 正文）想要的是「把某个网页显示出来」，
+  /// 在浏览器里这件事本来就该由浏览器自己做 —— 新标签打开比嵌一层假 webview
+  /// 更符合预期，也不会有 cookie / 跨域那一堆麻烦。
+  Widget _buildWebFallback() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.public, size: 40),
+            const SizedBox(height: 12),
+            const Text(
+              '网页版不内置浏览器',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 6),
+            Text(
+              widget.url,
+              textAlign: TextAlign.center,
+              maxLines: 3,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: () => launchUrl(
+                Uri.parse(widget.url),
+                mode: LaunchMode.externalApplication,
+              ),
+              icon: const Icon(Icons.open_in_new, size: 18),
+              label: const Text('在浏览器中打开'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

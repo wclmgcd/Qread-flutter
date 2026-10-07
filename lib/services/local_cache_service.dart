@@ -1,8 +1,14 @@
 import 'dart:convert';
-import 'dart:io';
 
-import 'package:path_provider/path_provider.dart';
+import 'cache_store.dart';
 
+/// 本地缓存（JSON 片段 + 章节正文）。
+///
+/// 【本文件不再直接碰文件系统】
+/// 真正的读写全部委托给 [CacheStore]，由它在编译期按平台选实现：
+/// 原生端走真实文件，浏览器端走内存。这样 `flutter build web` 才编得过 ——
+/// 细节见 `cache_store.dart` 的注释。**对外 API 与改造前完全一致**，
+/// 所有调用方无需改动。
 class LocalCacheService {
   static LocalCacheService? _instance;
 
@@ -10,27 +16,21 @@ class LocalCacheService {
 
   static LocalCacheService get instance => _instance ??= LocalCacheService._();
 
-  Future<Directory> _rootDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}${Platform.pathSeparator}local_cache');
-    if (!await dir.exists()) {
-      await dir.create(recursive: true);
-    }
-    return dir;
-  }
+  final CacheStore _store = createCacheStore();
 
+  /// 把任意字符串收敛成定长 key（FNV-1a 64 位十六进制）。
+  /// 用途：bookUrl / accessToken 这类可能带 `?` `/` 的长串不能直接当路径。
   String scopedKey(String raw) => _fnv1a64(raw);
 
-  Future<void> saveJson(String key, Object data) async {
-    final file = await _jsonFile(key);
-    await file.writeAsString(const JsonEncoder().convert(data), flush: true);
+  Future<void> saveJson(String key, Object data) {
+    return _store.writeText('$key.json', const JsonEncoder().convert(data));
   }
 
   Future<List<dynamic>?> readJsonList(String key) async {
-    final file = await _jsonFile(key);
-    if (!await file.exists()) return null;
+    final raw = await _store.readText('$key.json');
+    if (raw == null) return null;
     try {
-      final decoded = jsonDecode(await file.readAsString());
+      final decoded = jsonDecode(raw);
       return decoded is List ? decoded : null;
     } catch (_) {
       return null;
@@ -38,15 +38,13 @@ class LocalCacheService {
   }
 
   Future<Map<String, dynamic>?> readJsonObject(String key) async {
-    final file = await _jsonFile(key);
-    if (!await file.exists()) return null;
+    final raw = await _store.readText('$key.json');
+    if (raw == null) return null;
     try {
-      final decoded = jsonDecode(await file.readAsString());
+      final decoded = jsonDecode(raw);
       if (decoded is Map<String, dynamic>) return decoded;
       if (decoded is Map) {
-        return decoded.map(
-          (key, value) => MapEntry(key.toString(), value),
-        );
+        return decoded.map((key, value) => MapEntry(key.toString(), value));
       }
       return null;
     } catch (_) {
@@ -54,29 +52,39 @@ class LocalCacheService {
     }
   }
 
+  // -------------------------------------------------------------- 章节正文
+
+  /// 章节缓存的目录：`reader/<bookUrl 的哈希>/replace_{on,off}`。
+  ///
+  /// 【注意这里**只有「有没有应用净化」两级，不带规则版本**】
+  /// 所以「替换净化」规则一变，旧缓存就过期了 —— 必须显式调
+  /// [clearBookChapterCache]，否则正文看起来毫无变化（见该方法注释）。
+  String _chapterDir(String bookUrl, bool useReplaceRule) {
+    final hashed = scopedKey(bookUrl);
+    final replaceFlag = useReplaceRule ? 'replace_on' : 'replace_off';
+    return 'reader/$hashed/$replaceFlag';
+  }
+
   Future<void> writeChapterContent({
     required String bookUrl,
     required int chapterIndex,
     required bool useReplaceRule,
     required String content,
-  }) async {
-    final file = await _chapterFile(bookUrl, chapterIndex, useReplaceRule);
-    await file.parent.create(recursive: true);
-    await file.writeAsString(content, flush: true);
+  }) {
+    return _store.writeText(
+      '${_chapterDir(bookUrl, useReplaceRule)}/$chapterIndex.txt',
+      content,
+    );
   }
 
   Future<String?> readChapterContent({
     required String bookUrl,
     required int chapterIndex,
     required bool useReplaceRule,
-  }) async {
-    final file = await _chapterFile(bookUrl, chapterIndex, useReplaceRule);
-    if (!await file.exists()) return null;
-    try {
-      return await file.readAsString();
-    } catch (_) {
-      return null;
-    }
+  }) {
+    return _store.readText(
+      '${_chapterDir(bookUrl, useReplaceRule)}/$chapterIndex.txt',
+    );
   }
 
   Future<void> pruneChapterCache({
@@ -84,24 +92,15 @@ class LocalCacheService {
     required bool useReplaceRule,
     required Set<int> keepIndices,
   }) async {
-    final directory = await _chapterDir(bookUrl, useReplaceRule);
-    if (!await directory.exists()) return;
-    final entries = await directory.list().toList();
-    for (final entry in entries) {
-      if (entry is! File) continue;
-      final name = entry.uri.pathSegments.last;
+    final dir = _chapterDir(bookUrl, useReplaceRule);
+    for (final name in await _store.listNames(dir)) {
       final index = int.tryParse(name.replaceAll('.txt', ''));
       if (index == null || keepIndices.contains(index)) continue;
-      await entry.delete();
+      await _store.deleteTree('$dir/$name');
     }
   }
 
-  Future<void> clearAllCaches() async {
-    final root = await _rootDir();
-    if (await root.exists()) {
-      await root.delete(recursive: true);
-    }
-  }
+  Future<void> clearAllCaches() => _store.deleteAll();
 
   /// 清掉某本书的**全部**章节缓存（`replace_on` 和 `replace_off` 两个目录一起）。
   ///
@@ -113,40 +112,11 @@ class LocalCacheService {
   /// **不带规则版本**。所以加规则之前缓存下来的正文里是**没有替换过**的文字，
   /// 而 `ReaderProvider.getChapterContent` 命中缓存就直接返回、不再请求后端 ——
   /// 表现就是「规则明明写进去了，正文一点变化都没有」。
-  Future<void> clearBookChapterCache(String bookUrl) async {
-    final root = await _rootDir();
-    final dir = Directory(
-      '${root.path}${Platform.pathSeparator}reader${Platform.pathSeparator}${scopedKey(bookUrl)}',
-    );
-    if (await dir.exists()) {
-      await dir.delete(recursive: true);
-    }
+  Future<void> clearBookChapterCache(String bookUrl) {
+    return _store.deleteTree('reader/${scopedKey(bookUrl)}');
   }
 
-  Future<File> _jsonFile(String key) async {
-    final root = await _rootDir();
-    return File('${root.path}${Platform.pathSeparator}$key.json');
-  }
-
-  Future<Directory> _chapterDir(String bookUrl, bool useReplaceRule) async {
-    final root = await _rootDir();
-    final hashed = scopedKey(bookUrl);
-    final replaceFlag = useReplaceRule ? 'replace_on' : 'replace_off';
-    return Directory(
-      '${root.path}${Platform.pathSeparator}reader${Platform.pathSeparator}$hashed${Platform.pathSeparator}$replaceFlag',
-    );
-  }
-
-  Future<File> _chapterFile(
-    String bookUrl,
-    int chapterIndex,
-    bool useReplaceRule,
-  ) async {
-    final dir = await _chapterDir(bookUrl, useReplaceRule);
-    return File(
-      '${dir.path}${Platform.pathSeparator}$chapterIndex.txt',
-    );
-  }
+  // -------------------------------------------------------------- 哈希
 
   String _fnv1a64(String input) {
     const offsetBasis = 0xcbf29ce484222325;

@@ -1,0 +1,84 @@
+name: Build Web
+
+# 出「网页版」客户端 —— 用来替换后端仓库里的 `src/main/resources/static/`。
+#
+# 【为什么需要自己出一份网页版】
+# 浏览器打开 `https://<你的后端>/` 时，后端把 `src/main/resources/static/`
+# 里的文件原样发出去，浏览器跑的就是那份**已经编译好的** `main.dart.js`。
+# 那份是官方编译产物：它的浏览历史 / 搜索历史只写浏览器本地的 IndexedDB，
+# 一个历史接口都不调，所以后端加多少接口都不会同步。
+# 想让它认识 `/getBrowsingHistory` 这些接口，只能**换掉那份 JS** —— 也就是
+# 用本仓库的源码 `flutter build web`，产物覆盖到后端的 static 目录。
+#
+# 【怎么部署（手动，三步）】
+#   1. 在 Actions 里跑本工作流，下载产物 `qread-web`（一个 zip）
+#   2. 解压后把里面的文件**整体覆盖**到后端仓库 `src/main/resources/static/`
+#      （先把旧的 main.dart.js / main.dart.js_N.part.js / assets 删干净，
+#       官方产物有分片文件，残留会和新的 index.html 对不上）
+#   3. 提交后端仓库 → 重新构建镜像并部署
+#
+# 【注意】这份产物会取代官方网页版的界面（包括它那颗「清理历史记录」），
+# 换来的是「浏览器端和安卓 / iOS / Windows 同账号同后端可以同步历史」。
+on:
+  workflow_dispatch:
+    inputs:
+      flutter_version:
+        description: 'Flutter 版本 (留空则用默认 3.41.9)'
+        required: false
+        default: '3.41.9'
+  push:
+    branches: [ main ]
+    paths:
+      - 'lib/**'
+      - 'web/**'
+      - 'pubspec.yaml'
+      - '.github/workflows/web.yml'
+
+jobs:
+  web:
+    name: Build web bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ github.event.inputs.flutter_version || '3.41.9' }}
+          channel: stable
+          cache: true
+
+      - name: Flutter / Dart 版本
+        run: |
+          flutter --version
+          dart --version
+
+      - name: flutter pub get
+        run: flutter pub get
+
+      # 【这一步是本工作流的主要目的之一】
+      # Web 编译对 `dart:io` 是**硬失败**：任何被引用到的文件只要 import 了
+      # dart:io，`flutter build web` 就会报
+      #   "Error: Dart library 'dart:io' is not available on this platform."
+      # 所以 analyze 不阻塞、但 build 必须过 —— 有平台相关的代码没走条件导入，
+      # 这里会直接红，比在浏览器里报运行时错误好定位得多。
+      - name: flutter analyze (不阻塞)
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
+
+      - name: flutter build web
+        run: flutter build web --release --base-href /
+
+      - name: 产物信息
+        run: |
+          du -sh build/web
+          ls -lh build/web | head -20
+
+      - name: Upload web bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: qread-web
+          path: build/web
+          if-no-files-found: error
