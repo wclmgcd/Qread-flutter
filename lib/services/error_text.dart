@@ -41,7 +41,20 @@ String friendlyError(Object error) {
         if (code == 404) return '接口不存在（HTTP 404），可能是服务器版本过旧';
         if (code >= 500) return '服务器内部错误（HTTP $code）';
         return '服务器返回异常（HTTP $code）';
-      case DioExceptionType.unknown:
+      // 【必须用 default 收口，不要列举到 unknown 为止】
+      // dio 每新增一个枚举值，写死全部 case 的 switch 就会因「不再穷尽」
+      // 直接编译失败 —— 5.11 新增 transformTimeout 时就是这样：
+      //
+      //   lib/services/error_text.dart:22:19: Error: The type 'DioExceptionType'
+      //   is not exhaustively matched by the switch cases since it doesn't
+      //   match 'DioExceptionType.transformTimeout'.
+      //
+      // 而 pubspec 写的是 `dio: ^5.7.0`，CI 会自动拉到范围内的最新版，
+      // 本地却可能停在旧版 —— 这种错只会在 CI 上出现。
+      // 同时也不能写死 `case DioExceptionType.transformTimeout`，
+      // 因为它在 5.7.0 里还不存在，写死会让旧版解析失败。
+      // 所以：unknown 以及以后新增的类型，统一走 default 落到下面的兜底。
+      default:
         break;
     }
     // unknown：多半是 SocketException / HandshakeException 这类被包了一层。

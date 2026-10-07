@@ -126,6 +126,11 @@ class TtsService extends ChangeNotifier {
         case PlayerState.disposed:
           _state = TtsState.stopped;
           break;
+        default:
+          // PlayerState 来自 audioplayers 依赖包：它新增状态时，全列举的
+          // switch 会因「不再穷尽」编译失败。未知状态一律当「已停止」。
+          _state = TtsState.stopped;
+          break;
       }
       notifyListeners();
     });

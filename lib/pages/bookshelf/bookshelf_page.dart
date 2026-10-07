@@ -411,6 +411,8 @@ class _BookshelfPageState extends State<BookshelfPage>
       return;
     }
     if (!mounted) return;
+    // 防连点：上一次还没跑完就直接返回（_busy 的声明处有说明）
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final resp = await ApiService.instance.saveBooks(token, content);
@@ -459,6 +461,8 @@ class _BookshelfPageState extends State<BookshelfPage>
     // 用户取消：静默返回，不打扰
     if (picked == null || !mounted) return;
 
+    // 防连点：上一次还没跑完就直接返回（_busy 的声明处有说明）
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final resp = await ApiService.instance.importBookPreview(
@@ -594,6 +598,8 @@ class _BookshelfPageState extends State<BookshelfPage>
     ctl.dispose();
     if (ok != true || url.isEmpty) return;
 
+    // 防连点：上一次还没跑完就直接返回（_busy 的声明处有说明）
+    if (_busy) return;
     setState(() => _busy = true);
     try {
       final resp = await ApiService.instance.urlSaveBook(token, url);
@@ -853,25 +859,6 @@ class _BookshelfPageState extends State<BookshelfPage>
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  void _showUnavailableDialog({
-    required String title,
-    required String message,
-  }) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('知道了'),
-          ),
-        ],
       ),
     );
   }

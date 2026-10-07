@@ -31,6 +31,10 @@ class ThemeProvider extends ChangeNotifier {
     if (_themeMode == mode) return;
     _themeMode = mode;
     final storage = await StorageService.instance;
+    // ThemeMode 是 Flutter SDK 的枚举，不由本仓库维护：SDK 一旦新增成员，
+    // 把当时已知值全列举、不写 default 的 switch 就会因「不再穷尽」直接
+    // 编译失败（dio 的 transformTimeout 就是这么炸的）。故此处用 default 收口，
+    // 未知/新增模式一律按 system 存 0。
     int raw;
     switch (mode) {
       case ThemeMode.light:
@@ -39,7 +43,7 @@ class ThemeProvider extends ChangeNotifier {
       case ThemeMode.dark:
         raw = 2;
         break;
-      case ThemeMode.system:
+      default:
         raw = 0;
         break;
     }
