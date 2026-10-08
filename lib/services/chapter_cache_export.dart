@@ -32,6 +32,9 @@ class ChapterCacheExport {
   ///
   /// 正文……
   /// ```
+  ///
+  /// 【段首缩进在这里统一】正文的缩进交给 [normalizeIndent] —— 同一本书的
+  /// 三份缓存变体缩进各不相同（0 / 2 / 4 个全角），导出的 txt 必须长一个样。
   static String buildBookSection({
     required String bookName,
     String? author,
@@ -55,8 +58,9 @@ class ChapterCacheExport {
       buffer
         ..writeln(chapterTitle(chapter))
         ..writeln()
-        // 只去尾部空白：段首的全角缩进（`\u3000\u3000`）要留着。
-        ..writeln(chapter.content.trimRight())
+        // 段首缩进统一成两个全角（见 [normalizeIndent]），再去掉正文自带的
+        // 尾换行 —— 不然会和下面那句 `writeln()` 叠出两行空行。
+        ..writeln(normalizeIndent(chapter.content).trimRight())
         ..writeln();
     }
     return buffer.toString();
@@ -72,6 +76,53 @@ class ChapterCacheExport {
   /// 多本书之间空两行，避免上一本的末尾和下一本的书名粘在一起。
   static String joinBookSections(Iterable<String> sections) =>
       sections.join('\n\n');
+
+  // -------------------------------------------------------------- 导出排版
+
+  /// 段落首行缩进 —— 两个全角空格 `\u3000\u3000`。
+  ///
+  /// 【为什么是它】中文小说的段首缩进就是这个。阅读器渲染时也自己补两个全角
+  /// （`PaginationEngine.defaultFirstLineIndent = 2`），导出和阅读观感一致。
+  static const String paragraphIndent = '\u3000\u3000';
+
+  /// 把正文的**段首缩进统一成** [paragraphIndent]。
+  ///
+  /// 【为什么导出前必须做这一步】同一本书的三份缓存变体，缩进是三个样：
+  ///   - `replace_off`（未净化）：源站正文自带缩进，**源头自己就不齐** ——
+  ///     实测《华娱情报王》第一章 89 行里 82 行是 4 个全角、7 行是 2 个；
+  ///   - `replace_on`（服务端净化）：服务端套规则前会
+  ///     `lines().joinToString("\n"){ it.trim() }`，缩进被吃光 → 0 个；
+  ///   - `replace_on_<指纹>`（本地净化）：客户端**不** trim（`ReplaceEngine.apply`
+  ///     的 `trimLines` 默认 false），保留源站的 4 / 2 个。
+  ///
+  /// 于是用户把「替换净化」一开一关，导出的 txt 就在 0 / 2 / 4 之间跳 ——
+  /// 这正是「有时空两格、有时不空、有时空 4 格」的根因。在这里一刀切齐。
+  ///
+  /// 【只动行首】
+  ///   - 空行、纯空白行（含「插图被 [ChapterMarkup.stripImages] 删掉之后只剩
+  ///     缩进」的那种行）保持**空**，不补缩进；
+  ///   - 行中、行尾的字符一个都不动（行中的全角空格是正文，不是缩进）；
+  ///   - 顺带把 `\r\n` 收敛成 `\n`。
+  ///
+  /// 一个 `trim()` 就够：Dart 的 `String.trim()` 把全角空格 `\u3000` 也算空白，
+  /// 半角、全角、制表、`\r` 一起管住（探针里有一条专门钉死这个前提）。
+  ///
+  /// 【只影响导出】阅读器不看正文里的缩进 —— `PaginationEngine` 会先
+  /// `line.replaceAll(_whitespace, ' ').trim()` 再自己补两个全角。
+  static String normalizeIndent(String text) {
+    if (text.isEmpty) return text;
+    final lines = text.split('\n');
+    final buffer = StringBuffer();
+    for (var i = 0; i < lines.length; i++) {
+      if (i > 0) buffer.write('\n');
+      final body = lines[i].trim();
+      if (body.isEmpty) continue; // 空行保持空
+      buffer
+        ..write(paragraphIndent)
+        ..write(body);
+    }
+    return buffer.toString();
+  }
 
   /// 人类可读的体积。
   ///

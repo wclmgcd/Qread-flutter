@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qread/services/chapter_cache_export.dart';
 import 'package:qread/services/export_delivery.dart';
+import 'package:qread/services/local_cache_service.dart';
 
 /// 「导出文件」这条链路的测试。
 ///
@@ -132,6 +133,117 @@ void main() {
       expect(ChapterCacheExport.formatBytes(10240), '10 KB');
       expect(ChapterCacheExport.formatBytes(1048576), '1.0 MB');
       expect(ChapterCacheExport.formatBytes(1073741824), '1.00 GB');
+    });
+  });
+
+  // 用户反馈原话：「还有一个排版，导出的 txt 有时是首行空两格，但净化或取消
+  // 净化后，有时是不空格，有时空 4 格，一起修复了」。
+  //
+  // 根因是三份缓存变体的缩进本来就不同：未净化那份是源站给的（实测 82 行 4 个
+  // 全角 + 7 行 2 个），服务端净化那份被 `it.trim()` 吃成 0 个，本地净化那份
+  // 又原样保留。这一组把「导出的 txt 段段都是两个全角」钉死。
+  group('normalizeIndent：导出的段首缩进统一成两个全角空格', () {
+    const indent = ChapterCacheExport.paragraphIndent;
+
+    test('paragraphIndent 就是两个全角空格', () {
+      expect(indent, '\u3000\u3000');
+      expect(indent.length, 2);
+    });
+
+    test('【核心】0 / 2 / 4 个全角 → 一律 2 个', () {
+      expect(ChapterCacheExport.normalizeIndent('第一段。'), '$indent第一段。');
+      expect(
+        ChapterCacheExport.normalizeIndent('$indent第一段。'),
+        '$indent第一段。',
+      );
+      expect(
+        ChapterCacheExport.normalizeIndent('\u3000\u3000\u3000\u3000第一段。'),
+        '$indent第一段。',
+      );
+    });
+
+    test('半角空格 / 制表符 / 混着来的缩进 → 一律 2 个全角', () {
+      expect(ChapterCacheExport.normalizeIndent('    第一段。'), '$indent第一段。');
+      expect(ChapterCacheExport.normalizeIndent('\t第一段。'), '$indent第一段。');
+      expect(
+        ChapterCacheExport.normalizeIndent('\u3000 \t\u3000第一段。'),
+        '$indent第一段。',
+      );
+    });
+
+    test('空行保持空 —— 不补缩进（否则会多出一堆「只有空白的行」）', () {
+      expect(
+        ChapterCacheExport.normalizeIndent('甲。\n\n乙。'),
+        '$indent甲。\n\n$indent乙。',
+      );
+      // 纯空白行：插图被 stripImages 删掉之后只剩缩进的那种行
+      expect(
+        ChapterCacheExport.normalizeIndent('甲。\n\u3000\u3000\u3000\u3000\n乙。'),
+        '$indent甲。\n\n$indent乙。',
+      );
+      expect(ChapterCacheExport.normalizeIndent('\u3000\u3000'), '');
+    });
+
+    test('行中 / 行尾：行中的全角是正文不能动，行尾空白要去掉', () {
+      expect(
+        ChapterCacheExport.normalizeIndent('$indent甲\u3000乙'),
+        '$indent甲\u3000乙',
+      );
+      expect(ChapterCacheExport.normalizeIndent('$indent甲。  '), '$indent甲。');
+    });
+
+    test('CRLF 收敛成 LF（服务端返回的正文带 \\r）', () {
+      expect(
+        ChapterCacheExport.normalizeIndent('甲。\r\n乙。'),
+        '$indent甲。\n$indent乙。',
+      );
+    });
+
+    test('空串 / 纯换行不抛异常', () {
+      expect(ChapterCacheExport.normalizeIndent(''), '');
+      expect(ChapterCacheExport.normalizeIndent('\n'), '\n');
+    });
+
+    test('【前提】Dart 的 String.trim() 认全角空格 —— 不认的话上面全挂', () {
+      expect('\u3000\u3000'.trim(), isEmpty);
+      expect('\u3000\u3000\u3000\u3000'.trim(), isEmpty);
+    });
+
+    test('【端到端】同一份 txt 里三章缩进完全一致', () {
+      final section = ChapterCacheExport.buildBookSection(
+        bookName: '华娱情报王',
+        chapters: const [
+          // 服务端净化过的那一份：缩进被 trim 光了
+          CachedChapter(index: 0, title: '第一章', content: '甲。\n乙。'),
+          // 源站本来就带 2 个全角
+          CachedChapter(index: 1, title: '第二章', content: '$indent丙。'),
+          // 未净化的那一份：源站给的 4 个全角
+          CachedChapter(
+            index: 2,
+            title: '第三章',
+            content: '\u3000\u3000\u3000\u3000丁。',
+          ),
+        ],
+        exportedAt: '2026-10-08 16:00',
+      );
+      expect(section, contains('$indent甲。\n$indent乙。'));
+      expect(section, contains('$indent丙。'));
+      expect(section, contains('$indent丁。'));
+      expect(section, isNot(contains('\u3000\u3000\u3000\u3000')));
+      expect(section, isNot(contains('\n甲。')), reason: '不能有没有缩进的正文行');
+      expect(section, isNot(contains('\n丙。')));
+    });
+
+    test('【不叠空行】正文自带的尾换行不会和 writeln 叠成两行空行', () {
+      final section = ChapterCacheExport.buildBookSection(
+        bookName: '书',
+        chapters: const [
+          CachedChapter(index: 0, title: '第一章', content: '甲。\n'),
+        ],
+        exportedAt: '2026-10-08 16:00',
+      );
+      expect(section.endsWith('$indent甲。\n\n'), isTrue, reason: section);
+      expect(section.endsWith('\n\n\n'), isFalse);
     });
   });
 }
