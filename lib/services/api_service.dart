@@ -12,6 +12,7 @@ import '../models/replace_rule.dart';
 import '../models/tts_engine.dart';
 // /getCookies、/saveCookies 的 cookie 载荷是 AES/CBC 加密的 hex（上游如此）
 import 'aes_codec.dart';
+import 'image_decode_url.dart';
 
 class ApiService {
   static ApiService? _instance;
@@ -1757,38 +1758,9 @@ class ApiService {
 
   // ============ 正文插图（官方 /imageDecode） ============
 
-  /// 拆分书源给的图片 src。
-  ///
-  /// 书源约定：`<img src="URL,{json}">` —— 逗号前是真实地址，逗号后的 json
-  /// 里可能有 `headers`。官方客户端在 main.dart.js 的 `b2W` 里做的就是这件事：
-  /// 含 `,`+`{`+`}` 才拆，拆失败就原样返回。
-  ///
-  /// `baseurl` 是书源的占位符，要换成 `<站点>/api/5`
-  /// （官方用 `origin + "/api/5"`，等价于 [AppConstants.apiBase]）。
-  static ({String url, Map<String, String> headers}) splitImageSrc(String src) {
-    var raw = src.trim();
-    if (raw.contains('baseurl')) {
-      raw = raw.replaceAll('baseurl', AppConstants.apiBase);
-    }
-    if (!raw.contains(',') || !raw.contains('{') || !raw.contains('}')) {
-      return (url: raw, headers: const <String, String>{});
-    }
-    try {
-      final comma = raw.indexOf(',');
-      final url = raw.substring(0, comma).trim();
-      final decoded = jsonDecode(raw.substring(comma + 1));
-      final headers = <String, String>{};
-      if (decoded is Map && decoded['headers'] is Map) {
-        (decoded['headers'] as Map).forEach((k, v) {
-          headers['$k'] = '$v';
-        });
-      }
-      if (url.isEmpty) return (url: raw, headers: const <String, String>{});
-      return (url: url, headers: headers);
-    } catch (_) {
-      return (url: raw, headers: const <String, String>{});
-    }
-  }
+  /// 拆分书源给的图片 src（实现见 [ImageDecodeUrl.splitSrc]）。
+  static ({String url, Map<String, String> headers}) splitImageSrc(String src) =>
+      ImageDecodeUrl.splitSrc(src);
 
   /// 正文插图的完整地址 —— 官方 `/imageDecode`。
   ///
@@ -1797,31 +1769,29 @@ class ApiService {
   /// 用书源的 `ruleContent.imageDecode` 规则解密后才是一张正常的图；
   /// 直接转发拿到的是乱码 —— 表现就是「书源里有图，App 里一张都没有」。
   ///
-  /// 参数与官方完全一致：`url` / `bookSourceUrl` / `header` / `book`
-  /// （见官方 main.dart.js 的 `b2U`）。
+  /// 参数与官方完全一致：`accessToken` / `url` / `bookSourceUrl` /
+  /// `header` / `book`（见官方 main.dart.js 的 `b2U`）。
+  ///
+  /// 【为什么 book 传 Map 而不是现成的 json 串】
+  /// 我们走 GET，参数全在请求行上，而后端 smart-http 的请求行有长度上限
+  /// （实测 6.3K 还行、8.3K 就 `readBuffer overflow` → 500）。
+  /// 整条 `Book.toJson()` 里的 `intro` / `coverUrl` / `data:` 形态的
+  /// `bookUrl` 动辄几 KB，会直接把请求撑爆。所以要交给
+  /// [ImageDecodeUrl.build] 按需裁剪（详见那边的注释）。
   String imageDecodeUrl(
     String src, {
     required String accessToken,
     String? bookSourceUrl,
-    String? bookJson,
+    Map<String, dynamic>? book,
   }) {
-    final (url: url, headers: headers) = splitImageSrc(src);
-    if (url.isEmpty) return '';
-    final params = <String, String>{
-      'accessToken': accessToken,
-      'url': url,
-      'bookSourceUrl': bookSourceUrl ?? '',
-      'header': jsonEncode(headers),
-    };
-    if (bookJson != null && bookJson.isNotEmpty) {
-      params['book'] = bookJson;
-    }
-    return '${AppConstants.apiBase}/imageDecode?${_encodeParams(params)}';
+    return ImageDecodeUrl.build(
+      src: src,
+      accessToken: accessToken,
+      bookSourceUrl: bookSourceUrl,
+      book: book,
+    );
   }
 
-  String _encodeParams(Map<String, String> params) {
-    return params.entries
-        .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')
-        .join('&');
-  }
+  String _encodeParams(Map<String, String> params) =>
+      ImageDecodeUrl.encodeParams(params);
 }

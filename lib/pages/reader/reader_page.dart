@@ -1969,6 +1969,10 @@ class _ReaderPageState extends State<ReaderPage> {
   ///
   /// 需要 token / 书源 / 书本信息，只有阅读页拿得到，所以放在这里注入给
   /// 分页渲染器（PagedReader / ScrollReader）。
+  ///
+  /// 【book 传 Map，不传 json 串】我们走 GET，参数全在请求行上，后端
+  /// smart-http 的请求行有长度上限（实测 8.3K 就 500 readBuffer overflow）。
+  /// 交给 [ImageDecodeUrl.build] 按需裁剪，别在这里先序列化成一大坨。
   String _buildImageUrl(String src) {
     final token = _token;
     if (token == null || token.isEmpty) return src;
@@ -1977,7 +1981,7 @@ class _ReaderPageState extends State<ReaderPage> {
       src,
       accessToken: token,
       bookSourceUrl: book?.origin ?? book?.originName,
-      bookJson: book == null ? null : jsonEncode(book.toJson()),
+      book: book?.toJson(),
     );
   }
 
