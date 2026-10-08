@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
+import '../../../services/chapter_markup.dart';
 import 'models.dart';
 
 /// 行级分页引擎 v6
@@ -590,20 +591,18 @@ class PaginationEngine {
   ///
   /// 书源把段评气泡内联进正文，json 里带 click（要回传后端执行的 JS）。
   /// 注意这个 src 里含未转义的引号，所以不能按标准 HTML 解析。
-  static final RegExp _dpMarker = RegExp(
-    r'data:image/svg\+xml;base64,([A-Za-z0-9+/=]+),(\{[^}]*\})',
-    caseSensitive: false,
-  );
+  ///
+  /// 【正则本体不在这里】缓存层（`ChapterMarkup.compact` 会把段评摘进
+  /// sidecar）和导出层都要认同一套标记，所以统一放在
+  /// `services/chapter_markup.dart`，这里只做引用。
+  static final RegExp _dpMarker = ChapterMarkup.marker;
 
   /// 段评标记**连同外层 `<img ...>` 包装**的整块匹配。
   ///
   /// 只给 [needsHtmlRenderer] 用：判断「是不是图片流」时必须把段评整块
   /// 摘掉，否则 base64 SVG 的字符量和 `<img>` 计数会把正常小说正文
   /// 误判成图集（详见 needsHtmlRenderer 的注释）。
-  static final RegExp _dpWholeTag = RegExp(
-    r'<img\b[^>]*?data:image/svg\+xml;base64,[A-Za-z0-9+/=]+,\{[^}]*\}[^>]*>',
-    caseSensitive: false,
-  );
+  static final RegExp _dpWholeTag = ChapterMarkup.wholeTag;
 
   /// 段评占位符（私用区字符，正文里不会出现）
   static const String _dpStart = '\uE000';
@@ -627,8 +626,9 @@ class PaginationEngine {
   ///
   /// 【公开】HTML 渲染路径（reader_page 的 `_proxyImages`）也要用同一个模式，
   /// 两边必须一致，否则同一条正文在「分页」和「HTML」两条路上表现不同。
-  static final RegExp anyImgTag =
-      RegExp(r'<img\b[^>]*>', caseSensitive: false);
+  ///
+  /// 【正则本体同样在 ChapterMarkup】见 [_dpMarker] 的注释。
+  static final RegExp anyImgTag = ChapterMarkup.anyImgTag;
 
   /// src 的两种取法（复刻官方 main.dart.js 的 `cto`）。
   ///

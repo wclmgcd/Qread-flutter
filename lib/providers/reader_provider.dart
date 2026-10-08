@@ -30,14 +30,28 @@ enum _ReplaceRoute {
 }
 
 class ReaderProvider extends ChangeNotifier {
+  ReaderProvider() {
+    // 「替换净化」规则在别处改了（设置页改规则 / 另一台设备同步下来）→
+    // 本进程里缓存下来的正文必须作废。见 [_onReplaceRulesChanged]。
+    ReplaceRuleStore.instance.addListener(_onReplaceRulesChanged);
+  }
+
+  @override
+  void dispose() {
+    ReplaceRuleStore.instance.removeListener(_onReplaceRulesChanged);
+    super.dispose();
+  }
+
   Book? _book;
   List<Chapter> _chapters = [];
   Set<int> _readChapters = {};
   bool _loadingChapters = false;
   String? _error;
 
-  // Prefetch cache: chapterIndex -> content text
-  final Map<int, String> _prefetchCache = {};
+  /// 预取缓存：chapterIndex -> (正文, 取它时的净化版本)。
+  ///
+  /// 【为什么值里要带版本号】见 [_prefetchEpoch]。
+  final Map<int, _PrefetchedChapter> _prefetchCache = {};
 
   /// 净化是否生效：**书级开关和全局开关都要开着**。
   ///
@@ -71,6 +85,52 @@ class ReaderProvider extends ChangeNotifier {
   String? get _cacheRuleFingerprint => _replaceRoute == _ReplaceRoute.local
       ? ReplaceRuleStore.instance.fingerprint
       : null;
+
+  /// 内存里那份正文是**哪个净化版本**下取出来的。
+  ///
+  /// 【为什么必须有它】`_prefetchCache` 挂在 `ReaderProvider` 上，而它是
+  /// App 根部的单例（`main.dart` 的 `ChangeNotifierProvider`）—— **跨阅读页
+  /// 存活**。键又只有 `chapterIndex`，不带净化开关、不带规则版本。于是：
+  ///   1. 用户读到第 5 章 → 这一章进了 `_prefetchCache`；
+  ///   2. 去「我的 → 替换净化」改了规则；
+  ///   3. 回到阅读页 —— `getChapterContent(5)` 直接命中第 1 步那份旧正文，
+  ///      **正文一点没变**，用户只能手动点顶栏那个「刷新」。
+  /// 带上版本号之后，第 3 步会当成缓存未命中，自然去读磁盘/回源。
+  ///
+  /// 版本号 = 本次净化归属（`none` / `server` / `local`，它已经把「净化总开关」
+  /// 和「执行端」都编码进去了）+ 本地规则副本的修订号（内容一变就 +1）。
+  /// 服务端净化时客户端看不见服务端的规则版本，只能拿本地副本的修订号当代理
+  /// —— 至少本机改规则能立刻感知到。
+  String get _prefetchEpoch =>
+      '${_replaceRoute.name}:${ReplaceRuleStore.instance.revision}';
+
+  /// 取预取正文；版本对不上就当作没命中（顺手把过期那条扔掉）。
+  _PrefetchedChapter? _takePrefetched(int chapterIndex) {
+    final hit = _prefetchCache[chapterIndex];
+    if (hit == null) return null;
+    if (hit.epoch != _prefetchEpoch) {
+      _prefetchCache.remove(chapterIndex);
+      return null;
+    }
+    return hit;
+  }
+
+  /// 「替换净化」规则变了 —— 见 [ReplaceRuleStore] 的类注释。
+  ///
+  /// 【为什么在 Provider 这一层也要听】阅读页可能压根没开着（用户从阅读页
+  /// 退出去改规则，再重新进书）。而 `_prefetchCache` 是进程级的、活过了那次
+  /// 退出，所以必须由 Provider 自己作废，不能只指望页面。
+  void _onReplaceRulesChanged() {
+    _prefetchCache.clear();
+
+    // 磁盘上那份：本地净化靠目录名里的规则指纹天然失效（规则一变目录名就变），
+    // 不用管；**服务端净化的目录名是固定的 `replace_on`**，规则一改，盘上那份
+    // 就永远是旧正文了 —— 只能显式清掉，否则用户重进阅读页读到的还是旧的。
+    final bookUrl = _book?.bookUrl;
+    if (bookUrl == null || bookUrl.isEmpty) return;
+    if (_replaceRoute != _ReplaceRoute.server) return;
+    unawaited(LocalCacheService.instance.clearBookChapterCache(bookUrl));
+  }
 
   Book? get book => _book;
   List<Chapter> get chapters => _chapters;
@@ -163,13 +223,13 @@ class ReaderProvider extends ChangeNotifier {
       return '';
     }
 
-    if (_prefetchCache.containsKey(chapterIndex)) {
-      return _prefetchCache[chapterIndex]!;
-    }
+    final prefetched = _takePrefetched(chapterIndex);
+    if (prefetched != null) return prefetched.text;
 
     final cachedContent = await _readCachedChapterContent(chapterIndex);
     if (cachedContent != null) {
-      _prefetchCache[chapterIndex] = cachedContent;
+      _prefetchCache[chapterIndex] =
+          _PrefetchedChapter(text: cachedContent, epoch: _prefetchEpoch);
       return cachedContent;
     }
 
@@ -189,7 +249,8 @@ class ReaderProvider extends ChangeNotifier {
     final text = route == _ReplaceRoute.local
         ? _purifyLocally(raw, forTitle: false)
         : raw;
-    _prefetchCache[chapterIndex] = text;
+    _prefetchCache[chapterIndex] =
+        _PrefetchedChapter(text: text, epoch: _prefetchEpoch);
     await _writeCachedChapterContent(chapterIndex, text);
     return text;
   }
@@ -241,7 +302,9 @@ class ReaderProvider extends ChangeNotifier {
     if (store.syncedThisSession) return;
     try {
       final rules = await ApiService.instance.fetchAllReplaceRules(accessToken);
-      await store.save(rules);
+      // notify: false —— 这是「第一次把规则拉下来」，发生在取正文之前，
+      // 正文本来就会用新规则；发通知只会在开书流程中间插一次重排。
+      await store.save(rules, notify: false);
     } catch (_) {
       // 拉失败就不置位，下次开书还会重试。
     }
@@ -314,7 +377,7 @@ class ReaderProvider extends ChangeNotifier {
     final lastIndex = (centerIndex + nextCount).clamp(0, _chapters.length - 1);
     for (var index = startIndex; index <= lastIndex; index++) {
       keepIndices.add(index);
-      if (!_prefetchCache.containsKey(index)) {
+      if (_takePrefetched(index) == null) {
         try {
           await getChapterContent(accessToken, index);
         } catch (_) {}
@@ -329,31 +392,42 @@ class ReaderProvider extends ChangeNotifier {
     _prefetchCache.clear();
   }
 
-  /// 「替换净化」规则变了（用户在阅读页点了「过滤」）—— 本地缓存的正文必须作废。
+  /// 「替换净化」规则变了 —— 本地缓存的正文必须作废。
   ///
-  /// 【为什么需要这个】
-  /// `getChapterContent` 是「命中缓存就直接返回，不再请求后端」，而缓存目录
-  /// 只按 `replace_on` / `replace_off` 分，**不带规则版本**。于是：
-  ///   1. 用户读到第 300 章 → 这一章按「当时的规则」缓存了下来；
-  ///   2. 用户长按选字 →「过滤」→ 规则写进服务端；
-  ///   3. 界面读的还是第 1 步那份缓存 → **正文毫无变化**。
-  /// 用户看到的就是「过滤不起效」，其实规则早就生效了，只是客户端没重新取。
+  /// 【为什么需要这个】`getChapterContent` 是「命中缓存就直接返回，不再请求
+  /// 后端」。规则一变，缓存里那份就是旧规则下算出来的正文，用户看到的就是
+  /// 「过滤不起效」，其实规则早就生效了，只是客户端没重新取。
   ///
-  /// 【为什么还要传 accessToken 重新拉一次规则】
-  /// 本地净化引擎用的是 [ReplaceRuleStore] 里那份**本地副本** —— 刚写进服务端
-  /// 的新规则不在里面。不刷这一下，本地引擎就会拿旧规则去净化，
-  /// 又变回「规则写进去了但正文没变」。传 null 就跳过（调用方拿不到 token 时）。
+  /// 【两条路要清的东西不一样】
+  ///   - **本地净化**：目录名里带了规则指纹（`replace_on_<指纹>`），规则一变
+  ///     目录名就变、旧缓存天然用不上，磁盘那份其实不用清。真正卡住的是
+  ///     `_prefetchCache` —— 它跨阅读页存活，必须清掉。
+  ///   - **服务端净化**：目录名是固定的 `replace_on`（规则版本在服务端，
+  ///     客户端看不见），磁盘那份会**永远命中旧正文**，必须显式清。
+  ///
+  /// 【为什么还要传 accessToken 重新拉一次规则】本地净化引擎用的是
+  /// [ReplaceRuleStore] 里那份**本地副本** —— 刚写进服务端的新规则不在里面。
+  /// 不刷这一下，本地引擎就会拿旧规则去净化，又变回「规则写进去了但正文没变」。
+  ///
+  /// [refreshRules] 传 false 就跳过这次拉取。**从 [ReplaceRuleStore] 的通知里
+  /// 进来的调用必须传 false**：那条路本身就是「规则已经变了」触发的，
+  /// 再回头拉一次会把本地停用过的规则**重新启用**、指纹再变、再发通知，
+  /// 绕成死循环。
   Future<void> invalidateChapterCacheAfterReplaceRuleChange({
     String? accessToken,
+    bool refreshRules = true,
   }) async {
     _prefetchCache.clear();
-    if (accessToken != null &&
+    if (refreshRules &&
+        accessToken != null &&
         accessToken.isNotEmpty &&
         AppSettings.instance.replaceEngine == ReplaceEngineMode.local) {
       try {
         final rules =
             await ApiService.instance.fetchAllReplaceRules(accessToken);
-        await ReplaceRuleStore.instance.save(rules);
+        // notify: false —— 这次 save 是「把服务端的真相同步到本地副本」，
+        // 不是用户在改规则，不该再触发一轮重排。
+        await ReplaceRuleStore.instance.save(rules, notify: false);
       } catch (_) {
         // 拉不到就用旧的本地副本，至少不比刷新前更差。
       }
@@ -461,4 +535,14 @@ class ReaderProvider extends ChangeNotifier {
       ruleFingerprint: _cacheRuleFingerprint,
     );
   }
+}
+
+/// 一条预取正文 + 它是哪个净化版本下取出来的。
+///
+/// 版本对不上就当作没命中（见 `ReaderProvider._prefetchEpoch`）。
+class _PrefetchedChapter {
+  const _PrefetchedChapter({required this.text, required this.epoch});
+
+  final String text;
+  final String epoch;
 }

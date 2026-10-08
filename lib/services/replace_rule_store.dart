@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:crypto/crypto.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/replace_rule.dart';
@@ -25,7 +26,14 @@ import '../models/replace_rule.dart';
 /// 官方把**按书过滤后**的规则连同全局 md5 一起缓存。我们简化成「缓存全量规则
 /// + 一个全局指纹」—— 过滤是纯函数（[ReplaceRule.matchesScope]），每次现算
 /// 比维护 N 份按书副本更不容易出错，代价只是内存里多存一份规则表。
-class ReplaceRuleStore {
+///
+/// 【为什么是个 ChangeNotifier】
+/// 规则改掉之后，**已经在跑的阅读页**必须知道。以前没有任何通知渠道：
+/// 用户在「我的 → 替换净化」改完规则回到阅读页，页面上挂着的排版缓存
+/// （`ReaderState.layoutCache` / 预排版结果）和 `ReaderProvider._prefetchCache`
+/// 都还是旧规则下算出来的，正文一点不变 —— 只能手动点阅读页顶栏那个「刷新」。
+/// 现在规则一变就 [notifyListeners]，阅读页监听后自己重排。
+class ReplaceRuleStore extends ChangeNotifier {
   ReplaceRuleStore._();
 
   static final ReplaceRuleStore instance = ReplaceRuleStore._();
@@ -37,6 +45,7 @@ class ReplaceRuleStore {
   String _fingerprint = '';
   bool _loaded = false;
   bool _syncedThisSession = false;
+  int _revision = 0;
 
   List<ReplaceRule> get rules => _rules;
 
@@ -69,6 +78,14 @@ class ReplaceRuleStore {
   /// 2. 判断本地副本是不是还和内存里的那份一致。
   String get fingerprint => _fingerprint;
 
+  /// 规则集的修订号：**内容变了就 +1**（指纹没变则不动）。
+  ///
+  /// 【和 fingerprint 的区别】指纹是内容摘要，会落盘、会当目录名；修订号只是
+  /// 一个进程内的计数器，用来给「内存里的派生数据」（预取正文等）当版本号。
+  /// 服务端净化那条路客户端看不见服务端的规则版本，只能拿本地副本的修订号
+  /// 当代理 —— 至少本机改规则能立刻感知到。
+  int get revision => _revision;
+
   /// 从本地读回规则副本。重复调用只真正读一次（`force` 可强制重读）。
   Future<void> load({bool force = false}) async {
     if (_loaded && !force) return;
@@ -84,11 +101,19 @@ class ReplaceRuleStore {
   }
 
   /// 用服务端最新的一份覆盖本地副本。
-  Future<void> save(List<ReplaceRule> rules) async {
+  ///
+  /// [notify] 为 false 时只更新数据、不发通知。只有两种调用方需要它：
+  ///   - `ReaderProvider._ensureLocalRules` —— 开书时第一次把规则拉下来，
+  ///     发生在取正文之前，正文本来就会用新规则，没有页面需要重排；
+  ///   - `ReaderProvider.invalidateChapterCacheAfterReplaceRuleChange` ——
+  ///     那是「规则刚变」的后续动作，再发通知会和 [notifyListeners] 绕成环。
+  Future<void> save(List<ReplaceRule> rules, {bool notify = true}) async {
+    final previous = _fingerprint;
     _rules = List<ReplaceRule>.unmodifiable(rules);
     _fingerprint = _computeFingerprint(_rules);
     _loaded = true;
     _syncedThisSession = true;
+    if (_fingerprint != previous) _revision++;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
@@ -99,6 +124,9 @@ class ReplaceRuleStore {
     } catch (_) {
       // 本地副本只是加速器，写失败不影响本次净化（内存里那份已经更新了）。
     }
+    // 【只在内容真的变了才通知】规则管理页每次加载都会 `save` 一遍（内容通常
+    // 一模一样）。不加这道判断，用户每进一次「替换净化」列表，阅读页都会白重排。
+    if (notify && _fingerprint != previous) notifyListeners();
   }
 
   /// 把「执行超时」的规则在**本地副本**里禁用掉。
@@ -111,6 +139,11 @@ class ReplaceRuleStore {
   /// 而这是「读正文」这条路径 —— 在用户只是想看小说的时候顺手改掉他云端的
   /// 规则配置，太激进了。所以只在本机停用，下次用户在规则管理页主动刷新时，
   /// 会回到服务端的真实状态（那时候也能看到是谁被停用了）。
+  ///
+  /// 【为什么不发通知】这个方法是**读正文的过程中**被调到的（`_purifyLocally`
+  /// 发现某条规则超时）。发通知会让阅读页立刻重排、重排又跑一遍净化 —— 而
+  /// 重排走的是「重新拉服务端规则」那条路，拉回来又会把刚停用的规则**重新
+  /// 启用**，指纹再变、再通知，绕成死循环。所以这里只更新数据和修订号。
   Future<void> disableLocally(Iterable<String> ids) async {
     final targets = ids.where((id) => id.isNotEmpty).toSet();
     if (targets.isEmpty) return;
@@ -127,6 +160,7 @@ class ReplaceRuleStore {
     if (!changed) return;
     _rules = List<ReplaceRule>.unmodifiable(next);
     _fingerprint = _computeFingerprint(_rules);
+    _revision++;
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(

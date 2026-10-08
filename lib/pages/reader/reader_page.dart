@@ -23,6 +23,7 @@ import '../../services/app_settings.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
+import '../../services/replace_rule_store.dart';
 import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
 import 'engine/engine.dart';
@@ -147,6 +148,10 @@ class _ReaderPageState extends State<ReaderPage> {
     _loadSettings();
     _comicScrollController.addListener(_onComicScroll);
     _tts.addListener(_onTtsStateChanged);
+    // 「替换净化」规则在别处改了（设置页改规则 / 换执行端 / 切净化总开关）
+    // → 本页的排版缓存必须作废重排，否则用户改完规则回来看到的还是旧正文，
+    // 只能手动点顶栏那个「刷新」。见 [_onReplaceRulesChanged]。
+    ReplaceRuleStore.instance.addListener(_onReplaceRulesChanged);
     _startMetaTicker();
     _listenBackendPush();
     WidgetsBinding.instance.addPostFrameCallback((_) => _initBook());
@@ -180,6 +185,7 @@ class _ReaderPageState extends State<ReaderPage> {
 
   @override
   void dispose() {
+    ReplaceRuleStore.instance.removeListener(_onReplaceRulesChanged);
     _readerProvider?.removeListener(_onProviderChanged);
     _metaTimer?.cancel();
     _autoPageTimer?.cancel();
@@ -658,6 +664,47 @@ class _ReaderPageState extends State<ReaderPage> {
   // 章节加载
   // ============================================================
 
+  /// 「替换净化」规则在**别处**变了（设置页改规则 / 换执行端 / 切总开关）。
+  ///
+  /// 【为什么页面这一层也要听】`ReaderProvider` 那边清的是它自己的预取缓存和
+  /// 磁盘缓存；而**排版缓存**（`ReaderState.layoutCache` + 预排版结果）挂在
+  /// 页面自己身上，Provider 够不着。不重排的话，用户改完规则回来，正文段落
+  /// 还是旧规则切出来的 —— 表现就是「改了没生效，得点一下刷新」。
+  ///
+  /// 【为什么不能直接复用 [_onReplaceRuleChanged]】那个方法会**回头再拉一次
+  /// 服务端规则**。可这条路径本身就是「规则刚变」触发的，拉回来会把本地因超时
+  /// 停用过的规则重新启用 → 指纹再变 → 再发通知 → 死循环。
+  /// 所以这里走 [refreshRules] = false 的轻量分支。
+  void _onReplaceRulesChanged() {
+    if (!mounted) return;
+    _invalidateLayoutCaches();
+    setState(() {});
+    unawaited(_refreshChapterForRuleChange());
+  }
+
+  /// 规则变了之后重取当前章（**不再回头拉规则**，理由见 [_onReplaceRulesChanged]）。
+  Future<void> _refreshChapterForRuleChange() async {
+    final provider = _readerProvider;
+    if (provider == null || !mounted || _token == null) return;
+    await provider.invalidateChapterCacheAfterReplaceRuleChange(
+      refreshRules: false,
+    );
+    if (!mounted) return;
+    await _openChapter(
+      _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0),
+      chapterPosition: _state.chapterPosition,
+    );
+  }
+
+  /// 把「按当前规则算出来的」排版结果全部作废。
+  void _invalidateLayoutCaches() {
+    _state.layoutCache.clear();
+    _state.prefetchedNextLayout = null;
+    _state.prefetchedNextChapterIndex = -1;
+    _state.prefetchedPrevLayout = null;
+    _state.prefetchedPrevChapterIndex = -1;
+  }
+
   /// 「过滤」写入规则后调用：作废本地章节缓存，再重取当前章。
   ///
   /// 【为什么必须这么做】
@@ -679,11 +726,7 @@ class _ReaderPageState extends State<ReaderPage> {
     );
     if (!mounted) return;
     // 预排版缓存里同样是「旧规则下」的正文，一并作废
-    _state.layoutCache.clear();
-    _state.prefetchedNextLayout = null;
-    _state.prefetchedNextChapterIndex = -1;
-    _state.prefetchedPrevLayout = null;
-    _state.prefetchedPrevChapterIndex = -1;
+    _invalidateLayoutCaches();
     setState(() {});
     await _openChapter(
       _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0),

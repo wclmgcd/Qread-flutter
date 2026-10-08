@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 
 import 'cache_store.dart';
+import 'chapter_markup.dart';
 
 /// 本地缓存（JSON 片段 + 章节正文）。
 ///
@@ -109,7 +110,25 @@ class LocalCacheService {
     String? chapterTitle,
   }) async {
     final dir = _chapterDir(bookUrl, useReplaceRule, ruleFingerprint);
-    await _store.writeText('$dir/$chapterIndex.txt', content);
+    final commentPath = '$dir/$chapterIndex$_kCommentSuffix';
+
+    // 【为什么落盘前要把段评摘出去】见 `ChapterMarkup` 的注释：段评标记是
+    // 内联在正文里的 base64 SVG（单章上百个、几十 KB 乱码），留在缓存里
+    // 既让人读不了，导出成 txt 之后也没法看。摘出来单独放 `.cmt`，
+    // 阅读器读的时候再原样合回去（[readChapterContent]），
+    // 导出只读 `.txt`，两边都拿到自己想要的形态。
+    final compacted = ChapterMarkup.compact(content);
+    await _store.writeText('$dir/$chapterIndex.txt', compacted.text);
+
+    if (compacted.sidecar.isEmpty) {
+      // 这一章没有段评（绝大多数章节都是）—— 顺手清掉可能残留的旧 sidecar。
+      // 不清的话，源站更新正文后旧段评会留在盘上白占体积；`expand` 里那道
+      // 哈希守卫能挡住插错，但没必要留垃圾。
+      await _store.deleteTree(commentPath);
+    } else {
+      await _store.writeText(commentPath, compacted.sidecar);
+    }
+
     // 章节标题单独存一个 `.title` 小文件。
     //
     // 【为什么不塞进 meta.json】那样每写一章都要「读整个 JSON → 改 → 写回」，
@@ -124,15 +143,27 @@ class LocalCacheService {
     }
   }
 
+  /// 读回一章正文。
+  ///
+  /// 【为什么这里要把段评合回去】磁盘上存的是「干净正文 + `.cmt` sidecar」，
+  /// 而分页引擎（`PaginationEngine._extractParagraphs`）认的是**带标记的原始
+  /// 正文** —— 它要靠标记生成段评气泡。合回去之后，走缓存和走网络拿到的
+  /// 字符串完全一致，引擎一行都不用改。
+  ///
+  /// 注意导出走的是 [readChapterCacheVariant]（只读 `.txt`），所以那边天然
+  /// 只有文字、没有标记 —— 这正是用户要的。
   Future<String?> readChapterContent({
     required String bookUrl,
     required int chapterIndex,
     required bool useReplaceRule,
     String? ruleFingerprint,
-  }) {
-    return _store.readText(
-      '${_chapterDir(bookUrl, useReplaceRule, ruleFingerprint)}/$chapterIndex.txt',
-    );
+  }) async {
+    final dir = _chapterDir(bookUrl, useReplaceRule, ruleFingerprint);
+    final text = await _store.readText('$dir/$chapterIndex.txt');
+    if (text == null) return null;
+    final sidecar = await _store.readText('$dir/$chapterIndex$_kCommentSuffix');
+    if (sidecar == null || sidecar.isEmpty) return text;
+    return ChapterMarkup.expand(text, sidecar);
   }
 
   Future<void> pruneChapterCache({
@@ -149,13 +180,22 @@ class LocalCacheService {
     }
   }
 
-  /// 从缓存文件名里取章节号：`3.txt` → 3、`3.title` → 3、其它 → null。
+  /// 段评 sidecar 的后缀：`<章节号>.cmt`。
+  ///
+  /// 【必须让 `_chapterIndexOf` 认得它】`pruneChapterCache` 是按文件名解析出
+  /// 章节号再决定删不删的；认不出来的文件会被 `continue` 跳过、**永远不删**。
+  /// 那样每章都会在盘上留一个孤儿 sidecar，越攒越多。
+  static const String _kCommentSuffix = '.cmt';
+
+  /// 从缓存文件名里取章节号：
+  /// `3.txt` → 3、`3.title` → 3、`3.cmt` → 3、其它 → null。
   static int? _chapterIndexOf(String fileName) {
-    if (fileName.endsWith('.txt')) {
-      return int.tryParse(fileName.substring(0, fileName.length - 4));
-    }
-    if (fileName.endsWith('.title')) {
-      return int.tryParse(fileName.substring(0, fileName.length - 6));
+    for (final suffix in const ['.txt', '.title', _kCommentSuffix]) {
+      if (fileName.endsWith(suffix)) {
+        return int.tryParse(
+          fileName.substring(0, fileName.length - suffix.length),
+        );
+      }
     }
     return null;
   }

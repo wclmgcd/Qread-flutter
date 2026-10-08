@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../models/replace_rule.dart';
+import 'chapter_markup.dart';
 import 'local_cache_service.dart';
 import 'replace_engine.dart';
 
@@ -163,6 +164,11 @@ class ChapterCacheExport {
   /// [ReplaceEngine]。像「`。` → `。\n`」这种规则跑两遍会凭空多出一倍
   /// 空行 —— 探针里有一条专门钉死这件事。
   ///
+  /// 【最后一步会把 `<img>` 全删掉】段评标记在缓存层就已经拆进 `.cmt`
+  /// sidecar 了（见 `ChapterMarkup`），这里再补一刀是清掉**正文真插图**的
+  /// `<img src="https://...webp,{...}">` —— 导出的是一份给人读的 txt，
+  /// 图片地址（还挂着一段 JSON）留在里面只是噪声。用户的原话是「只留下文字」。
+  ///
   /// 返回补跑了几章、以及最终仍是未净化状态的章数（给用户看的提示用）。
   static ({List<CachedChapter> chapters, int purifiedOnTheFly, int leftRaw})
       prepareChapters({
@@ -194,7 +200,7 @@ class ChapterCacheExport {
       out.add(CachedChapter(
         index: chapter.index,
         title: chapter.title,
-        content: body,
+        content: ChapterMarkup.stripImages(body),
       ));
     }
     return (
