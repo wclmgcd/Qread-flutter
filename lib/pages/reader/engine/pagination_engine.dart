@@ -194,6 +194,9 @@ class PaginationEngine {
         fontFamily: fontFamily,
         fontWeight: fontWeight,
         textScaler: textScaler,
+        // 插图行的高度就是正文可用高度 → 它必然单独占满一页
+        // （下面分页循环里 lineTotalHeight > availableHeight，会先把当前页 commit）。
+        imageHeight: availableHeight,
       );
 
       for (int i = 0; i < lines.length; i++) {
@@ -250,7 +253,30 @@ class PaginationEngine {
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
     TextScaler textScaler = TextScaler.noScaling,
+    double imageHeight = 0,
   }) {
+    // 【插图段】独占一页。
+    //
+    // 高度直接取正文可用高度（调用方传进来），渲染端用 BoxFit.contain 把图
+    // 缩放进这个框 —— 不依赖图片的真实宽高比，也就不需要「先加载图片、
+    // 再回头重排」那套异步机制，排版结果稳定可复现。
+    // 官方客户端也是这个观感：插图基本占满一整屏。
+    if (paragraph.isImage) {
+      return [
+        TextLine(
+          paragraphIndex: paragraph.index,
+          text: '',
+          startOffset: 0,
+          endOffset: 0,
+          isTitle: false,
+          isFirstLineOfParagraph: false,
+          isLastLineOfParagraph: true,
+          height: imageHeight,
+          imageUrl: paragraph.imageUrl,
+        ),
+      ];
+    }
+
     final isTitle = paragraph.isTitle;
     final effectiveFontSize =
         isTitle ? fontSize + titleFontSizeDelta : fontSize;
@@ -583,6 +609,50 @@ class PaginationEngine {
   static const String _dpStart = '\uE000';
   static const String _dpEnd = '\uE001';
 
+  /// 正文插图占位符（同样用私用区字符）。
+  ///
+  /// 和段评一个道理：**必须先把 `<img>` 换成占位符，再删标签**，
+  /// 否则 `<[^>]*>` 会把整个标签吃掉，插图永远不显示。
+  static const String _imgStart = '\uE002';
+  static const String _imgEnd = '\uE003';
+
+  static final RegExp _imgPlaceholder =
+      RegExp('$_imgStart(\\d+)$_imgEnd');
+
+  /// 正文插图标签：`<img ...>`。
+  ///
+  /// 注意它必须**在** [_dpWholeTag] 之后才用 —— 段评也是 `<img>`，
+  /// 只是 src 是 `data:image/svg+xml;base64,...`，会被先一步摘成占位符。
+  /// 走到这里还剩下的 `<img>`，才是真插图。
+  static final RegExp _anyImgTag =
+      RegExp(r'<img\b[^>]*>', caseSensitive: false);
+
+  /// src 的两种取法（复刻官方 main.dart.js 的 `cto`）。
+  ///
+  /// 【为什么不能只用一个「引号内不含引号」的正则】
+  /// 书源的 src 里会**内嵌未转义的双引号**，形如
+  /// `src="https://aigcc.yuewen.com/....webp,{"style":"FULL","type":"qd"}"`。
+  /// 用 `[^"']+` 会在第一个内层引号处截断，拿到一个残缺地址。
+  /// 官方的处理是分两支：
+  ///   - 标签里没有 `{}` → 非贪婪 `src=["'](.*?)["']`；
+  ///   - 有 `{}`        → 贪婪 `src="(.*)"`，一直取到**最后一个**引号，
+  ///     正好把 `URL,{json}` 完整拿到。
+  static final RegExp _imgSrcPlain = RegExp(
+    r'''src\s*=\s*["'](.*?)["']''',
+    caseSensitive: false,
+  );
+  static final RegExp _imgSrcGreedy = RegExp(
+    r'''src\s*=\s*["'](.*)["']''',
+    caseSensitive: false,
+  );
+
+  /// 从 `<img ...>` 标签里取 src（取不到返回 null）。
+  static String? _extractImgSrc(String tag) {
+    final useGreedy = tag.contains('{') && tag.contains('}');
+    final m = (useGreedy ? _imgSrcGreedy : _imgSrcPlain).firstMatch(tag);
+    return m?.group(1);
+  }
+
   static final RegExp _dpPlaceholder =
       RegExp('$_dpStart(\\d+)$_dpEnd');
 
@@ -751,6 +821,20 @@ class PaginationEngine {
       return placeholderOf(m.group(1)!, m.group(2)!);
     });
 
+    // 0.5 正文插图：与段评同样的顺序要求 —— 必须在删标签**之前**换成占位符。
+    //
+    // 【为什么不能直接删】旧实现把 `<img>` 当普通标签一并删掉，于是书源里
+    // 的插图在 App 里**一张都看不到**（浏览器端/官方客户端正常）。
+    // 换成占位符后，下面按行归位，行首是插图的那一行就变成「插图段」。
+    final contentImages = <String>[];
+    withPlaceholders = withPlaceholders.replaceAllMapped(_anyImgTag, (m) {
+      final src = (_extractImgSrc(m.group(0)!) ?? '').trim();
+      if (src.isEmpty) return '';
+      final idx = contentImages.length;
+      contentImages.add(src);
+      return '$_imgStart$idx$_imgEnd';
+    });
+
     // 1. 标签处理：
     //    - <br> 与块级标签（开/闭）→ 换行，段落才切得开；
     //    - 其余标签直接删掉（不能换成空格，否则 "对<span>方</span>" 会变成 "对 方"）。
@@ -801,10 +885,36 @@ class PaginationEngine {
 
     var start = 0;
     for (final rawLine in lines) {
-      final (drainedText, comments) = _drainComments(rawLine, allComments);
+      // 先摘出本行携带的插图占位符（一行可能有 0..n 张）。
+      final lineImages = <String>[];
+      final withoutImages = rawLine.replaceAllMapped(_imgPlaceholder, (m) {
+        final i = int.tryParse(m.group(1) ?? '');
+        if (i != null && i >= 0 && i < contentImages.length) {
+          lineImages.add(contentImages[i]);
+        }
+        return '';
+      });
+
+      final (drainedText, comments) =
+          _drainComments(withoutImages, allComments);
       final text = drainedText.trim();
 
-      if (text.isEmpty && comments.isEmpty) continue;
+      if (text.isEmpty && comments.isEmpty && lineImages.isEmpty) continue;
+
+      // 整行只有插图 → 每张图各成一段。
+      // 对齐官方 cfX：行首是 `<img>` 且本行尚无文字片段时，图片自己成为一段。
+      if (text.isEmpty && comments.isEmpty) {
+        for (final url in lineImages) {
+          paragraphs.add(ReaderParagraph(
+            index: index++,
+            text: '',
+            startPosition: start,
+            endPosition: start,
+            imageUrl: url,
+          ));
+        }
+        continue;
+      }
 
       final end = start + text.length;
       paragraphs.add(ReaderParagraph(
@@ -816,6 +926,19 @@ class PaginationEngine {
       ));
       start = end + 1;
       index++;
+
+      // 文字中间夹着插图（不是独占一行）：紧跟本段单独成段。
+      // 官方是把图作为**行内片段**排在同一段里；这里退一步「排到本段之后」，
+      // 图不会被丢，也不用改行级模型（段内混排图会牵动两端对齐和行高）。
+      for (final url in lineImages) {
+        paragraphs.add(ReaderParagraph(
+          index: index++,
+          text: '',
+          startPosition: start,
+          endPosition: start,
+          imageUrl: url,
+        ));
+      }
     }
 
     return paragraphs;

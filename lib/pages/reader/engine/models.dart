@@ -122,6 +122,7 @@ class ReaderParagraph {
     required this.endPosition,
     this.isTitle = false,
     this.comments = const [],
+    this.imageUrl,
   });
 
   final int index;
@@ -132,6 +133,22 @@ class ReaderParagraph {
 
   /// 本段携带的段评
   final List<ParagraphComment> comments;
+
+  /// 正文插图（非段评气泡）的原始 src。
+  ///
+  /// 【为什么要单独建「图片段」】
+  /// 书源会把正文插图内联成 `<img src="...">`（阅文系是独占一行，
+  /// 形如 `　　<img src="https://aigcc.yuewen.com/imgChapter/....webp,{"style":"FULL","type":"qd"}">`）。
+  /// 旧实现把这些标签当普通 HTML 标签一并删掉，插图就**彻底消失** ——
+  /// 这正是「书源里有图但 App 里一张都看不到」的原因。
+  ///
+  /// 官方客户端（main.dart.js 的 `cfX`）的做法是：按行扫描，行首是 `<img>`
+  /// 且本行还没有文字片段时，让这张图**自己成为一个段落**。这里照同一套来：
+  /// 图片段 [text] 为空、[imageUrl] 有值，在排版里独占一页。
+  final String? imageUrl;
+
+  /// 是否「插图段」
+  bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
 }
 
 /// 单行文本（排版引擎输出，段落被拆为多行）
@@ -147,6 +164,7 @@ class TextLine {
     this.isLastLineOfParagraph = false,
     this.comments = const [],
     this.justifySpacing = 0,
+    this.imageUrl,
   });
 
   /// 所属段落的索引
@@ -189,6 +207,15 @@ class TextLine {
   /// 段末行、标题行、以及为段评气泡二次拆分出来的子行一律为 0。
   final double justifySpacing;
 
+  /// 本行是「插图行」时，这里是插图的原始 src（见 [ReaderParagraph.imageUrl]）。
+  ///
+  /// 插图行 [text] 恒为空、[height] 取正文可用高度 —— 也就是**独占一页**，
+  /// 渲染端按 `BoxFit.contain` 把图缩放进这个框里。
+  final String? imageUrl;
+
+  /// 是否「插图行」
+  bool get isImage => imageUrl != null && imageUrl!.isNotEmpty;
+
   TextLine copyWith({
     String? text,
     int? startOffset,
@@ -198,6 +225,7 @@ class TextLine {
     double? height,
     List<ParagraphComment>? comments,
     double? justifySpacing,
+    String? imageUrl,
   }) {
     return TextLine(
       paragraphIndex: paragraphIndex,
@@ -211,6 +239,7 @@ class TextLine {
       height: height ?? this.height,
       comments: comments ?? this.comments,
       justifySpacing: justifySpacing ?? this.justifySpacing,
+      imageUrl: imageUrl ?? this.imageUrl,
     );
   }
 }

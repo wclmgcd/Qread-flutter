@@ -1755,6 +1755,70 @@ class ApiService {
     return '${AppConstants.apiBase}/proxypng?${_encodeParams(params)}';
   }
 
+  // ============ 正文插图（官方 /imageDecode） ============
+
+  /// 拆分书源给的图片 src。
+  ///
+  /// 书源约定：`<img src="URL,{json}">` —— 逗号前是真实地址，逗号后的 json
+  /// 里可能有 `headers`。官方客户端在 main.dart.js 的 `b2W` 里做的就是这件事：
+  /// 含 `,`+`{`+`}` 才拆，拆失败就原样返回。
+  ///
+  /// `baseurl` 是书源的占位符，要换成 `<站点>/api/5`
+  /// （官方用 `origin + "/api/5"`，等价于 [AppConstants.apiBase]）。
+  static ({String url, Map<String, String> headers}) splitImageSrc(String src) {
+    var raw = src.trim();
+    if (raw.contains('baseurl')) {
+      raw = raw.replaceAll('baseurl', AppConstants.apiBase);
+    }
+    if (!raw.contains(',') || !raw.contains('{') || !raw.contains('}')) {
+      return (url: raw, headers: const <String, String>{});
+    }
+    try {
+      final comma = raw.indexOf(',');
+      final url = raw.substring(0, comma).trim();
+      final decoded = jsonDecode(raw.substring(comma + 1));
+      final headers = <String, String>{};
+      if (decoded is Map && decoded['headers'] is Map) {
+        (decoded['headers'] as Map).forEach((k, v) {
+          headers['$k'] = '$v';
+        });
+      }
+      if (url.isEmpty) return (url: raw, headers: const <String, String>{});
+      return (url: url, headers: headers);
+    } catch (_) {
+      return (url: raw, headers: const <String, String>{});
+    }
+  }
+
+  /// 正文插图的完整地址 —— 官方 `/imageDecode`。
+  ///
+  /// 【为什么不是 /proxypng】`/proxypng` 只「转发 + 缓存」，**不解密**。
+  /// 阅文系的插图（`aigcc.yuewen.com/imgChapter/...`）是加密的，必须由后端
+  /// 用书源的 `ruleContent.imageDecode` 规则解密后才是一张正常的图；
+  /// 直接转发拿到的是乱码 —— 表现就是「书源里有图，App 里一张都没有」。
+  ///
+  /// 参数与官方完全一致：`url` / `bookSourceUrl` / `header` / `book`
+  /// （见官方 main.dart.js 的 `b2U`）。
+  String imageDecodeUrl(
+    String src, {
+    required String accessToken,
+    String? bookSourceUrl,
+    String? bookJson,
+  }) {
+    final (url: url, headers: headers) = splitImageSrc(src);
+    if (url.isEmpty) return '';
+    final params = <String, String>{
+      'accessToken': accessToken,
+      'url': url,
+      'bookSourceUrl': bookSourceUrl ?? '',
+      'header': jsonEncode(headers),
+    };
+    if (bookJson != null && bookJson.isNotEmpty) {
+      params['book'] = bookJson;
+    }
+    return '${AppConstants.apiBase}/imageDecode?${_encodeParams(params)}';
+  }
+
   String _encodeParams(Map<String, String> params) {
     return params.entries
         .map((e) => '${e.key}=${Uri.encodeComponent(e.value)}')

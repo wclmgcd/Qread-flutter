@@ -66,6 +66,12 @@ class PagedReader extends StatefulWidget {
   final FontWeight fontWeight;
   final ValueChanged<ParagraphComment>? onCommentTap;
 
+  /// 正文插图的地址构造器（原始 src → 可加载的完整 URL）。
+  ///
+  /// 由阅读页注入：只有它知道当前 token、书源，才能拼出官方的
+  /// `/imageDecode` 请求。为空时插图按原始 src 直接加载。
+  final String Function(String src)? imageUrlBuilder;
+
   const PagedReader({
     Key? key,
     required this.pages,
@@ -92,6 +98,7 @@ class PagedReader extends StatefulWidget {
     this.fontFamily,
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
+    this.imageUrlBuilder,
   }) : super(key: key);
 
   @override
@@ -396,6 +403,7 @@ class _PagedReaderState extends State<PagedReader>
         fontFamily: widget.fontFamily,
         fontWeight: widget.fontWeight,
         onCommentTap: widget.onCommentTap,
+        imageUrlBuilder: widget.imageUrlBuilder,
       ),
     );
   }

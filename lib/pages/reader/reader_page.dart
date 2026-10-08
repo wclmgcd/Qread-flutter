@@ -8,7 +8,6 @@ import 'package:flutter_html/flutter_html.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import '../../config/constants.dart';
 import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
@@ -1721,6 +1720,7 @@ class _ReaderPageState extends State<ReaderPage> {
             fontWeight: _state.textFontWeight,
             onCommentTap:
                 _state.showParagraphComment ? _openParagraphComment : null,
+            imageUrlBuilder: _buildImageUrl,
             onPageChanged: (page) {
               final position =
                   _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
@@ -1766,6 +1766,7 @@ class _ReaderPageState extends State<ReaderPage> {
       fontWeight: _state.textFontWeight,
       onCommentTap:
           _state.showParagraphComment ? _openParagraphComment : null,
+      imageUrlBuilder: _buildImageUrl,
     );
   }
 
@@ -1964,17 +1965,42 @@ class _ReaderPageState extends State<ReaderPage> {
     );
   }
 
+  /// 正文插图的地址构造器：原始 src → 官方 `/imageDecode` 的完整地址。
+  ///
+  /// 需要 token / 书源 / 书本信息，只有阅读页拿得到，所以放在这里注入给
+  /// 分页渲染器（PagedReader / ScrollReader）。
+  String _buildImageUrl(String src) {
+    final token = _token;
+    if (token == null || token.isEmpty) return src;
+    final book = context.read<ReaderProvider>().book;
+    return ApiService.instance.imageDecodeUrl(
+      src,
+      accessToken: token,
+      bookSourceUrl: book?.origin ?? book?.originName,
+      bookJson: book == null ? null : jsonEncode(book.toJson()),
+    );
+  }
+
+  /// 把正文里的 `<img src>` 换成官方 `/imageDecode` 地址（HTML 渲染路径用）。
+  ///
+  /// 【为什么不是 /proxypng】官方客户端取正文图走的是 `POST /imageDecode`
+  /// （见官方 main.dart.js 的 `b2U`），参数 `url` / `bookSourceUrl` /
+  /// `header` / `book`。`/proxypng` 只「转发 + 缓存」、**不解密** ——
+  /// 阅文系的插图（`aigcc.yuewen.com/imgChapter/...`）是加密的，直接转发
+  /// 拿到的是乱码，表现就是「书源里有图，App 里一张都没有」。
   String _proxyImages(String html) {
-    final baseUrl = AppConstants.apiBase;
     return html.replaceAllMapped(
       RegExp(r"""<img\s[^>]*src\s*=\s*["']([^"']+)["'][^>]*>""",
           caseSensitive: false),
       (match) {
         final fullTag = match.group(0) ?? '';
         final src = match.group(1) ?? '';
-        if (src.isEmpty || src.startsWith('$baseUrl/proxypng')) return fullTag;
-        final proxied = '$baseUrl/proxypng?url=${Uri.encodeComponent(src)}';
-        return fullTag.replaceFirst(src, proxied);
+        if (src.isEmpty) return fullTag;
+        // 段评气泡是内联 base64 SVG，不该也不能走 /imageDecode
+        if (src.startsWith('data:')) return fullTag;
+        final url = _buildImageUrl(src);
+        if (url.isEmpty) return fullTag;
+        return fullTag.replaceFirst(src, url);
       },
     );
   }

@@ -28,6 +28,10 @@ class ScrollReader extends StatelessWidget {
   final FontWeight fontWeight;
   final ValueChanged<ParagraphComment>? onCommentTap;
 
+  /// 正文插图的地址构造器（原始 src → 可加载的完整 URL），由阅读页注入。
+  /// 见 PagedReader.imageUrlBuilder 的同款说明。
+  final String Function(String src)? imageUrlBuilder;
+
   const ScrollReader({
     Key? key,
     required this.paragraphs,
@@ -47,6 +51,7 @@ class ScrollReader extends StatelessWidget {
     this.fontFamily,
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
+    this.imageUrlBuilder,
   }) : super(key: key);
 
   @override
@@ -87,6 +92,7 @@ class ScrollReader extends StatelessWidget {
                   fontFamily: fontFamily,
                   fontWeight: fontWeight,
                   onCommentTap: onCommentTap,
+                  imageUrlBuilder: imageUrlBuilder,
                 );
               },
             ),

@@ -514,6 +514,7 @@ class ContentRenderer {
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
+    String Function(String src)? imageUrlBuilder,
   }) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -548,6 +549,7 @@ class ContentRenderer {
                         fontFamily: fontFamily,
                         fontWeight: fontWeight,
                         onCommentTap: onCommentTap,
+                        imageUrlBuilder: imageUrlBuilder,
                       ),
                       // 小气泡已经嵌在文字行内（见 _buildTextLine），
                       // 这里只把「神评论」横幅单独排在行下方。
@@ -611,6 +613,66 @@ class ContentRenderer {
     );
   }
 
+  /// 渲染正文插图。
+  ///
+  /// 【为什么必须走 /imageDecode，而不是 /proxypng】
+  /// 阅文（起点）系书源的插图是**加密的**（形如
+  /// `https://aigcc.yuewen.com/imgChapter/....webp`），必须由后端用书源的
+  /// `ruleContent.imageDecode` JS 规则解密后才能显示 —— 官方客户端走的就是
+  /// `POST /imageDecode`（见官方 main.dart.js 的 `b2U`/`ahY`）。
+  /// 旧的 `/proxypng` 只做「转发 + 缓存」，不解密、也不带书源 header，
+  /// 拿到的是一团乱码，表现就是「图一张都显示不出来」。
+  ///
+  /// [src] 是书源原文（可能带 `,{json}` 后缀）；[imageUrlBuilder] 负责把它
+  /// 换成带 token / 书源 / header 的完整地址 —— 由阅读页注入，因为只有它
+  /// 知道当前 token 和书源。
+  static Widget buildContentImage({
+    required String src,
+    required ReaderTheme theme,
+    double? height,
+    String Function(String src)? imageUrlBuilder,
+  }) {
+    final url = imageUrlBuilder?.call(src) ?? src;
+    if (url.isEmpty) return const SizedBox.shrink();
+
+    final image = Image.network(
+      url,
+      fit: BoxFit.contain,
+      alignment: Alignment.center,
+      // 加载中给个转圈，避免版面突然跳动
+      loadingBuilder: (context, child, progress) {
+        if (progress == null) return child;
+        return Center(
+          child: SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: theme.secondaryText,
+            ),
+          ),
+        );
+      },
+      // 失败时给一行提示，而不是留一片空白（否则看起来就像「图凭空没了」）
+      errorBuilder: (context, error, stack) => Center(
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: Text(
+            '图片加载失败',
+            style: TextStyle(fontSize: 12, color: theme.secondaryText),
+          ),
+        ),
+      ),
+    );
+
+    // 分页模式：高度由分页引擎给定（插图独占一页），必须夹在 SizedBox 里，
+    // 否则图片会按自身高度撑破页面。滚动模式不传 height，交给 ListView
+    // 按宽高比自然排。
+    return height == null
+        ? image
+        : SizedBox(height: height, width: double.infinity, child: image);
+  }
+
   /// 渲染单行文本
   static Widget _buildTextLine({
     required TextLine line,
@@ -623,7 +685,22 @@ class ContentRenderer {
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
+    String Function(String src)? imageUrlBuilder,
   }) {
+    // 【插图行】整行就是一张图，独占一页。
+    // 高度由分页引擎给（= 正文可用高度），这里按 BoxFit.contain 缩放进框。
+    if (line.isImage) {
+      return Padding(
+        padding: EdgeInsets.only(bottom: paragraphSpacing),
+        child: buildContentImage(
+          src: line.imageUrl!,
+          theme: theme,
+          height: line.height,
+          imageUrlBuilder: imageUrlBuilder,
+        ),
+      );
+    }
+
     final isHighlighted = line.paragraphIndex == ttsParagraphIndex;
     final isTitle = line.isTitle;
     // 标题样式必须和分页引擎用同一组常量，否则行高算错会串页。
@@ -718,7 +795,20 @@ class ContentRenderer {
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
+    String Function(String src)? imageUrlBuilder,
   }) {
+    // 【插图段】滚动模式没有「页」的概念，交给图片按自身宽高比铺满行宽。
+    if (paragraph.isImage) {
+      return Padding(
+        padding: EdgeInsets.only(bottom: paragraphSpacing),
+        child: buildContentImage(
+          src: paragraph.imageUrl!,
+          theme: theme,
+          imageUrlBuilder: imageUrlBuilder,
+        ),
+      );
+    }
+
     final isHighlighted = paragraph.index == ttsParagraphIndex;
     final isTitle = paragraph.isTitle;
     // 与分页引擎共用同一组标题常量（见 PaginationEngine.titleFontSizeDelta）
