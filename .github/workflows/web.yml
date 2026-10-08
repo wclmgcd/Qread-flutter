@@ -83,6 +83,14 @@ jobs:
       - name: flutter analyze (不阻塞)
         run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
 
+      # 【为什么加这一步】`test/` 下三个文件（净化引擎 39 项、登录页排版 12 项、
+      # 占位 1 项）都是**纯 Dart 逻辑**，不依赖设备、不依赖网络、跑起来不到 1 秒，
+      # 却能在 push 时立刻拦住「改了模型/引擎但没改测试」这类回归。
+      # 净化引擎那份尤其值：它把「Dart 的 replaceAll 不展开 $1」这类**静默失效**
+      # 的坑钉成了断言 —— 没有测试就只能靠肉眼看正文，看不出错。
+      - name: flutter test
+        run: flutter test
+
       - name: flutter build web
         run: flutter build web --release --base-href /
 
