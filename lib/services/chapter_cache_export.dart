@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import '../models/replace_rule.dart';
 import 'local_cache_service.dart';
 import 'replace_engine.dart';
@@ -110,6 +112,20 @@ class ChapterCacheExport {
     String two(int value) => value.toString().padLeft(2, '0');
     return '${now.year}-${two(now.month)}-${two(now.day)} '
         '${two(now.hour)}:${two(now.minute)}';
+  }
+
+  /// 给 UTF-8 字节加 BOM（`EF BB BF`）。
+  ///
+  /// 【为什么要加】中文 txt 不加 BOM 时，一部分阅读器和旧版记事本会按 GBK
+  /// 猜编码，整本书变乱码。三个字节的 BOM 能让它们稳定识别成 UTF-8；
+  /// 现代编辑器（VSCode / 新版记事本 / 主流手机阅读器）都会自动忽略它。
+  static Uint8List withUtf8Bom(List<int> utf8Bytes) {
+    final out = Uint8List(utf8Bytes.length + 3);
+    out[0] = 0xEF;
+    out[1] = 0xBB;
+    out[2] = 0xBF;
+    out.setRange(3, out.length, utf8Bytes);
+    return out;
   }
 
   // ------------------------------------------------------------ 导出前净化

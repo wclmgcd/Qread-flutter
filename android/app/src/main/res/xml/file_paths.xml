@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider 允许共享的目录白名单。
+
+  【为什么只放行 cache/export/】
+  导出（章节缓存 txt、书架 json）都落在 `cacheDir/export/`。
+  写成 `<cache-path name="all" path="." />` 会把整个 cacheDir 都暴露给
+  接收方 App，而 cacheDir 里还有 `import_books/`（用户导入的电子书）——
+  越权面没必要开这么大。收窄到子目录，与 MainActivity.shareBytes 里
+  写入的路径一一对应。
+
+  【name 只是内部标识】随便取，只要不重复；path 才是真正生效的过滤条件。
+-->
+<paths>
+    <cache-path name="export" path="export/" />
+</paths>

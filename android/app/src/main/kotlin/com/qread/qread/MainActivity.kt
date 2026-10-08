@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
 import android.view.View
+import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -65,6 +66,23 @@ import java.io.File
  * `content://` 没法直接当路径用，所以这里先把内容拷进 App 私有缓存目录，
  * 再把路径交给 Dart。选完的文件会一直留在 `cacheDir/import_books/`，
  * 系统在空间紧张时会自行清理，不需要我们操心。
+ *
+ * ---------------------------------------------------------------------------
+ *
+ * 「导出文件」：把 Dart 拼好的 txt / json 交给系统分享面板。
+ *
+ * 【为什么移动端必须走分享面板，不能弹「另存为」】
+ * Flutter 侧的 `file_selector` 只提供 `getSaveLocation()`，它底层调
+ * `getSavePath()`，而**这个接口在 Android 上根本没实现** —— 直接调会抛
+ * `UnimplementedError: getSavePath() has not been implemented.`
+ * （官方支持表里 Android / iOS / Web 三端都是 ❌，只有桌面三端是 ✔）。
+ * Android 的标准做法就是 `ACTION_SEND` + `FileProvider`，用户在面板里
+ * 选「保存到文件」（文件 App）即可落盘，且**不需要任何存储权限**。
+ *
+ * 【为什么由原生写文件，而不是 Dart 写完再传路径】
+ * Dart 侧要写文件就得引 `dart:io` + `path_provider`，而网页版编不过
+ * （本仓库为此专门做了 `cache_store.dart` 那套条件导入）。让原生直接收
+ * `byte[]` 落进 `cacheDir` 最省事，Dart 那边一行平台判断都不用写。
  */
 class MainActivity : FlutterActivity() {
 
@@ -72,8 +90,12 @@ class MainActivity : FlutterActivity() {
     private val fileOpenChannelName = "qread/file_open"
     private val filePickChannelName = "qread/file_pick"
     private val dictionaryChannelName = "qread/dictionary"
+    private val shareFileChannelName = "qread/share_file"
 
     private val requestPickBook = 10021
+
+    /** 导出文件落在这里；FileProvider 的 file_paths.xml 只放行这一个子目录。 */
+    private val exportDirName = "export"
 
     /**
      * 选择器要展示的文件类型。
@@ -149,6 +171,31 @@ class MainActivity : FlutterActivity() {
                         result.success(
                             if (text.isEmpty()) false else openSystemDictionary(text)
                         )
+                    }
+                    else -> result.notImplemented()
+                }
+            }
+
+        // 「导出文件」：Dart 把字节交过来，这里落盘 + 弹分享面板。
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, shareFileChannelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "shareFile" -> {
+                        val bytes = call.argument<ByteArray>("bytes")
+                        val name = call.argument<String>("name")
+                        if (bytes == null || name.isNullOrBlank()) {
+                            result.error("BAD_ARGS", "缺少 bytes 或 name", null)
+                        } else {
+                            result.success(
+                                shareBytes(
+                                    bytes = bytes,
+                                    name = name,
+                                    mimeType = call.argument<String>("mimeType")
+                                        ?: "application/octet-stream",
+                                    title = call.argument<String>("title"),
+                                )
+                            )
+                        }
                     }
                     else -> result.notImplemented()
                 }
@@ -292,6 +339,63 @@ class MainActivity : FlutterActivity() {
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    // ==================================================================
+    // 「导出文件」的分享
+    // ==================================================================
+
+    /**
+     * 把字节写成文件再交给系统分享面板。
+     *
+     * 【为什么必须先落盘】`ACTION_SEND` 传的是 URI，不是字节流。
+     * 而我们自己私有目录里的文件不能直接把 `file://` 路径给对方 ——
+     * Android 7(N) 起 `FileUriExposedException` 会直接崩，必须经
+     * `FileProvider` 换成 `content://`。
+     *
+     * 【为什么要 FLAG_GRANT_READ_URI_PERMISSION】`content://` 默认不对
+     * 接收方开放；不授权的话对方打开就是「文件不存在 / 无权限」。
+     * chooser 上也加一份，因为部分 ROM 是拿 chooser 的 flag 去授权的。
+     *
+     * @return false 表示没有任何 App 能接收（Dart 侧据此提示用户），
+     *         异常一律吞掉返回 false —— 导出失败不该让 App 崩。
+     */
+    private fun shareBytes(
+        bytes: ByteArray,
+        name: String,
+        mimeType: String,
+        title: String?,
+    ): Boolean {
+        return try {
+            // 文件名可能带 `/`（书名里出现斜杠），不处理会写到别的目录去。
+            val safeName = name.replace('/', '_').replace('\\', '_')
+
+            val dir = File(cacheDir, exportDirName)
+            if (!dir.exists()) dir.mkdirs()
+            // 同名直接覆盖：`writeBytes` 是截断写，不会残留旧内容；
+            // 但先删一次能顺带清掉「上一次写了一半」的坏文件。
+            val target = File(dir, safeName)
+            if (target.exists()) target.delete()
+            target.writeBytes(bytes)
+
+            val uri: Uri = FileProvider.getUriForFile(
+                this, "$packageName.fileprovider", target
+            )
+            val send = Intent(Intent.ACTION_SEND).apply {
+                type = mimeType
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_TITLE, title ?: safeName)
+                if (!title.isNullOrBlank()) putExtra(Intent.EXTRA_SUBJECT, title)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(send, title ?: safeName).apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(chooser)
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 

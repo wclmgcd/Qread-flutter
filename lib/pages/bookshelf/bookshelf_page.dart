@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +13,8 @@ import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_settings.dart';
 import '../../services/error_text.dart';
+import '../../services/export_delivery.dart';
+import '../../services/export_file_saver.dart';
 import '../../services/file_pick_service.dart';
 import '../../services/storage_service.dart';
 import '../../widgets/book_card.dart';
@@ -508,6 +511,13 @@ class _BookshelfPageState extends State<BookshelfPage>
     final text = const JsonEncoder.withIndent('  ')
         .convert(books.map((b) => b.toJson()).toList());
 
+    // 桌面弹「另存为」，Android / iOS / Web 走系统分享面板 ——
+    // 菜单文案得跟着变，不然移动端点「保存到文件」却弹出分享面板会很困惑。
+    final delivery = resolveExportDelivery(currentExportHost());
+    final saveLabel = delivery == ExportDelivery.saveDialog
+        ? '保存到文件'
+        : '导出 / 分享文件';
+
     final choice = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -523,7 +533,7 @@ class _BookshelfPageState extends State<BookshelfPage>
             const Divider(height: 1),
             ListTile(
               leading: const Icon(Icons.save_alt),
-              title: const Text('保存到文件'),
+              title: Text(saveLabel),
               onTap: () => Navigator.pop(ctx, 'file'),
             ),
             ListTile(
@@ -543,21 +553,16 @@ class _BookshelfPageState extends State<BookshelfPage>
       return;
     }
     try {
-      final loc = await getSaveLocation(
-        suggestedName: 'qread_bookshelf_backup.json',
-        acceptedTypeGroups: const [
-          XTypeGroup(label: 'JSON', extensions: ['json']),
-        ],
-      );
-      if (loc == null) return;
-      final f = XFile.fromData(
-        utf8.encode(text),
+      final message = await deliverExport(
+        bytes: Uint8List.fromList(utf8.encode(text)),
+        fileName: 'qread_bookshelf_backup.json',
         mimeType: 'application/json',
-        name: 'qread_bookshelf_backup.json',
+        typeGroup: const XTypeGroup(label: 'JSON', extensions: ['json']),
+        shareTitle: 'qread 书架备份',
       );
-      await f.saveTo(loc.path);
+      if (message == null) return; // 用户取消了
       _addLog('导出书架 ${books.length} 本');
-      _toast('已导出到 ${loc.path}');
+      _toast(message);
     } catch (e) {
       _toast('导出失败：$e');
     }

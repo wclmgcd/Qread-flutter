@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +10,7 @@ import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_settings.dart';
 import '../../services/chapter_cache_export.dart';
+import '../../services/export_file_saver.dart';
 import '../../services/local_cache_service.dart';
 import '../../services/replace_rule_store.dart';
 import '../../services/storage_service.dart';
@@ -496,38 +496,26 @@ class _GeneralSettingsPageState extends State<GeneralSettingsPage> {
           ? '${ChapterCacheExport.sanitizeFileName(onlyBookName ?? 'qread_导出')}.txt'
           : 'qread_章节缓存_${exportedBooks}本.txt';
 
-      final location = await getSaveLocation(
-        suggestedName: suggestedName,
-        acceptedTypeGroups: const [
-          XTypeGroup(label: 'TXT', extensions: ['txt']),
-        ],
-      );
-      if (location == null || !mounted) return;
-
-      // 【为什么要加 UTF-8 BOM】中文 txt 不加 BOM 时，一部分阅读器和旧版
-      // 记事本会按 GBK 猜，整本书变乱码。三个字节的 BOM 能让它们稳定识别成
-      // UTF-8；现代编辑器（VSCode / 新版记事本 / 主流手机阅读器）都会
-      // 自动忽略它。
-      final body = utf8.encode(text);
-      final bytes = Uint8List(body.length + 3);
-      bytes[0] = 0xEF;
-      bytes[1] = 0xBB;
-      bytes[2] = 0xBF;
-      bytes.setRange(3, bytes.length, body);
-      await XFile.fromData(
-        bytes,
+      // 【落盘方式按平台分派】桌面弹「另存为」，Android / iOS / Web 交给系统
+      // 分享面板 —— file_selector 的 getSaveLocation() 在这三端根本没实现，
+      // 直接调会抛 UnimplementedError。详见 export_delivery.dart。
+      final message = await deliverExport(
+        bytes: ChapterCacheExport.withUtf8Bom(utf8.encode(text)),
+        fileName: suggestedName,
         mimeType: 'text/plain',
-        name: suggestedName,
-      ).saveTo(location.path);
-
+        typeGroup: const XTypeGroup(label: 'TXT', extensions: ['txt']),
+        shareTitle: suggestedName,
+      );
       if (!mounted) return;
+      if (message == null) return; // 用户取消了
+
       final notes = <String>[
         '已导出 $exportedBooks 本 / $exportedChapters 章',
         if (purifiedOnTheFly > 0) '其中 $purifiedOnTheFly 章现场补跑了本地净化',
         if (leftRaw > 0) '$leftRaw 章是未净化正文',
       ];
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('${notes.join('；')}\n${location.path}')),
+        SnackBar(content: Text('${notes.join('；')}\n$message')),
       );
     } catch (e) {
       if (!mounted) return;

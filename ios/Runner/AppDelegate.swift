@@ -254,6 +254,133 @@ final class FilePickBridge: NSObject, UIDocumentPickerDelegate {
   }
 }
 
+/// 「导出文件」桥：把 Dart 拼好的 txt / json 交给系统分享面板。
+///
+/// 【对应关系】
+/// 通道名与方法名跟 Android 侧（MainActivity.kt）**完全一致**，
+/// 所以 Dart 那边一份 `deliverExport()` 两端通用：
+///
+///   Dart → 原生：`shareFile` → {bytes, name, mimeType, title?}  →  返回 bool
+///   返回 false 表示没有任何 App 能接收这个文件（Dart 侧据此提示用户）。
+///
+/// 【为什么移动端不能弹「另存为」】
+/// Flutter 侧的 `file_selector` 只有 `getSaveLocation()`，它底层是
+/// `getSavePath()`，而**这个接口在 iOS 上根本没实现** —— 直接调会抛
+/// `UnimplementedError: getSavePath() has not been implemented.`
+/// （官方支持表里 Android / iOS / Web 三端都是 ❌）。
+/// iOS 的标准做法是 `UIActivityViewController`，用户在面板里选
+/// 「存储到文件」即可落盘。
+///
+/// 【为什么不引第三方插件】同 FileOpenBridge / FilePickBridge：
+/// 本机没有 Flutter SDK，改 pubspec 无法本地验证依赖解析，一旦失败就是 CI 红。
+///
+/// 【为什么要 pendingResult】`present` 之后要等用户在面板上操作完
+/// （completionWithItemsHandler）才能回结果；这期间再来一次调用就回 BUSY。
+final class ShareFileBridge {
+  static let shared = ShareFileBridge()
+
+  private var channel: FlutterMethodChannel?
+  private weak var presenter: UIViewController?
+  private var pendingResult: FlutterResult?
+
+  private init() {}
+
+  /// 由 `QreadFlutterViewController.viewDidLoad` 调用（引擎就绪时）。
+  func attach(messenger: FlutterBinaryMessenger, presenter: UIViewController) {
+    self.presenter = presenter
+    let channel = FlutterMethodChannel(
+      name: "qread/share_file",
+      binaryMessenger: messenger
+    )
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(FlutterMethodNotImplemented)
+        return
+      }
+      switch call.method {
+      case "shareFile":
+        self.share(call: call, result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    self.channel = channel
+  }
+
+  private func share(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    guard
+      let args = call.arguments as? [String: Any],
+      let data = args["bytes"] as? FlutterStandardTypedData,
+      let rawName = args["name"] as? String, !rawName.isEmpty
+    else {
+      result(FlutterError(code: "BAD_ARGS", message: "缺少 bytes 或 name", details: nil))
+      return
+    }
+    // mimeType 在 iOS 上用不到（UIActivityViewController 靠文件后缀认类型），
+    // 留着是为了和 Android 侧、以及 Dart 侧的签名保持一致。
+    let title = args["title"] as? String
+
+    guard let presenter = presenter else {
+      result(FlutterError(code: "NO_PRESENTER", message: "界面还没准备好", details: nil))
+      return
+    }
+    if pendingResult != nil {
+      result(FlutterError(code: "BUSY", message: "已经有一个分享面板打开了", details: nil))
+      return
+    }
+
+    // 文件名可能带 `/`（书名里出现斜杠），只取末段防止写到别的目录去。
+    let name = (rawName as NSString).lastPathComponent
+
+    // 先落盘再分享：UIActivityViewController 收的是 URL，不是字节。
+    // 放 tmp/export 下 —— 与 Android 侧 cacheDir/export 的定位一致，
+    // 系统在空间紧张时会自行清理，不需要我们操心。
+    let dir = FileManager.default.temporaryDirectory
+      .appendingPathComponent("export", isDirectory: true)
+    try? FileManager.default.createDirectory(
+      at: dir, withIntermediateDirectories: true
+    )
+    let url = dir.appendingPathComponent(name)
+    do {
+      // .atomic：先写临时文件再改名，避免对方 App 读到写了一半的内容
+      try data.data.write(to: url, options: .atomic)
+    } catch {
+      result(
+        FlutterError(
+          code: "WRITE_FAILED",
+          message: "写入临时文件失败",
+          details: error.localizedDescription
+        )
+      )
+      return
+    }
+
+    let controller = UIActivityViewController(
+      activityItems: [url], applicationActivities: nil
+    )
+    // iPad / Mac 上分享面板是个 popover，**必须**给锚点，否则直接崩。
+    // 手机上是全屏 sheet，这段不生效。
+    if let pop = controller.popoverPresentationController {
+      pop.sourceView = presenter.view
+      pop.sourceRect = CGRect(
+        x: presenter.view.bounds.midX,
+        y: presenter.view.bounds.midY,
+        width: 0, height: 0
+      )
+      pop.permittedArrowDirections = []
+    }
+    controller.completionWithItemsHandler = { [weak self] _, _, _, _ in
+      // 用户点了「存储到文件」还是「取消」在 iOS 上区分不出来
+      // （completed 只在有 activity 真正执行时为 true），
+      // 这里统一回 true：面板确实弹过了，不算失败。
+      self?.pendingResult?(true)
+      self?.pendingResult = nil
+    }
+    pendingResult = result
+    presenter.present(controller, animated: true)
+  }
+}
+
 /// 阅读页「全屏沉浸」的 iOS 侧实现：隐藏屏幕底部那条 home indicator（小横条）。
 ///
 /// 【为什么需要一个子类】
@@ -314,6 +441,10 @@ class QreadFlutterViewController: FlutterViewController {
     // 「添加本地」桥：通道名/方法名与 Android 侧 MainActivity.kt 完全一致。
     // 需要把 self 传进去当 present 的宿主 —— 文件选择框得挂在某个控制器上。
     FilePickBridge.shared.attach(messenger: binaryMessenger, presenter: self)
+
+    // 「导出文件」桥：通道名/方法名与 Android 侧 MainActivity.kt 完全一致。
+    // 同样要把 self 传进去当 present 的宿主 —— 分享面板得挂在某个控制器上。
+    ShareFileBridge.shared.attach(messenger: binaryMessenger, presenter: self)
 
     // 阅读页长按选中文字后的「字典」桥：通道名/方法名与 Android 侧完全一致。
     // iOS 走系统词典 UIReferenceLibraryViewController（Android 那边是

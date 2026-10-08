@@ -143,6 +143,29 @@
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
             android:value="false" />
+        <!-- ================= 导出文件的 FileProvider =================
+             把 Dart 拼好的 txt / json 交给系统分享面板时，得先落盘再给对方
+             一个 `content://` URI —— Android 7(N) 起直接传 `file://` 会抛
+             FileUriExposedException 崩掉。
+
+             【authorities 为什么写成 ${applicationId}.fileprovider】
+             Kotlin 侧取的是 `packageName + ".fileprovider"`，两者必须一致。
+             用 `${applicationId}` 占位符而不是写死包名，是为了将来改包名
+             （debug / release 后缀不同）时不用改两处。
+
+             【file_paths.xml 只放行 cacheDir/export/】
+             不写 `<cache-path path="." />` 是因为那样会把整个缓存目录
+             （包括 import_books 里的用户书籍）都暴露出去。收窄到子目录，
+             越权面最小。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data
