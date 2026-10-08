@@ -27,6 +27,22 @@ abstract class CacheStore {
   /// 列出某个目录下的**直接**文件名（不含子目录）；目录不存在返回空表。
   Future<List<String>> listNames(String dir);
 
+  /// 列出某个目录下的**直接**子目录名；目录不存在返回空表。
+  ///
+  /// 【为什么要它】「常规设置 → 缓存管理」要枚举 `reader/<书哈希>/` 下面
+  /// 有哪些变体目录（`replace_off` / `replace_on` / `replace_on_<指纹>`），
+  /// 才知道这本书到底缓存了几份、分别是不是净化过的。
+  Future<List<String>> listDirs(String dir);
+
+  /// 某个路径占用的字节数。
+  ///
+  /// 传文件就是它自己的大小；传目录则**递归累加**里面所有文件的大小。
+  /// 路径不存在返回 0（缓存统计不到不该报错）。
+  ///
+  /// 【为什么按字节而不是按文件数】缓存管理页要显示「这本书占了多少空间」，
+  /// 用户关心的是体积。
+  Future<int> sizeOf(String path);
+
   /// 删除一个文件或一整个目录（递归）。目标不存在时静默返回。
   Future<void> deleteTree(String path);
 

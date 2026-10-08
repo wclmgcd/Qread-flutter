@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'cache_store_base.dart';
 
 /// 浏览器端的实现：**内存 Map**。
@@ -33,6 +35,34 @@ class _MemoryCacheStore implements CacheStore {
             !key.substring(prefix.length).contains('/'))
           key.substring(prefix.length),
     ];
+  }
+
+  @override
+  Future<List<String>> listDirs(String dir) async {
+    final prefix = dir.endsWith('/') ? dir : '$dir/';
+    final names = <String>{};
+    for (final key in _files.keys) {
+      if (!key.startsWith(prefix)) continue;
+      final rest = key.substring(prefix.length);
+      final slash = rest.indexOf('/');
+      // slash == 0 说明是 prefix 后面直接跟 `/`（不会发生），> 0 才是子目录。
+      if (slash > 0) names.add(rest.substring(0, slash));
+    }
+    return names.toList();
+  }
+
+  @override
+  Future<int> sizeOf(String path) async {
+    final exact = _files[path];
+    if (exact != null) return utf8.encode(exact).length;
+    final prefix = path.endsWith('/') ? path : '$path/';
+    var total = 0;
+    for (final entry in _files.entries) {
+      if (entry.key.startsWith(prefix)) {
+        total += utf8.encode(entry.value).length;
+      }
+    }
+    return total;
   }
 
   @override

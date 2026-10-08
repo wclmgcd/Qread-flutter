@@ -426,13 +426,29 @@ class ReaderProvider extends ChangeNotifier {
   }
 
   Future<void> _writeCachedChapterContent(int chapterIndex, String text) async {
-    if (_book?.bookUrl == null || text.isEmpty) return;
-    await LocalCacheService.instance.writeChapterContent(
-      bookUrl: _book!.bookUrl!,
+    final bookUrl = _book?.bookUrl;
+    if (bookUrl == null || text.isEmpty) return;
+    final service = LocalCacheService.instance;
+    final title = (chapterIndex >= 0 && chapterIndex < _chapters.length)
+        ? _chapters[chapterIndex].title
+        : null;
+    await service.writeChapterContent(
+      bookUrl: bookUrl,
       chapterIndex: chapterIndex,
       useReplaceRule: useReplaceRule,
       content: text,
       ruleFingerprint: _cacheRuleFingerprint,
+      // 章节标题一起存 —— 「常规设置 → 缓存管理」导出 txt 时要拿它当分节标题。
+      chapterTitle: title,
+    );
+    // 顺手记一份书籍元信息：缓存目录名只有哈希，不记书名的话
+    // 缓存管理页只能显示一串乱码。
+    await service.writeChapterBookMeta(
+      bookUrl: bookUrl,
+      name: _book?.name,
+      author: _book?.author,
+      origin: _book?.origin,
+      useReplaceRule: _book?.useReplaceRule,
     );
   }
 

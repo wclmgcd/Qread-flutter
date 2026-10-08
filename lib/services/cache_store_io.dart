@@ -62,6 +62,49 @@ class _IoCacheStore implements CacheStore {
   }
 
   @override
+  Future<List<String>> listDirs(String dir) async {
+    final directory = Directory(await _fullPath(dir));
+    if (!await directory.exists()) return const [];
+    final entries = await directory.list().toList();
+    return <String>[
+      // 【不能直接取 pathSegments.last】目录的 URI 带结尾 `/`，
+      // pathSegments 末尾会多出一个空串，last 拿到的是 ''。
+      for (final entry in entries)
+        if (entry is Directory)
+          entry.uri.pathSegments.where((s) => s.isNotEmpty).last,
+    ];
+  }
+
+  @override
+  Future<int> sizeOf(String path) async {
+    final full = await _fullPath(path);
+    final type = await FileSystemEntity.type(full);
+    if (type == FileSystemEntityType.notFound) return 0;
+    if (type == FileSystemEntityType.file) {
+      try {
+        return await File(full).length();
+      } catch (_) {
+        return 0;
+      }
+    }
+    var total = 0;
+    try {
+      await for (final entry
+          in Directory(full).list(recursive: true, followLinks: false)) {
+        if (entry is! File) continue;
+        try {
+          total += await entry.length();
+        } catch (_) {
+          // 单个文件读不到长度（权限 / 正被删）就跳过，不影响整体统计。
+        }
+      }
+    } catch (_) {
+      return total;
+    }
+    return total;
+  }
+
+  @override
   Future<void> deleteTree(String path) async {
     final full = await _fullPath(path);
     // 【必须先判类型】`deleteTree` 既可能收到目录（整本缓存），
