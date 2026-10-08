@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../models/replace_rule.dart';
 import '../services/api_service.dart';
 import '../services/error_text.dart';
+import '../services/replace_rule_store.dart';
 
 class ReplaceRuleProvider extends ChangeNotifier {
   static const ungroupedFilter = '__ungrouped__';
@@ -122,27 +123,17 @@ class ReplaceRuleProvider extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final pageData =
-          await ApiService.instance.getReplaceRulesPage(accessToken);
-      final data = pageData['data'] ?? pageData;
-      final md5 = data['md5']?.toString();
-      final totalPages = int.tryParse(data['page']?.toString() ?? '1') ?? 1;
-      final fetched = <ReplaceRule>[];
-
-      for (var page = 1; page <= totalPages; page++) {
-        final pageRules = await ApiService.instance.getReplaceRulesNew(
-          accessToken,
-          md5: md5,
-          page: page,
-        );
-        if (pageRules.isEmpty) break;
-        fetched.addAll(pageRules);
-      }
+      // 分页逻辑统一收在 ApiService 里 —— 阅读页也要拉同一份规则
+      // （本地净化引擎要用），两边各写一遍迟早走岔。
+      final fetched = await ApiService.instance.fetchAllReplaceRules(accessToken);
 
       _rules
         ..clear()
         ..addAll(fetched);
-      _rules.sort((a, b) => a.order.compareTo(b.order));
+
+      // 落一份本地副本：这样用户就算没进过这个页面，阅读页也能拿到规则
+      // 交给本地净化引擎。见 `ReplaceRuleStore` 的注释。
+      await ReplaceRuleStore.instance.save(fetched);
     } catch (e) {
       _error = friendlyError(e);
     } finally {

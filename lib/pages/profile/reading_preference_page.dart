@@ -116,6 +116,16 @@ class _ReadingPreferencePageState extends State<ReadingPreferencePage> {
           ),
 
           _section('替换净化'),
+          // 【为什么把「执行位置」放在最上面】它是这一组里唯一会改变净化**结果**
+          // 的开关（另外两个只管缓存放哪、规则去哪改）。官方客户端三端都自带
+          // 本地引擎，所以默认就是「本地」—— 换成「服务端」是给后端版本较新、
+          // 想省客户端算力的场景留的口子。
+          _navRow(
+            icon: Icons.memory_outlined,
+            title: '净化执行位置',
+            value: s.replaceEngine.label,
+            onTap: _pickReplaceEngine,
+          ),
           _switchRow(
             icon: Icons.save_outlined,
             title: '本地储存',
@@ -350,6 +360,32 @@ class _ReadingPreferencePageState extends State<ReadingPreferencePage> {
     );
     if (picked == null) return;
     await s.setSearchThreadCount(picked);
+  }
+
+  /// 选「替换净化」在哪一端执行。
+  ///
+  /// 【为什么切成服务端时要提醒一句】两条路的**规则版本可能不同**：
+  /// 本地路用的是本机这份规则副本，服务端路用的是服务器上的规则。切换之后
+  /// 同一章的文字可能不一样，用户如果不知道就会以为「坏了」。
+  Future<void> _pickReplaceEngine() async {
+    final s = _s;
+    final picked = await _pickSimple<ReplaceEngine>(
+      title: '净化执行位置',
+      entries: {for (final v in ReplaceEngine.values) v: v.label},
+      current: s.replaceEngine,
+    );
+    if (picked == null || picked == s.replaceEngine) return;
+    await s.setReplaceEngine(picked);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          picked == ReplaceEngine.local
+              ? '已改为本机执行净化（不依赖后端版本），重新打开章节即可看到效果'
+              : '已改为服务端执行净化，需要后端已更新到含 type 兜底的版本',
+        ),
+      ),
+    );
   }
 
   Future<T?> _pickSimple<T>({

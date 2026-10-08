@@ -662,14 +662,22 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 「过滤」写入规则后调用：作废本地章节缓存，再重取当前章。
   ///
   /// 【为什么必须这么做】
-  /// `ReaderProvider.getChapterContent` 命中缓存就直接返回，而缓存目录只按
-  /// `replace_on` / `replace_off` 分，**不带规则版本**。所以加规则之前缓存下来的
-  /// 正文里是没被替换过的文字 —— 用户点了「过滤」却看到正文毫无变化，
-  /// 会以为功能坏了（实际规则早就生效，只是界面读的是旧缓存）。
+  /// `ReaderProvider.getChapterContent` 命中缓存就直接返回。走**服务端净化**
+  /// 时缓存目录只有 `replace_on` / `replace_off` 两级、**不带规则版本**，
+  /// 所以加规则之前缓存下来的正文里是没被替换过的文字 —— 用户点了「过滤」
+  /// 却看到正文毫无变化，会以为功能坏了（实际规则早就生效，只是界面读的是旧缓存）。
+  ///
+  /// 走**本地净化**时目录名里带了规则指纹，本来就能自动作废；这里多刷一次是
+  /// 为了顺手把**本地那份规则副本**也更新掉（「过滤」是直接写服务端的），
+  /// 否则本地引擎还在拿旧规则净化，同样是「点了没反应」。
   Future<void> _onReplaceRuleChanged() async {
     final provider = _readerProvider;
     if (provider == null || !mounted) return;
-    await provider.invalidateChapterCacheAfterReplaceRuleChange();
+    // 把 token 一起传下去：本地净化引擎用的是本地那份规则副本，而「过滤」是
+    // 直接写到服务端的 —— 不在这里重新拉一次，本地引擎就还在拿旧规则净化。
+    await provider.invalidateChapterCacheAfterReplaceRuleChange(
+      accessToken: _token,
+    );
     if (!mounted) return;
     // 预排版缓存里同样是「旧规则下」的正文，一并作废
     _state.layoutCache.clear();

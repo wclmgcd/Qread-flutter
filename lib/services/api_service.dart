@@ -1198,6 +1198,33 @@ class ApiService {
     return resp.data['data']?.toString();
   }
 
+  /// 一次把**全部**净化规则拉回来（先问总页数，再逐页取）。
+  ///
+  /// 【为什么要抽到这一层】
+  /// 原来这段分页逻辑写在 `ReplaceRuleProvider.loadRules` 里，只有「净化规则
+  /// 管理」页面会调。但客户端本地净化引擎是在**读正文时**跑的，那时也必须
+  /// 手里有规则 —— 于是阅读页也要能拉一次，两边再各写一份分页逻辑迟早会走岔。
+  Future<List<ReplaceRule>> fetchAllReplaceRules(String accessToken) async {
+    final pageData = await getReplaceRulesPage(accessToken);
+    final data = pageData['data'] ?? pageData;
+    final md5 = (data is Map) ? data['md5']?.toString() : null;
+    final totalPages =
+        (data is Map ? int.tryParse(data['page']?.toString() ?? '1') : 1) ?? 1;
+
+    final fetched = <ReplaceRule>[];
+    for (var page = 1; page <= totalPages; page++) {
+      final pageRules = await getReplaceRulesNew(
+        accessToken,
+        md5: md5,
+        page: page,
+      );
+      if (pageRules.isEmpty) break;
+      fetched.addAll(pageRules);
+    }
+    fetched.sort((a, b) => a.order.compareTo(b.order));
+    return fetched;
+  }
+
   Future<Map<String, dynamic>> addReplaceRule(
     String accessToken,
     ReplaceRule rule,

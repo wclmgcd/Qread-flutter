@@ -75,15 +75,29 @@ class LocalCacheService {
 
   // -------------------------------------------------------------- 章节正文
 
-  /// 章节缓存的目录：`reader/<bookUrl 的哈希>/replace_{on,off}`。
+  /// 章节缓存的目录：`reader/<bookUrl 的哈希>/replace_{on,off}[_<规则指纹>]`。
   ///
-  /// 【注意这里**只有「有没有应用净化」两级，不带规则版本**】
-  /// 所以「替换净化」规则一变，旧缓存就过期了 —— 必须显式调
-  /// [clearBookChapterCache]，否则正文看起来毫无变化（见该方法注释）。
-  String _chapterDir(String bookUrl, bool useReplaceRule) {
+  /// 【为什么原来只有「有没有应用净化」两级不够】
+  /// 目录里**不带规则版本**，所以「替换净化」规则一变，旧缓存就过期了 ——
+  /// 原来只能靠调用方显式调 [clearBookChapterCache] 兜着，一旦漏调（或者规则
+  /// 是在**另一台设备 / 网页端**改的），正文看起来就毫无变化。
+  ///
+  /// 现在多带一个可选的 [ruleFingerprint]：客户端本地净化引擎每次都用当前
+  /// 规则集的指纹当目录后缀，**规则一变目录名就变，旧缓存天然用不上**，
+  /// 不依赖任何显式清理动作。
+  ///
+  /// 【谁传什么】
+  /// - 净化关掉 → `replace_off`，不传指纹
+  /// - 服务端净化 → `replace_on`，不传指纹（规则版本在服务端，客户端看不见）
+  /// - 本地净化 → `replace_on_<指纹>`
+  /// 三种目录互不干扰，所以「切执行端 / 改规则」都不会读到另一份的残留。
+  String _chapterDir(String bookUrl, bool useReplaceRule, String? ruleFingerprint) {
     final hashed = scopedKey(bookUrl);
     final replaceFlag = useReplaceRule ? 'replace_on' : 'replace_off';
-    return 'reader/$hashed/$replaceFlag';
+    final suffix = (ruleFingerprint == null || ruleFingerprint.isEmpty)
+        ? ''
+        : '_$ruleFingerprint';
+    return 'reader/$hashed/$replaceFlag$suffix';
   }
 
   Future<void> writeChapterContent({
@@ -91,9 +105,10 @@ class LocalCacheService {
     required int chapterIndex,
     required bool useReplaceRule,
     required String content,
+    String? ruleFingerprint,
   }) {
     return _store.writeText(
-      '${_chapterDir(bookUrl, useReplaceRule)}/$chapterIndex.txt',
+      '${_chapterDir(bookUrl, useReplaceRule, ruleFingerprint)}/$chapterIndex.txt',
       content,
     );
   }
@@ -102,9 +117,10 @@ class LocalCacheService {
     required String bookUrl,
     required int chapterIndex,
     required bool useReplaceRule,
+    String? ruleFingerprint,
   }) {
     return _store.readText(
-      '${_chapterDir(bookUrl, useReplaceRule)}/$chapterIndex.txt',
+      '${_chapterDir(bookUrl, useReplaceRule, ruleFingerprint)}/$chapterIndex.txt',
     );
   }
 
@@ -112,8 +128,9 @@ class LocalCacheService {
     required String bookUrl,
     required bool useReplaceRule,
     required Set<int> keepIndices,
+    String? ruleFingerprint,
   }) async {
-    final dir = _chapterDir(bookUrl, useReplaceRule);
+    final dir = _chapterDir(bookUrl, useReplaceRule, ruleFingerprint);
     for (final name in await _store.listNames(dir)) {
       final index = int.tryParse(name.replaceAll('.txt', ''));
       if (index == null || keepIndices.contains(index)) continue;
@@ -128,11 +145,11 @@ class LocalCacheService {
   /// 【什么时候必须调】
   /// 「替换净化」规则变了之后 —— 用户点了阅读页的「过滤」就属于这种。
   ///
-  /// 【为什么】
-  /// 缓存目录只按「有没有应用净化」分成 `replace_on` / `replace_off` 两级，
-  /// **不带规则版本**。所以加规则之前缓存下来的正文里是**没有替换过**的文字，
-  /// 而 `ReaderProvider.getChapterContent` 命中缓存就直接返回、不再请求后端 ——
-  /// 表现就是「规则明明写进去了，正文一点变化都没有」。
+  /// 【为什么还需要它（不是有规则指纹了吗）】
+  /// 规则指纹只对**本地净化**那条路有效 —— 那是客户端自己算的，指纹算得出来。
+  /// 走**服务端净化**时，规则版本在服务端，客户端根本看不见，目录名里只能
+  /// 写个固定的 `replace_on`，所以规则一改仍然会读到旧正文。用户在阅读页点
+  /// 「过滤」（规则写到服务端）之后就属于这种，必须显式清一次。
   Future<void> clearBookChapterCache(String bookUrl) {
     return _store.deleteTree('reader/${scopedKey(bookUrl)}');
   }

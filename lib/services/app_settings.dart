@@ -88,6 +88,38 @@ enum ChineseConvert {
   }
 }
 
+/// 「替换净化」在**哪一端**执行。
+///
+/// 【为什么需要这个开关】
+/// 官方客户端（Android / iOS / web）三端都自带一套**本地净化引擎**，净化是在
+/// 客户端算的；而本仓库的上游 `WEP-56/Qread-flutter` 把这块整段漏掉了，
+/// 只把 `useReplaceRule` 传给服务端。两条路各有各的用处：
+///
+/// - [local]（默认，= 原版行为）：请求正文时**不发**净化开关，由客户端的
+///   `ReplaceEngine` 用本地规则算。好处是不依赖后端版本 —— 后端没升级、
+///   甚至没部署净化逻辑也能用；规则还能随本地副本走。
+/// - [server]：把开关发给后端，由后端算（依赖后端 `getBookContentNew` 里
+///   `type ?: 0` 那个兜底修复）。
+///
+/// **两者绝不会同时生效** —— 否则正文会被净化两遍（`。` → `。\n` 这类规则
+/// 会多出一倍空行）。见 `ReaderProvider._replaceRoute`。
+enum ReplaceEngine {
+  local('local', '本地（推荐）'),
+  server('server', '服务端');
+
+  const ReplaceEngine(this.id, this.label);
+
+  final String id;
+  final String label;
+
+  static ReplaceEngine byId(String? id) {
+    for (final v in ReplaceEngine.values) {
+      if (v.id == id) return v;
+    }
+    return ReplaceEngine.local;
+  }
+}
+
 /// 全局阅读偏好设置
 ///
 /// 官方客户端把这一堆设置放在「我的 → 阅读偏好」里。本仓库以前把这些
@@ -108,6 +140,7 @@ class AppSettings extends ChangeNotifier {
   static const _kImageLimit = 'app_image_limit';
   static const _kUseReplaceRule = 'app_use_replace_rule';
   static const _kReplaceLocalStorage = 'app_replace_local_storage';
+  static const _kReplaceEngine = 'app_replace_engine';
   static const _kTtsBackground = 'app_tts_background';
   static const _kSearchThreadCount = 'app_search_thread_count';
   static const _kWebSocketEnabled = 'app_websocket_enabled';
@@ -157,6 +190,7 @@ class AppSettings extends ChangeNotifier {
   int _imageLimit = 0;
   bool _useReplaceRule = true;
   bool _replaceLocalStorage = false;
+  ReplaceEngine _replaceEngine = ReplaceEngine.local;
   bool _ttsBackground = true;
   int _searchThreadCount = 4;
   bool _webSocketEnabled = false;
@@ -177,6 +211,7 @@ class AppSettings extends ChangeNotifier {
   int get imageLimit => _imageLimit;
   bool get useReplaceRule => _useReplaceRule;
   bool get replaceLocalStorage => _replaceLocalStorage;
+  ReplaceEngine get replaceEngine => _replaceEngine;
   bool get ttsBackground => _ttsBackground;
   int get searchThreadCount => _searchThreadCount;
   bool get webSocketEnabled => _webSocketEnabled;
@@ -205,6 +240,7 @@ class AppSettings extends ChangeNotifier {
     _imageLimit = p.getInt(_kImageLimit) ?? 0;
     _useReplaceRule = p.getBool(_kUseReplaceRule) ?? true;
     _replaceLocalStorage = p.getBool(_kReplaceLocalStorage) ?? false;
+    _replaceEngine = ReplaceEngine.byId(p.getString(_kReplaceEngine));
     _ttsBackground = p.getBool(_kTtsBackground) ?? true;
     _searchThreadCount = p.getInt(_kSearchThreadCount) ?? 4;
     _webSocketEnabled = p.getBool(_kWebSocketEnabled) ?? false;
@@ -279,6 +315,19 @@ class AppSettings extends ChangeNotifier {
     _replaceLocalStorage = v;
     notifyListeners();
     (await SharedPreferences.getInstance()).setBool(_kReplaceLocalStorage, v);
+  }
+
+  /// 切换净化执行端。
+  ///
+  /// 【为什么切完要清空章节缓存】本地执行和服务端执行产出的正文虽然都「净化过」，
+  /// 但用的规则版本可能不同，缓存的目录也分开了（见
+  /// `LocalCacheService._chapterDir` 的 `ruleFingerprint`）—— 不清的话，
+  /// 切回去还是看到切之前那份。这里只清内存里那份，磁盘缓存由目录名天然隔离。
+  Future<void> setReplaceEngine(ReplaceEngine v) async {
+    if (_replaceEngine == v) return;
+    _replaceEngine = v;
+    notifyListeners();
+    (await SharedPreferences.getInstance()).setString(_kReplaceEngine, v.id);
   }
 
   Future<void> setTtsBackground(bool v) async {
