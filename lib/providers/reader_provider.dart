@@ -53,7 +53,7 @@ class ReaderProvider extends ChangeNotifier {
   /// 三态的含义见 [_ReplaceRoute]。
   _ReplaceRoute get _replaceRoute {
     if (!useReplaceRule) return _ReplaceRoute.none;
-    if (AppSettings.instance.replaceEngine == ReplaceEngine.server) {
+    if (AppSettings.instance.replaceEngine == ReplaceEngineMode.server) {
       return _ReplaceRoute.server;
     }
     // 本地引擎要接管，但**手头一条规则都没有** —— 这时不能就这么放过去，
@@ -62,9 +62,6 @@ class ReaderProvider extends ChangeNotifier {
     if (ReplaceRuleStore.instance.isEmpty) return _ReplaceRoute.server;
     return _ReplaceRoute.local;
   }
-
-  /// 发给服务端的净化开关 —— **只有归服务端管时才发 1**。
-  int get _serverReplaceFlag => _replaceRoute == _ReplaceRoute.server ? 1 : 0;
 
   /// 章节缓存目录用的规则指纹：只有本地引擎才带。
   ///
@@ -235,7 +232,7 @@ class ReaderProvider extends ChangeNotifier {
   /// 这是绝大多数情况（规则很少变）。拿不到就静默放弃 —— 此时
   /// [_replaceRoute] 会自动退回服务端净化，不会让用户看到「净化没生效」。
   Future<void> _ensureLocalRules(String accessToken) async {
-    if (AppSettings.instance.replaceEngine != ReplaceEngine.local) return;
+    if (AppSettings.instance.replaceEngine != ReplaceEngineMode.local) return;
     if (!useReplaceRule) return;
     final store = ReplaceRuleStore.instance;
     await store.load();
@@ -352,7 +349,7 @@ class ReaderProvider extends ChangeNotifier {
     _prefetchCache.clear();
     if (accessToken != null &&
         accessToken.isNotEmpty &&
-        AppSettings.instance.replaceEngine == ReplaceEngine.local) {
+        AppSettings.instance.replaceEngine == ReplaceEngineMode.local) {
       try {
         final rules =
             await ApiService.instance.fetchAllReplaceRules(accessToken);

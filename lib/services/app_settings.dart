@@ -103,20 +103,20 @@ enum ChineseConvert {
 ///
 /// **两者绝不会同时生效** —— 否则正文会被净化两遍（`。` → `。\n` 这类规则
 /// 会多出一倍空行）。见 `ReaderProvider._replaceRoute`。
-enum ReplaceEngine {
+enum ReplaceEngineMode {
   local('local', '本地（推荐）'),
   server('server', '服务端');
 
-  const ReplaceEngine(this.id, this.label);
+  const ReplaceEngineMode(this.id, this.label);
 
   final String id;
   final String label;
 
-  static ReplaceEngine byId(String? id) {
-    for (final v in ReplaceEngine.values) {
+  static ReplaceEngineMode byId(String? id) {
+    for (final v in ReplaceEngineMode.values) {
       if (v.id == id) return v;
     }
-    return ReplaceEngine.local;
+    return ReplaceEngineMode.local;
   }
 }
 
@@ -190,7 +190,7 @@ class AppSettings extends ChangeNotifier {
   int _imageLimit = 0;
   bool _useReplaceRule = true;
   bool _replaceLocalStorage = false;
-  ReplaceEngine _replaceEngine = ReplaceEngine.local;
+  ReplaceEngineMode _replaceEngine = ReplaceEngineMode.local;
   bool _ttsBackground = true;
   int _searchThreadCount = 4;
   bool _webSocketEnabled = false;
@@ -211,7 +211,7 @@ class AppSettings extends ChangeNotifier {
   int get imageLimit => _imageLimit;
   bool get useReplaceRule => _useReplaceRule;
   bool get replaceLocalStorage => _replaceLocalStorage;
-  ReplaceEngine get replaceEngine => _replaceEngine;
+  ReplaceEngineMode get replaceEngine => _replaceEngine;
   bool get ttsBackground => _ttsBackground;
   int get searchThreadCount => _searchThreadCount;
   bool get webSocketEnabled => _webSocketEnabled;
@@ -240,7 +240,7 @@ class AppSettings extends ChangeNotifier {
     _imageLimit = p.getInt(_kImageLimit) ?? 0;
     _useReplaceRule = p.getBool(_kUseReplaceRule) ?? true;
     _replaceLocalStorage = p.getBool(_kReplaceLocalStorage) ?? false;
-    _replaceEngine = ReplaceEngine.byId(p.getString(_kReplaceEngine));
+    _replaceEngine = ReplaceEngineMode.byId(p.getString(_kReplaceEngine));
     _ttsBackground = p.getBool(_kTtsBackground) ?? true;
     _searchThreadCount = p.getInt(_kSearchThreadCount) ?? 4;
     _webSocketEnabled = p.getBool(_kWebSocketEnabled) ?? false;
@@ -323,7 +323,7 @@ class AppSettings extends ChangeNotifier {
   /// 但用的规则版本可能不同，缓存的目录也分开了（见
   /// `LocalCacheService._chapterDir` 的 `ruleFingerprint`）—— 不清的话，
   /// 切回去还是看到切之前那份。这里只清内存里那份，磁盘缓存由目录名天然隔离。
-  Future<void> setReplaceEngine(ReplaceEngine v) async {
+  Future<void> setReplaceEngine(ReplaceEngineMode v) async {
     if (_replaceEngine == v) return;
     _replaceEngine = v;
     notifyListeners();

@@ -369,9 +369,9 @@ class _ReadingPreferencePageState extends State<ReadingPreferencePage> {
   /// 同一章的文字可能不一样，用户如果不知道就会以为「坏了」。
   Future<void> _pickReplaceEngine() async {
     final s = _s;
-    final picked = await _pickSimple<ReplaceEngine>(
+    final picked = await _pickSimple<ReplaceEngineMode>(
       title: '净化执行位置',
-      entries: {for (final v in ReplaceEngine.values) v: v.label},
+      entries: {for (final v in ReplaceEngineMode.values) v: v.label},
       current: s.replaceEngine,
     );
     if (picked == null || picked == s.replaceEngine) return;
@@ -380,7 +380,7 @@ class _ReadingPreferencePageState extends State<ReadingPreferencePage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          picked == ReplaceEngine.local
+          picked == ReplaceEngineMode.local
               ? '已改为本机执行净化（不依赖后端版本），重新打开章节即可看到效果'
               : '已改为服务端执行净化，需要后端已更新到含 type 兜底的版本',
         ),
