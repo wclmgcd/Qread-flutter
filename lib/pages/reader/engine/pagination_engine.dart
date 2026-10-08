@@ -624,7 +624,10 @@ class PaginationEngine {
   /// 注意它必须**在** [_dpWholeTag] 之后才用 —— 段评也是 `<img>`，
   /// 只是 src 是 `data:image/svg+xml;base64,...`，会被先一步摘成占位符。
   /// 走到这里还剩下的 `<img>`，才是真插图。
-  static final RegExp _anyImgTag =
+  ///
+  /// 【公开】HTML 渲染路径（reader_page 的 `_proxyImages`）也要用同一个模式，
+  /// 两边必须一致，否则同一条正文在「分页」和「HTML」两条路上表现不同。
+  static final RegExp anyImgTag =
       RegExp(r'<img\b[^>]*>', caseSensitive: false);
 
   /// src 的两种取法（复刻官方 main.dart.js 的 `cto`）。
@@ -647,7 +650,10 @@ class PaginationEngine {
   );
 
   /// 从 `<img ...>` 标签里取 src（取不到返回 null）。
-  static String? _extractImgSrc(String tag) {
+  ///
+  /// 【公开】和 [anyImgTag] 一样，HTML 渲染路径也要复用它 ——
+  /// 单靠一个 `[^"']+` 正则在带 `{}` 的 src 上必然截断（见上）。
+  static String? extractImgSrc(String tag) {
     final useGreedy = tag.contains('{') && tag.contains('}');
     final m = (useGreedy ? _imgSrcGreedy : _imgSrcPlain).firstMatch(tag);
     return m?.group(1);
@@ -827,8 +833,8 @@ class PaginationEngine {
     // 的插图在 App 里**一张都看不到**（浏览器端/官方客户端正常）。
     // 换成占位符后，下面按行归位，行首是插图的那一行就变成「插图段」。
     final contentImages = <String>[];
-    withPlaceholders = withPlaceholders.replaceAllMapped(_anyImgTag, (m) {
-      final src = (_extractImgSrc(m.group(0)!) ?? '').trim();
+    withPlaceholders = withPlaceholders.replaceAllMapped(anyImgTag, (m) {
+      final src = (extractImgSrc(m.group(0)!) ?? '').trim();
       if (src.isEmpty) return '';
       final idx = contentImages.length;
       contentImages.add(src);

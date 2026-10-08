@@ -1988,21 +1988,23 @@ class _ReaderPageState extends State<ReaderPage> {
   /// `header` / `book`。`/proxypng` 只「转发 + 缓存」、**不解密** ——
   /// 阅文系的插图（`aigcc.yuewen.com/imgChapter/...`）是加密的，直接转发
   /// 拿到的是乱码，表现就是「书源里有图，App 里一张都没有」。
+  ///
+  /// 【取 src 必须复用 PaginationEngine 那两支正则】书源的 src 里内嵌
+  /// **未转义的双引号**：`src="URL,{"style":"FULL","type":"qd"}"`。
+  /// 用 `[^"']+` 这种单支非贪婪写法会在内层引号处截断，只把 `URL,{` 替换掉，
+  /// 标签里剩下 `"style":"FULL",...}">` 一截垃圾 —— 图片照样出不来。
+  /// 分页路径已经按官方 `cto` 修好了，这里共用同一个实现。
   String _proxyImages(String html) {
-    return html.replaceAllMapped(
-      RegExp(r"""<img\s[^>]*src\s*=\s*["']([^"']+)["'][^>]*>""",
-          caseSensitive: false),
-      (match) {
-        final fullTag = match.group(0) ?? '';
-        final src = match.group(1) ?? '';
-        if (src.isEmpty) return fullTag;
-        // 段评气泡是内联 base64 SVG，不该也不能走 /imageDecode
-        if (src.startsWith('data:')) return fullTag;
-        final url = _buildImageUrl(src);
-        if (url.isEmpty) return fullTag;
-        return fullTag.replaceFirst(src, url);
-      },
-    );
+    return html.replaceAllMapped(PaginationEngine.anyImgTag, (match) {
+      final fullTag = match.group(0) ?? '';
+      final src = (PaginationEngine.extractImgSrc(fullTag) ?? '').trim();
+      if (src.isEmpty) return fullTag;
+      // 段评气泡是内联 base64 SVG，不该也不能走 /imageDecode
+      if (src.startsWith('data:')) return fullTag;
+      final url = _buildImageUrl(src);
+      if (url.isEmpty) return fullTag;
+      return fullTag.replaceFirst(src, url);
+    });
   }
 
   void _rebuildPages(ReaderProvider provider) {
