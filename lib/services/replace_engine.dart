@@ -4,7 +4,7 @@ import '../models/replace_rule.dart';
 class ReplaceFailure {
   final ReplaceRule rule;
 
-  /// `timeout` / `unsafe-pattern` / `invalid-pattern` / `error`。
+  /// `timeout` / `unsafe-pattern` / `invalid-pattern` / `error` / `server-only`。
   final String kind;
 
   final String message;
@@ -24,8 +24,12 @@ class ReplaceOutcome {
   /// （官方是 `if (!J.p(k, b1)) { ... m.push(rule) }`）。
   final List<ReplaceRule> applied;
 
-  /// 超时 / 正则非法 / 报错的规则。调用方应当把它们禁用掉 ——
-  /// 官方就是这么做的（`if (i.a === l.a && i.y) A.N6(l.a, "0")`）。
+  /// 没跑成功的规则，具体原因看 [ReplaceFailure.kind]。
+  ///
+  /// 注意**不要**一看到 failure 就去禁用规则：目前只有 `timeout` 该被禁用
+  /// （官方是 `if (i.a === l.a && i.y) A.N6(l.a, "0")`，见 `ReaderProvider`
+  /// 里那段 `where(kind == 'timeout')`）；`server-only` 是**合法**规则，
+  /// 只是本地跑不了，跳过就好。
   final List<ReplaceFailure> failures;
 
   /// 上报日志，已按官方规则截到最近 [ReplaceEngine.maxLogEntries] 条。
@@ -106,6 +110,12 @@ class ReplaceEngine {
     r'\((?:\\.|[^()\\])*[*+](?:\\.|[^()\\])*\)\s*(?:[*+]|\{\d+,\d*\})',
   );
 
+  /// 服务端净化支持、本地不支持的替换规则前缀。
+  ///
+  /// `replacement` 以它开头时，服务端会交给 Rhino 执行；本地没有 JS 引擎，
+  /// 只能整条跳过 —— 见 [apply] 里那段 `@js:` 判断。
+  static const String _jsPrefix = '@js:';
+
   /// 对正文（或章节标题）跑一遍净化。
   ///
   /// [forTitle] 决定用哪一半规则：`true` 只跑 `scopeTitle` 的，
@@ -142,6 +152,19 @@ class ReplaceEngine {
         continue;
       }
       if (rule.pattern.isEmpty) continue;
+
+      // 【服务端专属】replacement 以 `@js:` 开头时，服务端会把它交给 Rhino 执行，
+      // 本地没有 JS 引擎 —— 整条跳过。以前是**静默出错**：非正则分支会把整段
+      // JS 源码当字面量插进正文，正则分支则连 `$1` 一起原样留下，既不报错也看不出来。
+      if (rule.replacement.startsWith(_jsPrefix)) {
+        failures.add(ReplaceFailure(
+          rule,
+          'server-only',
+          'replacement 以 @js: 开头，本地无 JS 引擎，已跳过',
+        ));
+        _push(logs, '规则「${rule.displayName}」用 @js: 替换，本地无 JS 引擎，已跳过（服务端净化可用）');
+        continue;
+      }
 
       final before = text;
       final watch = Stopwatch()..start();

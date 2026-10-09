@@ -121,7 +121,7 @@ class _ReplaceRuleEditorPageState extends State<ReplaceRuleEditorPage> {
           _field(
             controller: _replacementController,
             label: '替换为',
-            hint: '支持 @js:',
+            hint: '支持 @js:（需服务端净化）',
             minLines: 2,
             maxLines: 8,
           ),

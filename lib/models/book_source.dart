@@ -26,6 +26,10 @@ class BookSource {
   @JsonKey(name: 'exploreUrl')
   String? exploreUrl;
 
+  /// 发现页自定义 UI（旧版字段，官方保留兼容）
+  @JsonKey(name: 'exploreScreen')
+  String? exploreScreen;
+
   @JsonKey(name: 'ruleSearch')
   dynamic ruleSearch;
 
@@ -40,6 +44,11 @@ class BookSource {
 
   @JsonKey(name: 'ruleContent')
   dynamic ruleContent;
+
+  /// 段评规则。对象原样透传（和后端 ruleReview 对齐），
+  /// 这里不做结构化，免得字段一多就对不齐。
+  @JsonKey(name: 'ruleReview')
+  dynamic ruleReview;
 
   @JsonKey(name: 'enabled')
   bool? enabled;
@@ -80,6 +89,14 @@ class BookSource {
   @JsonKey(name: 'checkKeyWord')
   String? checkKeyWord;
 
+  /// 是否监听事件来执行回调规则（书源里的 callBackJs）
+  @JsonKey(name: 'eventListener')
+  bool? eventListener;
+
+  /// 由书源控制的自定义按钮
+  @JsonKey(name: 'customButton')
+  bool? customButton;
+
   BookSource({
     this.bookSourceUrl,
     this.bookSourceName,
@@ -88,11 +105,13 @@ class BookSource {
     this.bookSourceComment,
     this.searchUrl,
     this.exploreUrl,
+    this.exploreScreen,
     this.ruleSearch,
     this.ruleExplore,
     this.ruleBookInfo,
     this.ruleToc,
     this.ruleContent,
+    this.ruleReview,
     this.enabled,
     this.enabledExplore,
     this.customOrder,
@@ -106,6 +125,8 @@ class BookSource {
     this.loginCheckJs,
     this.variableComment,
     this.checkKeyWord,
+    this.eventListener,
+    this.customButton,
   });
 
   factory BookSource.fromJson(Map<String, dynamic> json) => BookSource(
@@ -116,11 +137,13 @@ class BookSource {
         bookSourceComment: toStringVal(json['bookSourceComment']),
         searchUrl: toStringVal(json['searchUrl']),
         exploreUrl: toStringVal(json['exploreUrl']),
+        exploreScreen: toStringVal(json['exploreScreen']),
         ruleSearch: json['ruleSearch'],
         ruleExplore: json['ruleExplore'],
         ruleBookInfo: json['ruleBookInfo'],
         ruleToc: json['ruleToc'],
         ruleContent: json['ruleContent'],
+        ruleReview: json['ruleReview'],
         enabled: toBool(json['enabled']),
         enabledExplore: toBool(json['enabledExplore']),
         customOrder: toInt(json['customOrder']),
@@ -134,6 +157,8 @@ class BookSource {
         loginCheckJs: toStringVal(json['loginCheckJs']),
         variableComment: toStringVal(json['variableComment']),
         checkKeyWord: toStringVal(json['checkKeyWord']),
+        eventListener: toBool(json['eventListener']),
+        customButton: toBool(json['customButton']),
       );
 
   Map<String, dynamic> toJson() => _$BookSourceToJson(this);

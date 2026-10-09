@@ -11,6 +11,7 @@ import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../login/source_login_page.dart';
+import '../search/search_page.dart';
 import 'book_source_switch_page.dart';
 
 /// 书籍信息页参数
@@ -182,7 +183,21 @@ class _BookInfoPageState extends State<BookInfoPage> {
   Widget _buildInfoRows() {
     final book = _book;
     final rows = <Widget>[
-      _infoRow(Icons.person_outline, '作者', book.author ?? '未知'),
+      _infoRow(
+        Icons.person_outline,
+        '作者',
+        book.author ?? '未知',
+        // 点作者名 → 用作者名去搜索该作者名下所有书
+        onTap: _authorSearchable ? _searchByAuthor : null,
+        valueStyle: _authorSearchable
+            ? TextStyle(
+                fontSize: 15,
+                color: Theme.of(context).colorScheme.primary,
+                decoration: TextDecoration.underline,
+                decorationColor: Theme.of(context).colorScheme.primary,
+              )
+            : null,
+      ),
       _infoRow(Icons.folder_outlined, '来源', book.originName ?? book.origin ?? '未知'),
       _infoRow(
         Icons.format_list_bulleted,
@@ -239,8 +254,8 @@ class _BookInfoPageState extends State<BookInfoPage> {
   }
 
   Widget _infoRow(IconData icon, String label, String value,
-      {Widget? trailing}) {
-    return Padding(
+      {Widget? trailing, VoidCallback? onTap, TextStyle? valueStyle}) {
+    final row = Padding(
       padding: const EdgeInsets.symmetric(vertical: 13),
       child: Row(
         children: [
@@ -258,13 +273,16 @@ class _BookInfoPageState extends State<BookInfoPage> {
               value,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 15),
+              style: valueStyle ?? const TextStyle(fontSize: 15),
             ),
           ),
           if (trailing != null) ...[const SizedBox(width: 8), trailing],
         ],
       ),
     );
+    if (onTap == null) return row;
+    // 整行都可点：不用精确点中那几个字，手指粗一点也能中
+    return InkWell(onTap: onTap, child: row);
   }
 
   Widget _miniButton(String text, VoidCallback onTap) {
@@ -281,6 +299,32 @@ class _BookInfoPageState extends State<BookInfoPage> {
           text,
           style: const TextStyle(fontSize: 12, color: Color(0xFFE05B57)),
         ),
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------ 作者搜索
+
+  /// 作者名有效（非空、且不是「未知」占位）才让这一行可点
+  bool get _authorSearchable {
+    final a = _book.author?.trim() ?? '';
+    return a.isNotEmpty && a != '未知';
+  }
+
+  /// 点作者名 → 打开搜索页，用作者名搜该作者名下所有书。
+  ///
+  /// 【为什么直接 push 而不是 pushNamed】
+  /// `AppRoutes.routes` 里 `search` 那条 builder 是 `(_) => const SearchPage()`，
+  /// 它会把 arguments 丢掉。要走命名路由带参数就得把这条从 routes 挪到
+  /// onGenerateRoute，动的是全局路由表；这里只需要一个参数，
+  /// 直接 push 一个 MaterialPageRoute 影响面最小。
+  void _searchByAuthor() {
+    final author = _book.author?.trim() ?? '';
+    if (author.isEmpty) return;
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SearchPage(initialKeyword: author),
       ),
     );
   }

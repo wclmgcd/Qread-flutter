@@ -55,6 +55,10 @@ class _BookSourceEditorPageState extends State<BookSourceEditorPage> with Single
     SourceEditorField(path: 'variableComment', label: '变量说明 (variableComment)', maxLines: 4),
     SourceEditorField(path: 'concurrentRate', label: '并发率 (concurrentRate)'),
     SourceEditorField(path: 'jsLib', label: 'jsLib', maxLines: 8),
+    SourceEditorField(path: 'eventListener', label: '事件监听 (eventListener)',
+        type: SourceFieldType.checkbox),
+    SourceEditorField(path: 'customButton', label: '自定义按钮 (customButton)',
+        type: SourceFieldType.checkbox),
   ];
 
   static const _searchFields = [
@@ -73,6 +77,7 @@ class _BookSourceEditorPageState extends State<BookSourceEditorPage> with Single
 
   static const _exploreFields = [
     SourceEditorField(path: 'exploreUrl', label: '发现 URL (exploreUrl)', maxLines: 4),
+    SourceEditorField(path: 'exploreScreen', label: '发现页自定义 UI (exploreScreen)', maxLines: 4),
     SourceEditorField(path: 'ruleExplore.bookList', label: '书籍列表规则 (bookList)', maxLines: 4),
     SourceEditorField(path: 'ruleExplore.name', label: '书名规则 (name)', maxLines: 2),
     SourceEditorField(path: 'ruleExplore.author', label: '作者规则 (author)', maxLines: 2),
@@ -121,6 +126,8 @@ class _BookSourceEditorPageState extends State<BookSourceEditorPage> with Single
     SourceEditorField(path: 'ruleContent.imageStyle', label: 'imageStyle', maxLines: 2),
     SourceEditorField(path: 'ruleContent.imageDecode', label: 'imageDecode', maxLines: 4),
     SourceEditorField(path: 'ruleContent.payAction', label: '付费动作 (payAction)', maxLines: 3),
+    SourceEditorField(path: 'ruleContent.subContent', label: '副文规则 (subContent)', maxLines: 3),
+    SourceEditorField(path: 'ruleContent.callBackJs', label: '回调 JS (callBackJs)', maxLines: 4),
   ];
 
   @override

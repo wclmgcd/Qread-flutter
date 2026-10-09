@@ -15,7 +15,11 @@ import '../../services/app_settings.dart';
 import '../../services/storage_service.dart';
 
 class SearchPage extends StatefulWidget {
-  const SearchPage({Key? key}) : super(key: key);
+  const SearchPage({Key? key, this.initialKeyword}) : super(key: key);
+
+  /// 带着关键词进来（例如从「书籍信息」页点作者名跳过来）。
+  /// 非空时页面一挂载就自动搜一次，不用用户再点一下。
+  final String? initialKeyword;
 
   @override
   State<SearchPage> createState() => _SearchPageState();
@@ -51,9 +55,17 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _loadSources();
-      _loadHistory();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // 【顺序不能换】_search 依赖 _enabledSources；不等书源加载完就搜，
+      // 只会弹出「没有可用的搜索书源」。
+      // 【历史也要先加载完】_pushHistory 是拿当前 _history 拼新列表再整体写回，
+      // 历史还空着就搜会把本地那份历史覆盖成只剩这一个关键词。
+      await _loadSources();
+      await _loadHistory();
+      final kw = widget.initialKeyword?.trim() ?? '';
+      if (kw.isNotEmpty && mounted) {
+        await _search(kw);
+      }
     });
   }
 
@@ -423,7 +435,8 @@ class _SearchPageState extends State<SearchPage> {
       appBar: AppBar(
         title: TextField(
           controller: _controller,
-          autofocus: true,
+          // 带关键词进来时不抢焦点：键盘弹出来会盖住结果
+          autofocus: (widget.initialKeyword?.trim() ?? '').isEmpty,
           decoration: const InputDecoration(
             hintText: '搜索书名或作者',
             border: InputBorder.none,

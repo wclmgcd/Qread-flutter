@@ -403,6 +403,82 @@ void main() {
     });
   });
 
+  group('@js: 替换规则（服务端专属，本地跳过）', () {
+    test('正则规则：正文一字不动，记为 server-only', () {
+      final outcome = run('夜晚的风', [
+        const ReplaceRule(
+          id: '1',
+          pattern: '夜晚',
+          replacement: '@js:result.toUpperCase()',
+          isRegex: true,
+        ),
+      ]);
+      expect(outcome.content, '夜晚的风');
+      expect(outcome.applied, isEmpty);
+      expect(outcome.failures.single.kind, 'server-only');
+    });
+
+    test('非正则规则：不会把 JS 源码当字面量插进正文', () {
+      final outcome = run('夜晚的风', [
+        const ReplaceRule(
+          id: '1',
+          pattern: '夜晚',
+          replacement: '@js:result',
+          isRegex: false,
+        ),
+      ]);
+      // 修之前这里会变成 '@js:result的风'
+      expect(outcome.content, '夜晚的风');
+      expect(outcome.applied, isEmpty);
+      expect(outcome.failures.single.kind, 'server-only');
+    });
+
+    test('跳过时写一条带规则名的日志（前缀和官方一致）', () {
+      final outcome = run('原文', [
+        const ReplaceRule(
+          id: '1',
+          name: 'JS规则',
+          pattern: '原文',
+          replacement: '@js:x',
+        ),
+      ]);
+      expect(outcome.logs.single, contains('JS规则'));
+      expect(outcome.logs.single, contains('@js:'));
+      expect(outcome.logs.single.startsWith(ReplaceEngine.logPrefix), isTrue);
+    });
+
+    test('replacement 中间的 @js 不受影响', () {
+      final outcome = run('a', [
+        const ReplaceRule(id: '1', pattern: 'a', replacement: 'x@js:y'),
+      ]);
+      expect(outcome.content, 'x@js:y');
+      expect(outcome.failures, isEmpty);
+    });
+
+    test('没启用的 @js: 规则不记 failure', () {
+      final outcome = run('原文', [
+        const ReplaceRule(
+          id: '1',
+          pattern: '原文',
+          replacement: '@js:x',
+          isEnabled: false,
+        ),
+      ]);
+      expect(outcome.content, '原文');
+      expect(outcome.failures, isEmpty);
+    });
+
+    test('@js: 规则不影响同批次其它规则', () {
+      final outcome = run('夜晚的风', [
+        const ReplaceRule(id: '1', pattern: '夜晚', replacement: '@js:result'),
+        const ReplaceRule(id: '2', pattern: '风', replacement: '雨'),
+      ]);
+      expect(outcome.content, '夜晚的雨');
+      expect(outcome.applied.single.id, '2');
+      expect(outcome.failures.single.kind, 'server-only');
+    });
+  });
+
   group('边界', () {
     test('没有规则时原样返回', () {
       final outcome = run('原文', const <ReplaceRule>[]);
