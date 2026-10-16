@@ -235,9 +235,61 @@ class _BookshelfPageState extends State<BookshelfPage>
   }
 
   Future<void> _refreshBookshelf() async {
+    final token = context.read<UserProvider>().token;
     _addLog('开始刷新书架');
+    if (token == null) {
+      await _loadData(refresh: true);
+      _addLog('书架刷新完成');
+      return;
+    }
+
+    // 下拉刷新顺带「看有没有更新」：逐本让服务端重新抓取章节数，
+    // 刷新前后对比 totalChapterNum，变大即判定有更新（卡片上的未读角标随之刷新）。
+    final updated = await _checkBookUpdates(token);
+    _addLog(updated > 0 ? '书架刷新完成，$updated 本有更新' : '书架刷新完成，暂无更新');
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(updated > 0 ? '检查完成：$updated 本有更新' : '检查完成：暂无更新'),
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// 检查更新：刷新前记下各书的章节总数，逐本调 `refreshBook` 让服务端重新抓取，
+  /// 再重载一次书架对比。「章节总数变大」即判定有更新。
+  ///
+  /// 返回章节数有增加的书的数量。4 本一组并发，避免几十本书串行把下拉刷新拖慢。
+  Future<int> _checkBookUpdates(String token) async {
+    final before = <String, int>{
+      for (final b in context.read<BookshelfProvider>().allBooks)
+        if ((b.bookUrl ?? '').isNotEmpty) b.bookUrl!: b.totalChapterNum ?? 0,
+    };
+    if (before.isEmpty) return 0;
+
+    const concurrency = 4;
+    final urls = before.keys.toList(growable: false);
+    for (var i = 0; i < urls.length; i += concurrency) {
+      final end = i + concurrency > urls.length ? urls.length : i + concurrency;
+      await Future.wait(urls.sublist(i, end).map((url) async {
+        try {
+          await ApiService.instance.refreshBook(token, url);
+        } catch (e) {
+          _addLog('刷新失败: $url, $e');
+        }
+      }));
+    }
+
     await _loadData(refresh: true);
-    _addLog('书架刷新完成');
+
+    var count = 0;
+    for (final b in context.read<BookshelfProvider>().allBooks) {
+      final url = b.bookUrl;
+      if (url == null || url.isEmpty) continue;
+      final oldCount = before[url];
+      if (oldCount != null && (b.totalChapterNum ?? 0) > oldCount) count++;
+    }
+    return count;
   }
 
   Future<void> _refreshAllBooks() async {

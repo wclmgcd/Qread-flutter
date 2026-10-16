@@ -1364,6 +1364,26 @@ class ApiService {
     });
   }
 
+  /// 批量上传本地搜索历史 —— 老版本客户端首次升级时用，和 [pushBrowsingHistory] 对称。
+  ///
+  /// body 是关键词的 JSON 数组（`["关键词1","关键词2",...]`）。顺序即「由新到旧」，
+  /// 后端时间戳照此递减，保证入库后的倒序和本地一致。
+  /// 逐条调 [addSearchHistory] 要打 N 个请求，这里一次收完。
+  Future<void> pushSearchHistory(
+      String accessToken, List<String> keywords) async {
+    final list = keywords
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList(growable: false);
+    if (list.isEmpty) return;
+    await _dio.post(
+      '/pushSearchHistory',
+      queryParameters: {'accessToken': accessToken},
+      data: jsonEncode(list),
+      options: _plainTextBodyOptions(),
+    );
+  }
+
   Future<Map<String, dynamic>> topReplaceRule(
       String accessToken, String id) async {
     final resp = await _dio.post('/topReplaceRule', queryParameters: {

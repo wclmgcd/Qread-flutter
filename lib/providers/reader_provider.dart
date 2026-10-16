@@ -209,6 +209,36 @@ class ReaderProvider extends ChangeNotifier {
     }
   }
 
+  /// 强制从书源刷新章节列表（`needRefresh=1`，绕过服务端缓存），给目录弹窗的
+  /// 「刷新」按钮用。返回章节数变化量（正数 = 新增了多少章）。只更新目录，
+  /// 不改变当前阅读位置，也不重新加载正文。
+  ///
+  /// 本地净化接管时标题同样要自己净化，逻辑和 [loadChapters] 保持一致。
+  Future<int> refreshChapters(String accessToken) async {
+    if (_book == null) return 0;
+    final oldCount = _chapters.length;
+    final route = _replaceRoute;
+    final fresh = await ApiService.instance.getChapterListNew(
+      accessToken,
+      _book!.bookUrl ?? '',
+      _book!.origin ?? '',
+      bookname: _book!.name,
+      useReplaceRule: route == _ReplaceRoute.server ? 1 : 0,
+      needRefresh: 1,
+    );
+    if (route == _ReplaceRoute.local &&
+        ReplaceRuleStore.instance.hasTitleRules) {
+      for (final chapter in fresh) {
+        final title = chapter.title;
+        if (title == null || title.isEmpty) continue;
+        chapter.title = _purifyLocally(title, forTitle: true);
+      }
+    }
+    _chapters = fresh;
+    notifyListeners();
+    return fresh.length - oldCount;
+  }
+
   /// 读「已读章节」失败不该影响打开书 —— 兜成空串。
   Future<String> _safeBookread(String accessToken, String bookUrl) async {
     try {

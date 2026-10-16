@@ -135,6 +135,9 @@ class _ReaderPageState extends State<ReaderPage> {
   Set<int> _bookmarkChapterIndices = {};
   List<GlobalKey> _paragraphKeys = [];
 
+  // 目录弹窗里「刷新目录」按钮的加载态（防止连点）
+  bool _chapterListRefreshing = false;
+
   // 使用集中状态对象
   final ReaderState _state = ReaderState();
 
@@ -2549,28 +2552,43 @@ class _ReaderPageState extends State<ReaderPage> {
             jumped = true;
             _jumpChapterListTo(scrollController, currentIndex * tileExtent);
           }
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Text('目录',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    Text('${provider.chapters.length} 章',
-                        style: const TextStyle(color: Colors.grey)),
-                  ],
+          return StatefulBuilder(
+            builder: (context, setSheetState) => Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      const Text('目录',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Spacer(),
+                      Text('${provider.chapters.length} 章',
+                          style: const TextStyle(color: Colors.grey)),
+                      IconButton(
+                        tooltip: '刷新目录',
+                        icon: _chapterListRefreshing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.refresh, size: 20),
+                        onPressed: _chapterListRefreshing
+                            ? null
+                            : () => _refreshChapterList(
+                                provider, setSheetState),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemExtent: tileExtent,
-                  itemCount: provider.chapters.length,
-                  itemBuilder: (context, index) {
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemExtent: tileExtent,
+                    itemCount: provider.chapters.length,
+                    itemBuilder: (context, index) {
                     final chapter = provider.chapters[index];
                     final ci = _state.displayedChapterIndex(
                         provider.book?.durChapterIndex ?? 0);
@@ -2615,10 +2633,40 @@ class _ReaderPageState extends State<ReaderPage> {
                 ),
               ),
             ],
-          );
+          ),
+        );
         },
       ),
     );
+  }
+
+  /// 目录弹窗里点「刷新」：强制从书源重新拉章节列表（绕过服务端缓存）。
+  ///
+  /// 只更新目录，不动当前阅读位置。新增了几章会弹提示，没变就说明已是最新。
+  Future<void> _refreshChapterList(
+      ReaderProvider provider,
+      void Function(void Function()) setSheetState) async {
+    final token = _token;
+    if (token == null) return;
+    setState(() => _chapterListRefreshing = true);
+    try {
+      final added = await provider.refreshChapters(token);
+      if (!mounted) return;
+      setSheetState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(added > 0 ? '目录已更新，新增 $added 章' : '目录已是最新'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('目录刷新失败，请稍后再试')),
+      );
+    } finally {
+      if (mounted) setState(() => _chapterListRefreshing = false);
+    }
   }
 
   void _showBookmarkList() {

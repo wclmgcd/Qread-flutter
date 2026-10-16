@@ -158,12 +158,11 @@ class _SearchPageState extends State<SearchPage> {
         if (mounted) setState(() => _history = remote);
         await _writeLocalHistory(remote);
       } else if (local.isNotEmpty) {
-        // 服务端空、本地有 → 首次升级，逐条推上去
-        for (final kw in local) {
-          try {
-            await ApiService.instance.addSearchHistory(token, kw);
-          } catch (_) {}
-        }
+        // 服务端空、本地有 → 首次升级，一次批量推上去
+        // （逐条 add 要打 N 个请求，后端有对称的 push 接口一次收完）
+        try {
+          await ApiService.instance.pushSearchHistory(token, local);
+        } catch (_) {}
       }
     } catch (_) {
       // 离线 / 服务端异常：继续用本地那份
