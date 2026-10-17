@@ -122,6 +122,11 @@
 	<false/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- 【扫码导入书源用】书源管理 ⋮ → 扫码导入。
+	     iOS 上缺这一条时，第一次开相机系统会直接杀掉 App（不是弹框拒绝，
+	     是崩溃），所以必须写。文案会显示在系统授权弹窗里。 -->
+	<key>NSCameraUsageDescription</key>
+	<string>扫描二维码以导入书源</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

@@ -2,6 +2,20 @@
     package="com.qread.qread">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 【扫码导入书源用】书源管理 ⋮ → 扫码导入 会开相机。
+         插件自己的 manifest 里也声明了这一条（Gradle 会合并），这里显式再写一次
+         是为了让「本 app 用到相机」在主 manifest 里看得见 —— 将来排查权限问题
+         时不用翻依赖库。缺了它，Android 上相机直接打不开。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 【通知用】Android 13(33) 起通知变成运行时权限，不声明并动态申请的话
+         通知一条都弹不出来（也不报错，静默丢弃）。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 【听书后台播放用】退到后台继续朗读必须挂前台服务，否则系统随时收进程。
+         Android 14(34) 起还要按「服务类型」细分权限：这里是播声音，
+         必须声明 MEDIA_PLAYBACK 这一档，否则 startForegroundService 会抛
+         MissingForegroundServiceTypeException。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
    <application
         android:label="Qread"
         android:name="${applicationName}"

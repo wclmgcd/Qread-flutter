@@ -32,6 +32,9 @@ class ScrollReader extends StatelessWidget {
   /// 见 PagedReader.imageUrlBuilder 的同款说明。
   final String Function(String src)? imageUrlBuilder;
 
+  /// 点正文插图时的回调，参数是拼好的最终地址（由阅读页注入去开大图）。
+  final ValueChanged<String>? onImageTap;
+
   const ScrollReader({
     Key? key,
     required this.paragraphs,
@@ -52,6 +55,7 @@ class ScrollReader extends StatelessWidget {
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
     this.imageUrlBuilder,
+    this.onImageTap,
   }) : super(key: key);
 
   @override
@@ -93,6 +97,7 @@ class ScrollReader extends StatelessWidget {
                   fontWeight: fontWeight,
                   onCommentTap: onCommentTap,
                   imageUrlBuilder: imageUrlBuilder,
+                  onImageTap: onImageTap,
                 );
               },
             ),

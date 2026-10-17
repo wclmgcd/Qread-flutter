@@ -515,6 +515,7 @@ class ContentRenderer {
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
+    ValueChanged<String>? onImageTap,
   }) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -550,6 +551,7 @@ class ContentRenderer {
                         fontWeight: fontWeight,
                         onCommentTap: onCommentTap,
                         imageUrlBuilder: imageUrlBuilder,
+                        onImageTap: onImageTap,
                       ),
                       // 小气泡已经嵌在文字行内（见 _buildTextLine），
                       // 这里只把「神评论」横幅单独排在行下方。
@@ -631,6 +633,13 @@ class ContentRenderer {
     required ReaderTheme theme,
     double? height,
     String Function(String src)? imageUrlBuilder,
+
+    /// 点图片时回调，参数是**已经拼好 token/书源/header 的最终地址**。
+    ///
+    /// 【为什么传的是最终 url 而不是原始 src】
+    /// 查看器要拿这个地址去加载大图。原始 `src` 可能带 `,{json}` 后缀，
+    /// 也可能需要 `POST /imageDecode` 解密，只有拼好的地址能直接用。
+    ValueChanged<String>? onImageTap,
   }) {
     final url = imageUrlBuilder?.call(src) ?? src;
     if (url.isEmpty) return const SizedBox.shrink();
@@ -668,9 +677,19 @@ class ContentRenderer {
     // 分页模式：高度由分页引擎给定（插图独占一页），必须夹在 SizedBox 里，
     // 否则图片会按自身高度撑破页面。滚动模式不传 height，交给 ListView
     // 按宽高比自然排。
-    return height == null
+    final sized = height == null
         ? image
         : SizedBox(height: height, width: double.infinity, child: image);
+
+    if (onImageTap == null) return sized;
+    // 【为什么不加 behavior: HitTestBehavior.opaque】
+    // 插图在分页模式下常常独占一整页，若让整块区域（包括图片四周的留白）
+    // 都吃掉点击，用户就没法「点图片外面翻页」了。用默认的 deferToChild
+    // 让命中范围恰好等于图片本身，留白照旧走翻页手势。
+    return GestureDetector(
+      onTap: () => onImageTap(url),
+      child: sized,
+    );
   }
 
   /// 渲染单行文本
@@ -686,6 +705,7 @@ class ContentRenderer {
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
+    ValueChanged<String>? onImageTap,
   }) {
     // 【插图行】整行就是一张图，独占一页。
     // 高度由分页引擎给（= 正文可用高度），这里按 BoxFit.contain 缩放进框。
@@ -697,6 +717,7 @@ class ContentRenderer {
           theme: theme,
           height: line.height,
           imageUrlBuilder: imageUrlBuilder,
+          onImageTap: onImageTap,
         ),
       );
     }
@@ -796,6 +817,7 @@ class ContentRenderer {
     FontWeight fontWeight = FontWeight.normal,
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
+    ValueChanged<String>? onImageTap,
   }) {
     // 【插图段】滚动模式没有「页」的概念，交给图片按自身宽高比铺满行宽。
     if (paragraph.isImage) {
@@ -805,6 +827,7 @@ class ContentRenderer {
           src: paragraph.imageUrl!,
           theme: theme,
           imageUrlBuilder: imageUrlBuilder,
+          onImageTap: onImageTap,
         ),
       );
     }

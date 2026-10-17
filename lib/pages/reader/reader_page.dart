@@ -20,6 +20,7 @@ import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_log.dart';
 import '../../services/app_settings.dart';
+import '../../services/notification_service.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
 import '../../services/reading_stats_service.dart';
@@ -30,6 +31,7 @@ import 'engine/engine.dart';
 import 'paragraph_comment_page.dart';
 import 'reader_selection_menu.dart';
 import 'reader_state.dart';
+import 'image_viewer_page.dart';
 import 'widgets/reader_fonts.dart';
 import 'widgets/widgets.dart';
 
@@ -40,7 +42,7 @@ class ReaderPage extends StatefulWidget {
   State<ReaderPage> createState() => _ReaderPageState();
 }
 
-class _ReaderPageState extends State<ReaderPage> {
+class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const _keyFontSize = 'reader_font_size';
   static const _keyLineHeight = 'reader_line_height';
   static const _keyAutoNext = 'reader_auto_next';
@@ -135,6 +137,9 @@ class _ReaderPageState extends State<ReaderPage> {
   Set<int> _bookmarkChapterIndices = {};
   List<GlobalKey> _paragraphKeys = [];
 
+  // 目录弹窗里「刷新目录」按钮的加载态（防止连点）
+  bool _chapterListRefreshing = false;
+
   // 使用集中状态对象
   final ReaderState _state = ReaderState();
 
@@ -154,8 +159,35 @@ class _ReaderPageState extends State<ReaderPage> {
     ReplaceRuleStore.instance.addListener(_onReplaceRulesChanged);
     _startMetaTicker();
     _listenBackendPush();
+    // 监听前后台切换 —— 「阅读偏好 → 后台播放」关掉时，切到后台要停朗读。
+    WidgetsBinding.instance.addObserver(this);
+    // 通知栏上的朗读控制按钮（上一段 / 暂停 / 停止）回调到本页的方法。
+    // 页面销毁时必须摘掉 —— 否则通知点一下会去调一个已经 dispose 的 State。
+    NotificationService.instance.onTtsAction = _onTtsNotificationAction;
     WidgetsBinding.instance.addPostFrameCallback((_) => _initBook());
     _ensureFontsThenRepaginate();
+  }
+
+  /// 通知栏朗读按钮被点了。
+  ///
+  /// 走的是和底部控制栏同一批方法，保证「在通知栏按暂停」和
+  /// 「在 App 里按暂停」走完全一致的路径，不会出现两套状态。
+  Future<void> _onTtsNotificationAction(String action) async {
+    switch (action) {
+      case NotificationService.actionPrev:
+        _ttsSkipParagraph(-1);
+        break;
+      case NotificationService.actionToggle:
+        if (_tts.isPlaying) {
+          await _pauseTts();
+        } else {
+          await _resumeTts();
+        }
+        break;
+      case NotificationService.actionStop:
+        await _stopTts();
+        break;
+    }
   }
 
   /// 字体就绪后补排一次。
@@ -199,8 +231,13 @@ class _ReaderPageState extends State<ReaderPage> {
     _novelScrollController.dispose();
     _pageController.dispose();
     _pagedReaderController.dispose();
+    NotificationService.instance.onTtsAction = null;
+    WidgetsBinding.instance.removeObserver(this);
     _tts.removeListener(_onTtsStateChanged);
     _tts.stop();
+    // 朗读通知是常驻的，页面关了必须显式收掉 —— 否则会一直挂在通知栏，
+    // 而且 Android 上前台服务不退出，系统会认为 App 还在「干活」。
+    unawaited(NotificationService.instance.cancelTts());
     // 离开阅读页要把系统导航栏还回来，否则整个 App 都点不到底部手势条
     unawaited(SystemUiService.showSystemBars());
     _saveProgressSync();
@@ -280,6 +317,22 @@ class _ReaderPageState extends State<ReaderPage> {
   /// 气泡自带 `click`（形如 `showCmt(bid,cid,pid,ts)`），
   /// 把它包成 JS 规则交给后端执行，后端执行完会通过 WebSocket 把
   /// 段评页 URL 推回来（见 [_onBackendPush]）。
+  /// 点正文插图 → 打开大图查看器。
+  ///
+  /// 【为什么传的是拼好的最终地址】
+  /// 不少书源的图要经后端 `/imageDecode` 用 JS 规则解密才能显示，
+  /// 直接拿原始 src 去加载只会得到一团乱码。这里的 url 已经是
+  /// [_buildImageUrl] 处理过的，查看器拿去就能用。
+  void _openImageViewer(String url) {
+    if (url.isEmpty) return;
+    final title = _displayedChapter(context.read<ReaderProvider>())?.title;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ImageViewerPage(url: url, title: title),
+      ),
+    );
+  }
+
   Future<void> _openParagraphComment(ParagraphComment comment) async {
     final token = _token;
     if (token == null) return;
@@ -537,6 +590,61 @@ class _ReaderPageState extends State<ReaderPage> {
   void _onTtsStateChanged() {
     if (!mounted) return;
     setState(() {});
+    // 朗读状态变了 → 同步到通知栏（内部有节流，不会每个字都重发）
+    unawaited(_syncTtsNotification());
+  }
+
+  /// 上次发通知时的朗读状态 —— 用来节流（见 [_syncTtsNotification]）。
+  bool? _lastTtsNotifiedPlaying;
+  String? _lastTtsNotifiedChapter;
+
+  /// 把当前朗读状态同步到通知栏。
+  ///
+  /// 【为什么要节流】flutter_tts 的 progress 回调每读一个字都会 notifyListeners，
+  /// 不加闸的话通知会被每秒重发好几次 —— Android 上表现为通知条闪烁、整机掉帧。
+  /// 这里只在「播/停状态」或「章节标题」真正变化时才重发。
+  Future<void> _syncTtsNotification() async {
+    if (!_state.ttsReading) {
+      _lastTtsNotifiedPlaying = null;
+      _lastTtsNotifiedChapter = null;
+      await NotificationService.instance.cancelTts();
+      return;
+    }
+    final provider = _readerProvider;
+    final chapterTitle =
+        provider == null ? '' : (_displayedChapter(provider)?.title ?? '');
+    final playing = _tts.isPlaying;
+    if (playing == _lastTtsNotifiedPlaying &&
+        chapterTitle == _lastTtsNotifiedChapter) {
+      return;
+    }
+    _lastTtsNotifiedPlaying = playing;
+    _lastTtsNotifiedChapter = chapterTitle;
+
+    // 第一次朗读时才弹系统权限框（Android 13+ / iOS），
+    // 不在启动时就问 —— 那样用户还没用功能就被问一遍，几乎必点拒绝。
+    final granted = await NotificationService.instance.requestPermission();
+    if (!granted || !mounted) return;
+    await NotificationService.instance.showTts(
+      bookName: provider?.book?.name ?? '',
+      chapterTitle: chapterTitle,
+      playing: playing,
+    );
+  }
+
+  /// 切到后台/锁屏时的处理 —— 让「后台播放」开关真正生效。
+  ///
+  /// 【这个开关以前是死的】它在「阅读偏好」里能开能关、也存进了
+  /// SharedPreferences，但没有任何代码读它，开关等于摆设。
+  /// 这里补上：关掉时切后台就停朗读；打开时保持（配合前台服务通知，
+  /// 系统不会把还在发声的进程收走）。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state != AppLifecycleState.paused) return;
+    if (!_state.ttsReading) return;
+    if (AppSettings.instance.ttsBackground) return;
+    unawaited(_stopTts());
   }
 
   void _onComicScroll() {
@@ -1764,6 +1872,7 @@ class _ReaderPageState extends State<ReaderPage> {
             onCommentTap:
                 _state.showParagraphComment ? _openParagraphComment : null,
             imageUrlBuilder: _buildImageUrl,
+            onImageTap: _openImageViewer,
             onPageChanged: (page) {
               final position =
                   _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
@@ -1810,6 +1919,7 @@ class _ReaderPageState extends State<ReaderPage> {
       onCommentTap:
           _state.showParagraphComment ? _openParagraphComment : null,
       imageUrlBuilder: _buildImageUrl,
+      onImageTap: _openImageViewer,
     );
   }
 
@@ -2549,28 +2659,43 @@ class _ReaderPageState extends State<ReaderPage> {
             jumped = true;
             _jumpChapterListTo(scrollController, currentIndex * tileExtent);
           }
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Text('目录',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    Text('${provider.chapters.length} 章',
-                        style: const TextStyle(color: Colors.grey)),
-                  ],
+          return StatefulBuilder(
+            builder: (context, setSheetState) => Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      const Text('目录',
+                          style: TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      const Spacer(),
+                      Text('${provider.chapters.length} 章',
+                          style: const TextStyle(color: Colors.grey)),
+                      IconButton(
+                        tooltip: '刷新目录',
+                        icon: _chapterListRefreshing
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.refresh, size: 20),
+                        onPressed: _chapterListRefreshing
+                            ? null
+                            : () => _refreshChapterList(
+                                provider, setSheetState),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.builder(
-                  controller: scrollController,
-                  itemExtent: tileExtent,
-                  itemCount: provider.chapters.length,
-                  itemBuilder: (context, index) {
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemExtent: tileExtent,
+                    itemCount: provider.chapters.length,
+                    itemBuilder: (context, index) {
                     final chapter = provider.chapters[index];
                     final ci = _state.displayedChapterIndex(
                         provider.book?.durChapterIndex ?? 0);
@@ -2615,10 +2740,40 @@ class _ReaderPageState extends State<ReaderPage> {
                 ),
               ),
             ],
-          );
+          ),
+        );
         },
       ),
     );
+  }
+
+  /// 目录弹窗里点「刷新」：强制从书源重新拉章节列表（绕过服务端缓存）。
+  ///
+  /// 只更新目录，不动当前阅读位置。新增了几章会弹提示，没变就说明已是最新。
+  Future<void> _refreshChapterList(
+      ReaderProvider provider,
+      void Function(void Function()) setSheetState) async {
+    final token = _token;
+    if (token == null) return;
+    setState(() => _chapterListRefreshing = true);
+    try {
+      final added = await provider.refreshChapters(token);
+      if (!mounted) return;
+      setSheetState(() {});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(added > 0 ? '目录已更新，新增 $added 章' : '目录已是最新'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('目录刷新失败，请稍后再试')),
+      );
+    } finally {
+      if (mounted) setState(() => _chapterListRefreshing = false);
+    }
   }
 
   void _showBookmarkList() {

@@ -14,6 +14,7 @@ import '../../services/cookie_sync_service.dart';
 import '../login/source_login_page.dart';
 import '../login/webview_login_page.dart';
 import 'book_source_editor_page.dart';
+import 'qr_scan_page.dart';
 
 class SourceManagePage extends StatefulWidget {
   const SourceManagePage({Key? key}) : super(key: key);
@@ -37,25 +38,6 @@ class _SourceManagePageState extends State<SourceManagePage> {
   void dispose() {
     _searchController.dispose();
     super.dispose();
-  }
-
-  void _showUnavailableDialog({
-    required String title,
-    required String message,
-  }) {
-    showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
-    );
   }
 
   @override
@@ -305,7 +287,14 @@ class _SourceManagePageState extends State<SourceManagePage> {
     final url = ctl.text.trim();
     ctl.dispose();
     if (ok != true || url.isEmpty) return;
+    await _importFromUrl(url);
+  }
 
+  /// 下载一个远端书源 JSON 并导入。
+  ///
+  /// 单独拆出来是因为「网络导入」和「扫码导入」都会用到：
+  /// 扫出来的二维码常常就是一个书源下载链接，走的是同一条链路。
+  Future<void> _importFromUrl(String url) async {
     setState(() => _importing = true);
     try {
       final content = await ApiService.instance.fetchRemoteText(url);
@@ -318,12 +307,24 @@ class _SourceManagePageState extends State<SourceManagePage> {
   }
 
   /// 扫码导入：扫到的内容如果是 http 链接就走网络导入，否则当 JSON 处理
+  ///
+  /// 【为什么要分两种内容】
+  /// 书源分享的二维码里塞的东西不统一：有的是直接把整个书源 JSON 编进码里
+  /// （扫出来就是一段 `{...}`），有的是只放一个下载地址（扫出来是 `http...`）。
+  /// 前者直接提交，后者要先下载 —— 和「网络导入」同一条链路。
   Future<void> _importFromQr() async {
-    _showUnavailableDialog(
-      title: '扫码导入',
-      message: '当前仓库还没有接入二维码扫描（需要额外的相机权限与扫码库）。\n'
-          '可以先用「网络导入」把书源 JSON 的链接粘进来，效果是一样的。',
+    final raw = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(builder: (_) => const QrScanPage()),
     );
+    if (!mounted || raw == null) return;
+    final value = raw.trim();
+    if (value.isEmpty) return;
+
+    if (value.startsWith('http://') || value.startsWith('https://')) {
+      await _importFromUrl(value);
+      return;
+    }
+    await _importContent(value, label: '二维码');
   }
 
   /// 清理 cache / cookie

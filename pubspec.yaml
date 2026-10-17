@@ -66,6 +66,26 @@ dependencies:
   audioplayers: ^6.0.0
   battery_plus: ^6.2.2
   file_selector: ^1.0.3
+  # 扫码导入书源（书源管理 ⋮ → 扫码导入）。
+  # 【为什么选它】原版 iOS 包里带的正是 MLKit 条码扫描（Runner 里 3,941 个
+  # OC 方法几乎全是它），mobile_scanner 的 Android 端同样走 ML Kit、
+  # iOS 端走 AVFoundation，两端行为一致，且是纯 Dart 插件不需要改原生代码。
+  # 【体积】Android 默认用 bundled 版 ML Kit，包体会增加约 3~10 MB。
+  # 想换成运行时从 Play 服务下载（只增约 600 KB），在 android/gradle.properties
+  # 里加一行：dev.steenbakker.mobile_scanner.useUnbundled=true
+  # 【注意】它对 Flutter 版本有下限要求，若 `flutter pub get` 报 sdk 冲突，
+  # 把它降到与你本地 Flutter 匹配的大版本即可（pub 会自动挑兼容的 7.x）。
+  mobile_scanner: ^7.4.2
+  # 通知：朗读常驻通知（锁屏也能暂停/切段）+ 全本缓存的进度/完成通知。
+  # 【为什么需要它】
+  # 1) 「听书后台播放」开关（阅读偏好 → 后台播放）之前只存了个布尔值，
+  #    没有任何代码读它，等于无效开关；真要退到后台继续朗读，Android 上
+  #    必须有**前台服务 + 常驻通知**，否则系统随时会把进程收走，声音说断就断。
+  # 2) 全本缓存动辄几百章，跑到一半用户切走了，没有进度通知就不知道还要多久。
+  # 【若 `flutter pub get` 报 Flutter 版本不满足】
+  # 22.x 要求 Flutter >= 3.38.1；把这里改成 ^20.0.0（要求 3.32）或
+  # ^19.0.0（要求 3.22）即可，本服务用到的 API 这几代里都在。
+  flutter_local_notifications: ^22.3.2
   # 已移除 pull_to_refresh: ^2.0.0 —— 该包已停维护且 sdk 锁 <3.0.0;
   # 代码里也没有任何地方 import 它。
 

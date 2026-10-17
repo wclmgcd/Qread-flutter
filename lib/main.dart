@@ -16,6 +16,7 @@ import 'providers/theme_provider.dart';
 import 'pages/reader/widgets/reader_fonts.dart';
 import 'services/api_service.dart';
 import 'services/app_settings.dart';
+import 'services/notification_service.dart';
 import 'services/storage_service.dart';
 
 void main() async {
@@ -38,6 +39,10 @@ void main() async {
   // 阅读偏好（书架排序 / 夜间模式 / 简繁转换 …）要先读出来，
   // 否则书架首帧会按默认顺序闪一下再重排。
   await AppSettings.instance.load();
+  // 通知渠道必须在 App 起来时建好：Android 8 起通知挂在渠道上，
+  // 渠道不存在时发的通知会被直接丢弃。刻意不 await —— 它要碰原生通道，
+  // 在部分机型上首次调用要几百毫秒，不能拿它挡启动。
+  unawaited(NotificationService.instance.init());
   runApp(const QreadApp());
 }
 
@@ -50,7 +55,9 @@ class QreadApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => UserProvider()..init()),
         ChangeNotifierProvider(create: (_) => BookshelfProvider()),
-        ChangeNotifierProvider(create: (_) => DiscoverProvider()),
+        // 发现页的「当前书源/分类」是持久化的，启动时读回来，
+        // 否则每次进 App 都会闪一下「第一个书源」再跳到上次那个。
+        ChangeNotifierProvider(create: (_) => DiscoverProvider()..loadPersisted()),
         ChangeNotifierProvider(create: (_) => RssProvider()),
         ChangeNotifierProvider(create: (_) => RssManageProvider()),
         ChangeNotifierProvider(create: (_) => ReaderProvider()),

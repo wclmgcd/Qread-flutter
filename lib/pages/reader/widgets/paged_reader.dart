@@ -72,6 +72,9 @@ class PagedReader extends StatefulWidget {
   /// `/imageDecode` 请求。为空时插图按原始 src 直接加载。
   final String Function(String src)? imageUrlBuilder;
 
+  /// 点正文插图时的回调，参数是拼好的最终地址（由阅读页注入去开大图）。
+  final ValueChanged<String>? onImageTap;
+
   const PagedReader({
     Key? key,
     required this.pages,
@@ -99,6 +102,7 @@ class PagedReader extends StatefulWidget {
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
     this.imageUrlBuilder,
+    this.onImageTap,
   }) : super(key: key);
 
   @override
@@ -404,6 +408,7 @@ class _PagedReaderState extends State<PagedReader>
         fontWeight: widget.fontWeight,
         onCommentTap: widget.onCommentTap,
         imageUrlBuilder: widget.imageUrlBuilder,
+        onImageTap: widget.onImageTap,
       ),
     );
   }
