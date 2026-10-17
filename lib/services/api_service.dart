@@ -342,26 +342,34 @@ class ApiService {
   }
 
   /// 给后端的 WebView / 浏览器请求回执，释放服务端 `WaitForResponse`。
+  ///
+  /// 参数走 POST 表单（同官方客户端，见 getCookies 的说明）。
   Future<void> saveHtml(String accessToken,
       {required String id, String html = ''}) async {
-    await _dio.post('/savehtml', queryParameters: {
-      'accessToken': accessToken,
-      'id': id,
-      'html': html,
-    });
+    await _dio.post(
+      '/savehtml',
+      queryParameters: {'accessToken': accessToken},
+      data: {'id': id, 'html': html},
+      options: Options(contentType: Headers.formUrlEncodedContentType),
+    );
   }
 
   /// 放掉后端正在等待的一次客户端回执（`WaitForResponse(id)`）。
   ///
   /// 后端有一批推送是**阻塞等回执**的：`get` / `head` / `post` / `webview` /
   /// `getVerificationCode` / `getWebViewUA` / `getVerificationCodeusePhone`。
-  /// 我们没实现这些（官方 Web 客户端也只弹一句「不支持」），但**必须回一个空响应**，
-  /// 否则书源 JS 里那次调用要干等 120s 才超时 —— 用户看到的就是「点了没反应」。
+  /// 这些已由 BackendRequestHandler 真正实现并回执；这里只剩一个用途：
+  /// 收到**认不出**的带 id 消息时回个空响应，否则书源 JS 里那次调用要
+  /// 干等 120s 才超时 —— 用户看到的就是「点了没反应」。
+  ///
+  /// 官方客户端对这个口也是 POST 表单（见 getCookies 的说明）。
   Future<void> noCookies(String accessToken, {required String id}) async {
-    await _dio.get('/noCookies', queryParameters: {
-      'accessToken': accessToken,
-      'id': id,
-    });
+    await _dio.post(
+      '/noCookies',
+      queryParameters: {'accessToken': accessToken},
+      data: {'id': id},
+      options: Options(contentType: Headers.formUrlEncodedContentType),
+    );
   }
 
   // ============ 搜索 ============
@@ -1704,11 +1712,19 @@ class ApiService {
   /// 返回值是**解密后的明文** `"a=1; b=2"`。后端这一层的载荷是
   /// `EncryptUtils.aesEncode` 出来的 hex，这里用 [AesCodec] 解开；
   /// 服务端没有该站点 cookie 时返回空串（不是 null）。
+  ///
+  /// 【为什么参数在 body 里】抓官方 3.4.1 的包确认：官方客户端这四个
+  /// cookie/html 回执口都是 **POST 表单**（query 里只挂 accessToken）。
+  /// 一是 cookie/html 体积大（官方包体见过 115KB），塞 query 会撞 URL 长度
+  /// 上限；二是 query 会落反代访问日志。服务端 `@Mapping` 不限制方法，
+  /// query/body 同名绑定，两种形状都收。
   Future<String> getCookies(String accessToken, String url) async {
-    final resp = await _dio.get('/getCookies', queryParameters: {
-      'accessToken': accessToken,
-      'url': url,
-    });
+    final resp = await _dio.post(
+      '/getCookies',
+      queryParameters: {'accessToken': accessToken},
+      data: {'url': url},
+      options: Options(contentType: Headers.formUrlEncodedContentType),
+    );
     final raw = resp.data['data']?.toString() ?? '';
     if (raw.isEmpty) return '';
     return AesCodec.decrypt(raw);
@@ -1719,16 +1735,30 @@ class ApiService {
   /// [cookie] 是**明文** `"a=1; b=2"`，加密在这里做：后端收到会先
   /// `EncryptUtils.aesDecrypted` 再落盘，直接传明文会被解成乱码。
   /// 传空串等于清掉该站点的 cookie，所以调用方要先判空。
+  ///
+  /// 带上 [id] 时这个调用同时就是 `startBrowserAwait` 的回执：服务端
+  /// **先落盘 cookie、再 `completeRequest(id, html)` 放行**（同一次请求里
+  /// 完成，没有时序竞争），书源 JS 放行后立刻 `cookie.getCookie(url)` /
+  /// 重抓页面都能读到刚推上去的 cookie。回执和 cookie 拆成两个调用则
+  /// 先后不保 —— 大灰狼「🍅番茄登录」就是这么一直登录不上的。
   Future<Map<String, dynamic>> saveCookies(
     String accessToken,
     String url,
-    String cookie,
-  ) async {
-    final resp = await _dio.post('/saveCookies', queryParameters: {
-      'accessToken': accessToken,
-      'url': url,
-      'cookie': AesCodec.encrypt(cookie),
-    });
+    String cookie, {
+    String? html,
+    String? id,
+  }) async {
+    final resp = await _dio.post(
+      '/saveCookies',
+      queryParameters: {'accessToken': accessToken},
+      data: {
+        'url': url,
+        'cookie': AesCodec.encrypt(cookie),
+        if (html != null) 'html': html,
+        if (id != null) 'id': id,
+      },
+      options: Options(contentType: Headers.formUrlEncodedContentType),
+    );
     return Map<String, dynamic>.from(resp.data as Map);
   }
 

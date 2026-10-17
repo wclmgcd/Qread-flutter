@@ -26,6 +26,14 @@ class AdaptiveWebView extends StatefulWidget {
   final Map<String, String> headers;
   final CustomSchemeHandler? onCustomScheme;
 
+  /// 每次页面加载完成后回调当时的整页 HTML（outerHTML）。
+  ///
+  /// 关页回执要带 html 的场景（ParagraphCommentPage → `/saveCookies`）靠它
+  /// 缓存：页面销毁时 WebView 跟着拆除，`dispose` 里现取已经来不及，只能在
+  /// 每次 `onPageFinished` 时就存一份。抓官方 3.4.1 的包见过 115KB 的回执
+  /// 体积 —— 官方就是把整页 HTML 随回执一起交给后端的。
+  final void Function(String html)? onPageHtml;
+
   const AdaptiveWebView({
     Key? key,
     required this.url,
@@ -33,6 +41,7 @@ class AdaptiveWebView extends StatefulWidget {
     this.injectJs,
     this.headers = const {},
     this.onCustomScheme,
+    this.onPageHtml,
   }) : super(key: key);
 
   @override
@@ -85,6 +94,15 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
               if (js != null && js.isNotEmpty) {
                 try {
                   await controller.runJavaScript(js);
+                } catch (_) {}
+              }
+              final onHtml = widget.onPageHtml;
+              if (onHtml != null) {
+                try {
+                  final raw = await controller.runJavaScriptReturningResult(
+                    'document.documentElement.outerHTML',
+                  );
+                  onHtml(_decodeJsString(raw));
                 } catch (_) {}
               }
               if (mounted) setState(() => _loading = false);
@@ -149,6 +167,19 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
 
   bool _isCustomScheme(String url) {
     return url.startsWith('yuedu://') || url.startsWith('legado://');
+  }
+
+  /// `runJavaScriptReturningResult` 的返回值在 Android 上是 JSON 编码后的串
+  ///（带引号和转义），iOS 上是原始串。统一解成纯文本，解不动就用原样。
+  static String _decodeJsString(Object? raw) {
+    if (raw == null) return '';
+    final s = raw.toString();
+    try {
+      final decoded = jsonDecode(s);
+      return decoded is String ? decoded : s;
+    } catch (_) {
+      return s;
+    }
   }
 
   @override

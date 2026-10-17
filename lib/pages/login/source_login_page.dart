@@ -137,6 +137,11 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
       case 'noticy':
         _collectWsResult(msg.title, '后端提示');
         break;
+      case 'reLoginView':
+        // 书源 JS 调 reLoginView()：登录态变了，让客户端把登录 UI 重载一遍
+        // （官方客户端是关掉重开登录页，这里原地刷新数据即可）
+        unawaited(_loadLoginUi());
+        break;
     }
   }
 
@@ -156,7 +161,7 @@ class _SourceLoginPageState extends State<SourceLoginPage> {
   }
 
   /// 打开后端让开的网页，并用 [ParagraphCommentPage] 负责关闭时回执
-  /// `/savehtml`，释放后端的 `startBrowserAwait` 等待。
+  /// `/saveCookies`（cookie 随回执一次带齐），释放后端的 `startBrowserAwait` 等待。
   ///
   /// 用整屏（`embedded: false`）而不是阅读页那种半截式弹窗：设置中心 / 更新页
   /// 都是要整屏填的表单，半截式放不下。

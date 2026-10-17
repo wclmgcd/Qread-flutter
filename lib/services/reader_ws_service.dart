@@ -5,6 +5,9 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../config/constants.dart';
 import 'api_service.dart';
+import 'app_log.dart';
+import 'backend_request_handler.dart';
+import 'md5_sync_service.dart';
 
 /// 后端通过 WebSocket 主动推给客户端的一条消息。
 ///
@@ -31,6 +34,10 @@ class WsPushMessage {
     this.body = '',
     this.str = '',
     this.id = '',
+    this.md5 = '',
+    this.bookurl = '',
+    this.urlRegex = '',
+    this.overrideUrlRegex = '',
   });
 
   final String msg;
@@ -43,6 +50,19 @@ class WsPushMessage {
   /// `ToastMessage.str` —— toast / longToast / log 的正文
   final String str;
   final String id;
+
+  /// md5 族推送的值（`gonggao` 时是公告文本本身）
+  final String md5;
+
+  /// `read`（阅读进度）消息携带的书籍地址
+  final String bookurl;
+
+  /// webview 推送：URL 命中才算「到达目标页」（表单提交后的中间跳转不算）。
+  /// 后端字段名是小写 `urlregex`（见 book/app/Message.kt）。
+  final String urlRegex;
+
+  /// webview 推送：URL 命中的导航直接拦截
+  final String overrideUrlRegex;
 
   /// 是否是「打开网页」类消息（段评 / 登录页 / 验证码页都走这类）
   bool get isOpenPage =>
@@ -77,6 +97,10 @@ class WsPushMessage {
           body: (decoded['body'] ?? '').toString(),
           str: (decoded['str'] ?? '').toString(),
           id: (decoded['id'] ?? '').toString(),
+          md5: (decoded['md5'] ?? '').toString(),
+          bookurl: (decoded['bookurl'] ?? '').toString(),
+          urlRegex: (decoded['urlregex'] ?? '').toString(),
+          overrideUrlRegex: (decoded['overrideUrlRegex'] ?? '').toString(),
         );
       }
     } catch (_) {}
@@ -134,6 +158,10 @@ class ReaderWsService {
   /// 需要弹提示时回调（由页面注册）
   void Function(String message)? onToast;
 
+  /// 服务端不认这条连接的 token 时推 `logout`（见 ApiWebSocket.onOpen）——
+  /// 客户端要本地登出并回登录页。由 HomePage 注册。
+  Future<void> Function()? onForceLogout;
+
   bool get isConnected => _connected;
 
   /// 建立长连接（重复调用是安全的）
@@ -142,6 +170,7 @@ class ReaderWsService {
     if (_enabled && _token == token) return;
     _enabled = true;
     _token = token;
+    Md5SyncService.instance.bindToken(token);
     await _open();
   }
 
@@ -178,11 +207,31 @@ class ReaderWsService {
               if (tip.isNotEmpty) onToast?.call(tip);
               continue;
             }
-            // 需要回执、但客户端没人处理的消息（get / head / post / webview /
-            // getVerificationCode / getWebViewUA / …）：立刻放掉，别让后端
-            // 干等 120s。官方客户端对这些也是「回个空响应 + 提示不支持」。
+            if (message.msg == 'log') {
+              // 书源 JS 的 java.log(...)：进本地日志，不弹不推
+              AppLog.add('[后端] ${message.str}');
+              continue;
+            }
+            if (message.msg == 'logout') {
+              // 服务端不认这条连接的 token：本地登出（见 onForceLogout）
+              AppLog.add('[后端] 登录态失效，被强制下线');
+              unawaited(_handleForceLogout());
+              continue;
+            }
+            // md5 族：本地快照比对，变了会广播给 HomePage 刷新对应数据。
+            // 这类消息不往 pushStream 推 —— 页面不需要看到原始 md5。
+            if (Md5SyncService.isMd5Message(message.msg)) {
+              unawaited(Md5SyncService.instance
+                  .onMessage(message.msg, message.md5, message.bookurl));
+              continue;
+            }
+            // 带 id 的「请求-响应」消息（head/get/post/webview/验证码/UA/…）：
+            // 由 BackendRequestHandler 接住并回执，处理不了的立刻回空放行，
+            // 绝不往 pushStream 推（页面没有回执义务，推过去只会漏回执，
+            // 让后端 WaitForResponse 干等 120s）。
             if (message.id.isNotEmpty && !message.isOpenPage) {
-              unawaited(_releaseRequest(message.id));
+              unawaited(_respondToRequest(message));
+              continue;
             }
             if (!_pushController.isClosed) _pushController.add(message);
           }
@@ -205,18 +254,29 @@ class ReaderWsService {
     }
   }
 
-  /// 回一个空响应，释放后端 `WaitForResponse(id)` 的等待。
+  /// 处理一条带 id 的「请求-响应」消息并回执，释放后端 `WaitForResponse(id)`。
   ///
-  /// 走 `/noCookies?id=<id>`（不是 `/savehtml`）—— 这是官方客户端在
-  /// 消息分发的 `default` 分支里的做法，语义就是「这条我处理不了，别等了」。
-  Future<void> _releaseRequest(String id) async {
+  /// 能处理的（head/get/post/webview/验证码/UA）走 [BackendRequestHandler]；
+  /// 认不出的走 `/noCookies?id=<id>` —— 这是官方客户端在消息分发 default
+  /// 分支里的做法，语义就是「这条我处理不了，别等了」。
+  Future<void> _respondToRequest(WsPushMessage message) async {
     final token = _token;
     if (token == null || token.isEmpty) return;
+    if (BackendRequestHandler.canHandle(message.msg)) {
+      await BackendRequestHandler.instance.handle(message, token);
+      return;
+    }
     try {
-      await ApiService.instance.noCookies(token, id: id);
+      await ApiService.instance.noCookies(token, id: message.id);
     } catch (_) {
       // 放不掉也没关系：后端 120s 后会自己超时
     }
+  }
+
+  Future<void> _handleForceLogout() async {
+    await disconnect();
+    final callback = onForceLogout;
+    if (callback != null) await callback();
   }
 
   void _scheduleReconnect() {
@@ -236,6 +296,7 @@ class ReaderWsService {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
     _retryCount = 0;
+    Md5SyncService.instance.reset();
     try {
       await _socket?.sink.close();
     } catch (_) {}

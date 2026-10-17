@@ -65,6 +65,24 @@ class CookieSyncService {
     }
   }
 
+  /// 读本地 WebView 里 [url] 所在站点的 cookie，拼成 `"a=1; b=2"` 明文串。
+  ///
+  /// 给「关页回执」用：`startBrowserAwait` 打开的页面关闭时，要把这一站
+  /// cookie 随回执一起交给后端（见 ParagraphCommentPage._deliverReceipt）。
+  /// 读不到返回空串，调用方据此改走 `/noCookies` —— 拿空串去调
+  /// `/saveCookies` 会把服务端该站点的存货清掉。
+  Future<String> readLocalJoined(String url) async {
+    // Web 端没有可读的 WebView cookie jar（同 syncOne）
+    if (kIsWeb) return '';
+    if (url.trim().isEmpty) return '';
+    try {
+      return _join(await _readLocal(url));
+    } catch (e) {
+      debugPrint('读取本地 cookie 失败($url): $e');
+      return '';
+    }
+  }
+
   /// 批量**只推不拉**：把本地 WebView 里已经存在的 cookie 推到服务端。
   ///
   /// 为什么不拉：每个站点一次 HTTP，几百个书源就是几百次请求，列表一加载

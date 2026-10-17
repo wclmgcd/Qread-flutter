@@ -1,5 +1,8 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../pages/bookshelf/bookshelf_page.dart';
 import '../pages/bookshelf/book_info_page.dart';
 import '../pages/bookshelf/book_source_switch_page.dart';
@@ -8,6 +11,7 @@ import '../pages/rss/rss_page.dart';
 import '../pages/profile/profile_page.dart';
 import '../pages/profile/reading_preference_page.dart';
 import '../pages/profile/tts_engine_page.dart';
+import '../pages/reader/image_viewer_page.dart';
 import '../pages/replace/replace_rule_editor_page.dart';
 import '../pages/replace/replace_rule_page.dart';
 import '../pages/reader/reader_page.dart';
@@ -25,7 +29,19 @@ import '../pages/rss/rss_source_debug_page.dart';
 import '../pages/discover/explore_books_page.dart';
 import '../pages/rss/rss_article_list_page.dart';
 import '../pages/rss/rss_article_detail_page.dart';
+import '../providers/bookshelf_provider.dart';
+import '../providers/discover_provider.dart';
+import '../providers/reader_provider.dart';
+import '../providers/replace_rule_provider.dart';
+import '../providers/rss_manage_provider.dart';
+import '../providers/rss_provider.dart';
+import '../providers/source_manage_provider.dart';
+import '../providers/user_provider.dart';
+import '../services/api_service.dart';
 import '../services/app_settings.dart';
+import '../services/md5_sync_service.dart';
+import '../services/reader_ws_service.dart';
+import '../services/tts_service.dart';
 
 /// 全局路由观察器。
 ///
@@ -195,6 +211,242 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   int _currentIndex = 0;
+
+  StreamSubscription<Md5Change>? _md5Sub;
+  StreamSubscription<WsPushMessage>? _pushSub;
+  Timer? _readDebounce;
+
+  /// initState 里拿不到 Provider（要在 postFrame 之后），存下来给 dispose 用
+  UserProvider? _userProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    // 服务端推 logout（token 失效）→ 本地登出回登录页
+    ReaderWsService.instance.onForceLogout = _forceLogout;
+    // md5 族：其它端改了数据 → 刷新对应列表
+    _md5Sub = Md5SyncService.instance.changes.listen(_onMd5Change);
+    // 免回执的互动推送（openurl/searchBook/addBook/showPhoto/refreshBook*）
+    _pushSub = ReaderWsService.instance.pushStream.listen(_onBackendNotify);
+    // WS 变成全局连接：md5 同步要求 App 活着就连着，而不是只在阅读页/登录页
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _userProvider = context.read<UserProvider>();
+      _userProvider!.addListener(_syncWsConnection);
+      _syncWsConnection();
+    });
+  }
+
+  @override
+  void dispose() {
+    _userProvider?.removeListener(_syncWsConnection);
+    _readDebounce?.cancel();
+    _md5Sub?.cancel();
+    _pushSub?.cancel();
+    super.dispose();
+  }
+
+  void _syncWsConnection() {
+    final user = _userProvider;
+    if (user == null) return;
+    if (user.isLoggedIn) {
+      unawaited(ReaderWsService.instance.connect(user.token));
+    } else {
+      unawaited(ReaderWsService.instance.disconnect());
+    }
+  }
+
+  Future<void> _forceLogout() async {
+    if (!mounted) return;
+    await _userProvider?.logout();
+    appNavigatorKey.currentState
+        ?.pushNamedAndRemoveUntil(AppRoutes.login, (route) => false);
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx != null) {
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+        const SnackBar(content: Text('登录态已失效，请重新登录')),
+      );
+    }
+  }
+
+  // ============================================================
+  // md5 族：其它端的数据变更 → 刷新对应数据
+  // ============================================================
+
+  void _onMd5Change(Md5Change change) {
+    if (!mounted) return;
+    final token = _userProvider?.token;
+    if (token == null || token.isEmpty) return;
+    switch (change.msg) {
+      case 'bookmd5':
+        unawaited(
+            context.read<BookshelfProvider>().loadBookshelf(token, refresh: true));
+        break;
+      case 'read':
+        // 阅读进度同步：另一台设备每翻一页都可能推一条，5s 防抖刷一次书架
+        _readDebounce?.cancel();
+        _readDebounce = Timer(const Duration(seconds: 5), () {
+          if (!mounted) return;
+          final t = _userProvider?.token;
+          if (t == null || t.isEmpty) return;
+          unawaited(
+              context.read<BookshelfProvider>().loadBookshelf(t, refresh: true));
+        });
+        break;
+      case 'sourcemd5':
+        unawaited(
+            context.read<SourceManageProvider>().loadSources(token, refresh: true));
+        unawaited(context
+            .read<DiscoverProvider>()
+            .loadExploreSources(token, refresh: true));
+        break;
+      case 'rssmd5':
+        unawaited(context.read<RssProvider>().loadSources(token, refresh: true));
+        unawaited(
+            context.read<RssManageProvider>().loadSources(token, refresh: true));
+        break;
+      case 'replacemd5':
+        unawaited(
+            context.read<ReplaceRuleProvider>().loadRules(token, refresh: true));
+        break;
+      case 'tssmd5':
+        unawaited(TtsService().loadSelectedHttpEngine(token));
+        break;
+      case 'groundmd5':
+        unawaited(context.read<BookshelfProvider>().loadGroups(token));
+        break;
+      case 'source':
+      case 'allowchange':
+        // 书源总开关 / 允许换源开关变了：跟着书源一起刷
+        unawaited(
+            context.read<SourceManageProvider>().loadSources(token, refresh: true));
+        break;
+      case 'gonggao':
+        _showGonggao(change.md5);
+        break;
+    }
+  }
+
+  void _showGonggao(String text) {
+    if (text.trim().isEmpty) return;
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null) return;
+    showDialog<void>(
+      context: ctx,
+      builder: (dialogCtx) => AlertDialog(
+        title: const Text('公告'),
+        content: SingleChildScrollView(child: SelectableText(text)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogCtx).pop(),
+            child: const Text('知道了'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ============================================================
+  // 免回执互动推送（id 为空，官方客户端同样只执行不回执）
+  // ============================================================
+
+  void _onBackendNotify(WsPushMessage msg) {
+    // 打开网页类由阅读页/登录页自己接（半截式弹窗 + 关页回执），这里不重复
+    if (msg.isOpenPage) return;
+    if (!mounted) return;
+    final token = _userProvider?.token ?? '';
+    switch (msg.msg) {
+      case 'openurl':
+        // url=目标地址，title=mimeType（官方用来决定打开方式，这里统一外部浏览器）
+        final uri = Uri.tryParse(msg.url);
+        if (uri != null) {
+          unawaited(launchUrl(uri, mode: LaunchMode.externalApplication));
+        }
+        break;
+      case 'addBook':
+        // url=bookUrl：把这本书加进书架
+        if (token.isEmpty || msg.url.isEmpty) return;
+        unawaited(_addBookFromPush(token, msg.url));
+        break;
+      case 'searchBook':
+        // url=sourceUrl（可空=全局搜），title=关键词
+        final nav = appNavigatorKey.currentState;
+        if (nav == null) return;
+        unawaited(nav.push(MaterialPageRoute(
+          builder: (_) => SearchPage(
+            initialKeyword: msg.title,
+            sourceUrl: msg.url.isEmpty ? null : msg.url,
+          ),
+        )));
+        break;
+      case 'showPhoto':
+        final nav = appNavigatorKey.currentState;
+        if (nav == null || msg.url.isEmpty) return;
+        unawaited(nav.push(MaterialPageRoute(
+          builder: (_) => ImageViewerPage(
+            url: msg.url,
+            title: msg.title.isEmpty ? null : msg.title,
+          ),
+        )));
+        break;
+      case 'refreshBookInfo':
+        if (token.isEmpty) return;
+        unawaited(
+            context.read<BookshelfProvider>().loadBookshelf(token, refresh: true));
+        break;
+      case 'refreshBookToc':
+        unawaited(_refreshReaderIfOpen(msg.title));
+        break;
+      case 'refreshBookContent':
+        unawaited(_refreshReaderIfOpen(msg.title, clearContent: true));
+        break;
+      case 'refreshExplore':
+        if (token.isEmpty) return;
+        final discover = context.read<DiscoverProvider>();
+        // 发现页没加载过分类就不必刷 —— 刷出来也没有地方显示
+        if (discover.categories.isNotEmpty) {
+          unawaited(discover.reloadBooks(token));
+        }
+        break;
+    }
+  }
+
+  Future<void> _addBookFromPush(String token, String bookUrl) async {
+    try {
+      await ApiService.instance.urlSaveBook(token, bookUrl);
+      if (!mounted) return;
+      unawaited(
+          context.read<BookshelfProvider>().loadBookshelf(token, refresh: true));
+      _homeSnack('已加入书架');
+    } catch (e) {
+      _homeSnack('加入书架失败: $e');
+    }
+  }
+
+  /// 书源 JS 改了某本书的目录/正文 → 如果正在读这本书，刷新之。
+  /// [clearContent] 为 true 时连本章内容缓存一起清（refreshBookContent）。
+  Future<void> _refreshReaderIfOpen(String bookUrl,
+      {bool clearContent = false}) async {
+    if (bookUrl.isEmpty) return;
+    final token = _userProvider?.token ?? '';
+    if (token.isEmpty) return;
+    try {
+      final reader = context.read<ReaderProvider>();
+      if (reader.book?.bookUrl != bookUrl) return; // 没在读这本书，忽略
+      if (clearContent) await reader.clearLocalChapterCache();
+      await reader.refreshChapters(token);
+    } catch (_) {}
+  }
+
+  void _homeSnack(String text) {
+    final ctx = appNavigatorKey.currentContext;
+    if (ctx == null) return;
+    final messenger = ScaffoldMessenger.maybeOf(ctx);
+    messenger
+      ?..clearSnackBars()
+      ..showSnackBar(
+          SnackBar(content: Text(text), duration: const Duration(seconds: 2)));
+  }
 
   @override
   Widget build(BuildContext context) {
