@@ -180,6 +180,28 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
+        <!-- ================= 朗读前台服务的声明 =================
+             【为什么必须在这里声明】flutter_local_notifications 自己的
+             AndroidManifest.xml 里**没有**声明这个 service（它只声明了
+             VIBRATE 和 POST_NOTIFICATIONS 两个权限），所以必须由 app 侧补上。
+             少了它，startForegroundService() 在真机上会失败 ——
+             表现就是「锁屏听书几秒后声音断掉」或直接抛异常。
+
+             【foregroundServiceType 为什么是 mediaPlayback】
+             我们播的是语音，属于媒体播放。这个值必须与代码里传的
+             AndroidServiceForegroundType.foregroundServiceTypeMediaPlayback
+             对应，且是 manifest 里所声明类型的**子集**，否则 Android 14
+             会抛「type not allowed」。
+             对应的权限 android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK
+             已在上方声明。
+
+             【stopWithTask=false】用户从最近任务里划掉 App 时不停服务 ——
+             划掉界面还想继续听，这是听书场景的预期行为。 -->
+        <service
+            android:name="com.dexterous.flutterlocalnotifications.ForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="mediaPlayback" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

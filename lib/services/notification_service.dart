@@ -4,17 +4,22 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 /// 本地通知封装 —— 目前服务两件事：朗读常驻通知、全本缓存进度通知。
 ///
 /// 【三个设计决定】
-/// 1. **只暴露静态方法式的单例**：通知是全局能力，页面不该各自 new 一个
-///    plugin 实例（实例多了 Android 上的通知 id 空间会互相打架）。
+/// 1. **只暴露单例**：通知是全局能力，页面各 new 一个 plugin 实例的话，
+///    Android 上的通知 id 空间会互相打架。
 /// 2. **iOS 上不带按钮**：通知动作在 iOS 要在初始化时先注册
-///    `DarwinNotificationCategory`，且按钮数量/行为受系统限制，
-///    这里只发一条普通通知，够用且不用赌 API。
+///    `DarwinNotificationCategory`，行为受系统限制多，这里只发普通通知。
 /// 3. **前台服务只在 Android 上跑**：iOS 没有这个概念，硬调会崩。
 ///
 /// 【为什么朗读要用前台服务而不是普通通知】
 /// Android 上 App 退到后台后，普通通知保不住进程 —— 系统内存一紧就回收，
 /// 声音直接断。前台服务是系统级的「我正在干活」声明，配合常驻通知，
-/// 才能让用户锁屏听书。代价是通知栏会有个持续存在的条目，这正是用户想要的。
+/// 才能让用户锁屏听书。
+///
+/// 【22.x 的 API 是命名参数】
+/// flutter_local_notifications 在 19 → 22 之间把 initialize / show / cancel /
+/// startForegroundService 的位置参数**全改成了命名参数**；另外
+/// `startForegroundService` 收的是 `AndroidNotificationDetails`
+/// （不是 `NotificationDetails`）。本项目用 22.3.2，按新签名写。
 class NotificationService {
   NotificationService._();
 
@@ -26,7 +31,7 @@ class NotificationService {
   static const String _ttsChannelId = 'qread_tts';
   static const String _downloadChannelId = 'qread_download';
 
-  /// 通知按钮的 action id —— 和 Android/iOS 通知里写的保持一致。
+  /// 通知按钮的 action id —— 和写进通知的按钮保持一致。
   static const String actionPrev = 'tts_prev';
   static const String actionToggle = 'tts_toggle';
   static const String actionStop = 'tts_stop';
@@ -58,7 +63,7 @@ class NotificationService {
     );
 
     await _plugin.initialize(
-      settings,
+      settings: settings,
       onDidReceiveNotificationResponse: _onNotificationResponse,
     );
 
@@ -96,8 +101,7 @@ class NotificationService {
 
   /// 申请通知权限。
   ///
-  /// Android 13 起是运行时权限，iOS 每次都要问；用户拒绝后返回 false，
-  /// 调用方应该给一句「去设置里打开通知」的提示，而不是静默失败。
+  /// Android 13 起是运行时权限，iOS 每次都要问；用户拒绝后返回 false。
   Future<bool> requestPermission() async {
     if (_isAndroid) {
       final android = _plugin.resolvePlatformSpecificImplementation<
@@ -130,73 +134,90 @@ class NotificationService {
   }) async {
     final title = bookName.isEmpty ? '正在朗读' : bookName;
     final body = chapterTitle.isEmpty ? '听书进行中' : chapterTitle;
+    final androidDetails = _ttsAndroidDetails(playing: playing, text: body);
 
     if (_isAndroid) {
       final android = _plugin.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
-      // 前台服务模式下要用 startForegroundService 发第一条，
-      // 之后更新用普通 show 即可（同一个 id 会覆盖）。
-      await android?.startForegroundService(
-        _ttsNotificationId,
-        title,
-        body,
-        notificationDetails: _ttsDetails(playing: playing, text: body),
-      );
-      return;
+      try {
+        // 前台服务：锁屏/后台也保得住发声进程。
+        // foregroundServiceTypes 必须与 app 侧 AndroidManifest 里
+        // <service android:foregroundServiceType="mediaPlayback"> 对应，
+        // 否则 Android 14 会直接抛异常。
+        await android?.startForegroundService(
+          id: _ttsNotificationId,
+          title: title,
+          body: body,
+          notificationDetails: androidDetails,
+          foregroundServiceTypes: const {
+            AndroidServiceForegroundType.foregroundServiceTypeMediaPlayback,
+          },
+        );
+        return;
+      } catch (e) {
+        // Android 12+ 对「后台启动前台服务」有限制，部分 ROM 会直接拒绝。
+        // 不能让它把朗读整个搞挂 —— 退化成普通常驻通知：
+        // App 在前台时体验一致，只是退到后台后可能被系统回收。
+        debugPrint('前台服务启动失败，退化为普通通知: $e');
+      }
     }
 
     await _plugin.show(
-      _ttsNotificationId,
-      title,
-      body,
-      _ttsDetails(playing: playing, text: body),
+      id: _ttsNotificationId,
+      title: title,
+      body: body,
+      notificationDetails: NotificationDetails(
+        android: androidDetails,
+        iOS: const DarwinNotificationDetails(presentAlert: false),
+      ),
       payload: 'tts',
     );
   }
 
-  NotificationDetails _ttsDetails({
+  AndroidNotificationDetails _ttsAndroidDetails({
     required bool playing,
     required String text,
   }) {
-    return NotificationDetails(
-      android: AndroidNotificationDetails(
-        _ttsChannelId,
-        '朗读',
-        channelDescription: '听书进行中，可在此暂停或停止',
-        importance: Importance.low,
-        priority: Priority.low,
-        // 常驻：不随用户滑动清除，只在停止朗读时由代码取消
-        ongoing: true,
-        autoCancel: false,
-        // 更新内容时不要再响一次铃/震一次
-        onlyAlertOnce: true,
-        showWhen: false,
-        styleInformation: BigTextStyleInformation(text),
-        actions: [
-          const AndroidNotificationAction(actionPrev, '上一段'),
-          AndroidNotificationAction(
-            actionToggle,
-            playing ? '暂停' : '继续',
-            // 点按钮只执行动作，不要把通知本身收掉
-            cancelNotification: false,
-          ),
-          const AndroidNotificationAction(actionStop, '停止'),
-        ],
-      ),
-      iOS: const DarwinNotificationDetails(presentAlert: false),
+    return AndroidNotificationDetails(
+      _ttsChannelId,
+      '朗读',
+      channelDescription: '听书进行中，可在此暂停或停止',
+      importance: Importance.low,
+      priority: Priority.low,
+      // 常驻：不随用户滑动清除，只在停止朗读时由代码取消
+      ongoing: true,
+      autoCancel: false,
+      // 更新内容时不要再响一次铃/震一次
+      onlyAlertOnce: true,
+      showWhen: false,
+      styleInformation: BigTextStyleInformation(text),
+      actions: [
+        const AndroidNotificationAction(actionPrev, '上一段'),
+        AndroidNotificationAction(
+          actionToggle,
+          playing ? '暂停' : '继续',
+          // 点按钮只执行动作，不要把通知本身收掉
+          cancelNotification: false,
+        ),
+        const AndroidNotificationAction(actionStop, '停止'),
+      ],
     );
   }
 
-  /// 停止朗读：取消通知并退出前台服务。
+  /// 停止朗读：退出前台服务并取消通知。
   Future<void> cancelTts() async {
     if (_isAndroid) {
       final android = _plugin.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
       // 不先停前台服务的话，通知会被系统立刻重新拉起来
-      // （系统看到「前台服务没有通知」就会补一条）。
-      await android?.stopForegroundService();
+      //（系统看到「前台服务没有通知」就会补一条）。
+      try {
+        await android?.stopForegroundService();
+      } catch (e) {
+        debugPrint('停止前台服务失败: $e');
+      }
     }
-    await _plugin.cancel(_ttsNotificationId);
+    await _plugin.cancel(id: _ttsNotificationId);
   }
 
   // ============================================================
@@ -209,11 +230,12 @@ class NotificationService {
     required int done,
     required int total,
   }) async {
+    final max = total <= 0 ? 1 : total;
     await _plugin.show(
-      _downloadNotificationId,
-      '正在缓存《$bookName》',
-      '$done / $total 章',
-      NotificationDetails(
+      id: _downloadNotificationId,
+      title: '正在缓存《$bookName》',
+      body: '$done / $total 章',
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           _downloadChannelId,
           '缓存下载',
@@ -224,8 +246,8 @@ class NotificationService {
           autoCancel: false,
           onlyAlertOnce: true,
           showProgress: true,
-          maxProgress: total <= 0 ? 1 : total,
-          progress: done.clamp(0, total <= 0 ? 1 : total),
+          maxProgress: max,
+          progress: done.clamp(0, max),
         ),
         iOS: const DarwinNotificationDetails(presentAlert: false),
       ),
@@ -239,12 +261,12 @@ class NotificationService {
     required int done,
     required int failed,
   }) async {
-    await _plugin.cancel(_downloadNotificationId);
+    await _plugin.cancel(id: _downloadNotificationId);
     await _plugin.show(
-      _downloadNotificationId,
-      '《$bookName》缓存完成',
-      failed == 0 ? '共 $done 章' : '成功 $done 章，失败 $failed 章',
-      const NotificationDetails(
+      id: _downloadNotificationId,
+      title: '《$bookName》缓存完成',
+      body: failed == 0 ? '共 $done 章' : '成功 $done 章，失败 $failed 章',
+      notificationDetails: const NotificationDetails(
         android: AndroidNotificationDetails(
           _downloadChannelId,
           '缓存下载',
@@ -259,5 +281,5 @@ class NotificationService {
     );
   }
 
-  Future<void> cancelDownload() => _plugin.cancel(_downloadNotificationId);
+  Future<void> cancelDownload() => _plugin.cancel(id: _downloadNotificationId);
 }

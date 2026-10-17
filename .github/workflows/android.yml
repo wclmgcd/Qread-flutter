@@ -60,9 +60,15 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
 
-      # analyze 只做参考, 不阻塞出包
-      - name: flutter analyze (不阻塞)
-        run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
+      # analyze 拦住 error，放过 warning / info。
+      # 【为什么去掉了原来的 `|| true`】
+      # analyze 能准确报出「相对导入路径错」「第三方包 API 签名变了」这类
+      # **必然导致编译失败**的问题，但 `|| true` 把它吞了 —— 于是要等 build
+      # 跑到 2~3 分钟才炸，报错还埋在 Gradle 输出里。
+      # 让它直接失败：几十秒就能定位，且错误信息干净。
+      # --no-fatal-warnings / --no-fatal-infos 保留原意：warning 和 info 不阻塞。
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
 
       # release 包用 build.gradle 里配的 debug 签名, 可以直接安装
       - name: flutter build apk

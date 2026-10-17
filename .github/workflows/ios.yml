@@ -71,9 +71,11 @@ jobs:
       - name: flutter pub get
         run: flutter pub get
 
-      # analyze 只做参考，不阻塞出包（与 android.yml 保持一致）
-      - name: flutter analyze (不阻塞)
-        run: flutter analyze --no-fatal-warnings --no-fatal-infos || true
+      # analyze 拦住 error，放过 warning / info（与 android.yml 保持一致）
+      # 【为什么去掉了原来的 `|| true`】见 android.yml 里的同款说明 ——
+      # 让 analyze 直接失败，比等 build 跑到一半再炸更快也更清楚。
+      - name: flutter analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
 
       # CocoaPods 的 spec 缓存，第二次跑能省几分钟
       - name: Cache CocoaPods

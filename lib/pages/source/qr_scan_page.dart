@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -294,17 +293,18 @@ class _ScanMaskPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round;
 
     // 四个角各画两条短线，形成「取景框」的观感。
-    for (final corner in _cornerOrigins()) {
-      final dx = corner.$1;
-      final dy = corner.$2;
+    // 【record 解构】_cornerOrigins() 返回的是 (Offset, double, double) 三元组，
+    // 用模式解构一次拿全三个值。写成 `for (final c in ...)` 再去取 c.$1 当坐标
+    // 会类型错位（$1 本身就是 Offset），CI 上就是那条 argument_type_not_assignable。
+    for (final (origin, dx, dy) in _cornerOrigins()) {
       canvas.drawLine(
-        corner,
-        Offset(corner.dx + dx, corner.dy),
+        origin,
+        Offset(origin.dx + dx, origin.dy),
         cornerPaint,
       );
       canvas.drawLine(
-        corner,
-        Offset(corner.dx, corner.dy + dy),
+        origin,
+        Offset(origin.dx, origin.dy + dy),
         cornerPaint,
       );
     }

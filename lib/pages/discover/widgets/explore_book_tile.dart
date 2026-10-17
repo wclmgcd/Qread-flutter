@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
-import '../../models/search_result.dart';
-import '../../services/api_service.dart';
+// 【为什么是三层 ../】本文件在 lib/pages/discover/widgets/ 下，
+// 回 lib/ 要经过 widgets → discover → pages 三层。
+// 两层会解析成 lib/pages/models/... （不存在），CI 上直接报 uri_does_not_exist。
+import '../../../models/search_result.dart';
+import '../../../services/api_service.dart';
 
 /// 发现页书籍列表项 —— 「左书封 + 右元信息 + 简介摘要」横向布局。
 ///
