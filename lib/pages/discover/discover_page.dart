@@ -6,7 +6,6 @@ import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../models/explore_category.dart';
 import '../../models/explore_group.dart';
-import '../../models/flex_rows.dart';
 import '../../models/search_result.dart';
 import '../../providers/discover_provider.dart';
 import '../../providers/source_manage_provider.dart';
@@ -54,12 +53,6 @@ class DiscoverPage extends StatefulWidget {
 /// 36 = 文字 18 + 上下各 9 的呼吸空间。改小会让三行挤在一起，
 /// 改大则书单被往下推 —— 参考客户端那张卡片差不多就是这么高一截。
 const double _categoryRowHeight = 36;
-
-/// 分类卡片最多显示几行，再多就卡片内部滚动。
-///
-/// 三行 ≈ 108px —— 参考图里那张卡片差不多就是这么高一截，既能看清有哪些
-/// 分类，又不会把下面的书单挤出屏幕。
-const int _categoryMaxRows = 3;
 
 /// 第二级（分组标题）那一条的高度。
 ///
@@ -689,19 +682,21 @@ class _DiscoverPageState extends State<DiscoverPage>
     ];
   }
 
-  /// 分类卡片 = 第二级（分组标题，可左右滑）+ 第三级（该组的分类，行内可左右滑）。
+  /// 分类卡片 = 第二级（分组标题，左右滑）+ 第三级（该组分类，左右滑）。
   ///
-  /// 【为什么第二级要独立成一条可滑的】参考客户端的发现页是三级：
-  /// 一级书源（顶栏胶囊）→ 二级分组（「共享服」「我的」「小说」「首页」）→
-  /// 三级分类。第二级本身要能左右滑着换 —— 用户的原话是「第二级左滑就是我的，
-  /// 第二级小说就是新书强推」。所以它不能只是平铺分类里的一个"标题行"，
-  /// 必须是独立的、能吸附的横滑列表。
+  /// 【三级结构】一级 = 书源（顶栏胶囊）、二级 = 书源自己写的分组标题
+  /// （「共享服」「我的」「小说」「首页」）、三级 = 该组下的具体分类。
+  /// 前两级都能左右滑：一级滑换书源，二级滑换分组。
   ///
-  /// 【为什么三级行内不是平分宽度】`layout_flexBasisPercent` 只管「这一项该占
-  /// 整行的百分之几」，用来决定**切行**；行内每个胶囊按自己的文字宽度铺开，
-  /// 放不下就横向滑。参考图里知秋第二行「小说·共享章节数量 /
-  /// 小说·共享章节字数」两个胶囊都是 9 个字，加起来略超一行，第二个就被
-  /// 右边缘裁掉了 —— 平分宽度的话两个都会完整显示，对不上。
+  /// 【只有两级的书源】有的源根本没写分组标题（实测：半夏小说、屋檐下文学网），
+  /// 所有分类就是一整组。这种源**只显示两级** —— 二级直接就是分类，
+  /// 第三级不出现。否则会出现「第二级只有一个 '全部' 标签、第三级才是分类」
+  /// 这种多出来的空层级。
+  ///
+  /// 【第三级为什么只占一行】用户明确要求「第三级也要像第二级一样是左右滑动的，
+  /// 不要一起展示出来、上下滑动」。之前把整组分类按占比切成好几行铺开，
+  /// 一个 16 项的分组要占 4 行、把书单挤下去，还得在卡片里上下滚 ——
+  /// 那是个"分类表格"，不是发现页。现在固定一行，放不下的靠横向滑动看。
   Widget _buildCategoryCard(DiscoverProvider provider) {
     final cats = provider.categories;
     if (cats.isEmpty && provider.categoriesLoading) {
@@ -728,18 +723,9 @@ class _DiscoverPageState extends State<DiscoverPage>
       );
     }
 
-    // 有多个分组才显示第二级 —— 只有一个组时那一行纯属占地方。
-    // 实测有书源（半夏小说、屋檐下文学网）干脆没写分组标题，全部分类就是一整组。
-    final showGroups = provider.showGroups;
-    final items = showGroups ? provider.currentGroupItems : groups.first.items;
-
-    final rows = packFlexRows<ExploreCategory>(
-      items,
-      (item) => item.safeBasis,
-      wrapBeforeOf: (item) => item.wrapBefore,
-    );
-    final visibleRows =
-        rows.length < _categoryMaxRows ? rows.length : _categoryMaxRows;
+    // 多个分组 = 三级；只有一个分组 = 这个源只有两级，第三级不显示
+    final threeLevel = provider.showGroups;
+    final items = threeLevel ? provider.currentGroupItems : groups.first.items;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
@@ -754,89 +740,97 @@ class _DiscoverPageState extends State<DiscoverPage>
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (showGroups) _buildGroupBar(provider, groups),
-          // 高度按「实际有几行」算，别写死三行 —— 70 个源里大多数只有一两行，
-          // 写死的话卡片下半截永远是空的。分类上千个时（知秋 466 行）这里内部滚动，
-          // 而且用 itemExtent 让行**懒构建** —— 全建出来是上万个 widget，
-          // 切换书源时会明显卡一下。
-          SizedBox(
-            height: visibleRows * _categoryRowHeight,
-            child: NotificationListener<ScrollNotification>(
-              // 分类卡片自己也能纵向滚（知秋一组几十行），手指落在卡片上往上推时，
-              // 手势会被这张卡片的 ListView 吃掉，外层的顶栏就收不起来 ——
-              // 用户要的「上滑三级自动隐藏」在这个区域就失效了。
-              // 这里把内层滚到边界后多出来的位移（overscroll）转给外层控制器，
-              // 于是「先滚完分类、再收起顶栏」是一个连续动作。
-              // 只转 Overscroll 不转 ScrollUpdate：内层还有滚动空间时不该带动外层。
-              onNotification: _forwardOverscroll,
-              child: ListView.builder(
-                itemExtent: _categoryRowHeight,
-                physics: const ClampingScrollPhysics(),
-                itemCount: rows.length,
-                itemBuilder: (context, index) =>
-                    _buildCategoryRow(rows[index], provider),
-              ),
-            ),
-          ),
+          // 第二级：分组标题（只有三级结构才有）
+          if (threeLevel) _buildGroupBar(provider, groups),
+          // 第三级：当前分组的分类，一行横向滑动
+          _buildCategoryRow(items, provider),
         ],
       ),
     );
   }
 
-  /// 第二级：分组标题，整行居中，左右滑切换。
+  /// 第二级：分组标题 —— 整行居中一个组名，左右滑动换组，右侧漏斗列出全部。
   ///
-  /// 【为什么 viewportFraction 是 1.0】参考「轻阅时光」Windows 版的发现页
-  /// （用户专门指了这个）—— 第二级那一行**只显示当前这一个分组标题、整行居中**，
-  /// 不会像卡片轮播那样把左右邻组露出一截。之前设成 0.74 露出一半邻组，
-  /// 和它长得不一样。
+  /// 【为什么是 PageView 而不是横向 ListView】分组是"页"不是"列表"：
+  /// 换一组会整块换掉第三级的分类和下面的书单，一页一组、滑动切换的语义
+  /// 才对得上。用 ListView 的话滑动是连续的，松手停在哪一组全看惯性，
+  /// 反而不知道自己翻到第几组了。
   ///
-  /// 【右侧那个漏斗是干什么的】官方那一行右边有个筛选图标，点开是
-  /// **全部分组的列表**（知秋有 83 组，一个个滑过去太慢）。这里照做：
-  /// 点开列出来，选哪个直接跳过去。
+  /// 【为什么整行只放一个组】参考「轻阅时光」Windows 版就是一行一个组名、
+  /// 居中，左右不露邻组（`viewportFraction = 1.0`）。露半个邻组看着像卡片
+  /// 轮播，和它的观感对不上。
   ///
-  /// 【标题为什么原样显示】书源写的标题自带 emoji 装饰
-  /// （`🟥 🟥 🟥  共享服  🟥 🟥 🟥`），参考客户端就是原样居中显示的 ——
-  /// 那些"红方块"是 🟥 这个 emoji 本身，不是图片，清洗掉反而对不上。
+  /// 【为什么换源时要重建 controller】见 [_groupPageController] 的注释：
+  /// 换源瞬间 `itemCount` 还是 0，`jumpToPage` 会被直接丢掉。
   Widget _buildGroupBar(DiscoverProvider provider, List<ExploreGroup> groups) {
     final theme = Theme.of(context);
+    final index = provider.groupIndex;
+
+    // 换源 → 分组整批换掉，旧 controller 的页码在新列表里没有意义。
+    // 在 build 里换 controller 是安全的：PageView 的 didUpdateWidget 会先
+    // 把旧 controller detach 掉，所以旧的那个延后一帧再 dispose。
+    final sourceUrl = provider.currentSourceUrl;
+    if (_groupBarSourceUrl != sourceUrl) {
+      _groupBarSourceUrl = sourceUrl;
+      final old = _groupPageController;
+      _groupPageController =
+          PageController(viewportFraction: _groupViewportFraction);
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
+
     return SizedBox(
       height: _groupBarHeight,
       child: Row(
         children: [
           Expanded(
             child: PageView.builder(
+              // 换源时连 PageView 一起重建，免得它内部的页码缓存和
+              // 新 controller 的 initialPage 打架。
+              key: ValueKey<String?>(sourceUrl),
               controller: _groupPageController,
               itemCount: groups.length,
               onPageChanged: (i) {
                 final token = _token;
                 if (token != null) provider.setCurrentGroup(i, token);
               },
-              itemBuilder: (context, i) => Center(
-                child: Text(
-                  groups[i].label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: theme.colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14.5,
+              itemBuilder: (context, i) {
+                final group = groups[i];
+                final selected = i == index;
+                return Center(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    child: Text(
+                      group.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight:
+                            selected ? FontWeight.w600 : FontWeight.w400,
+                        color: selected
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ),
-          // 分组可能几十个，纯靠滑太慢 —— 给一个直接跳转的入口
+          // 组多的时候（知秋终版 83 组）一路滑到某个组要滑很久，给个直接
+          // 跳过去的入口。图标用漏斗：官方客户端这里就是"筛选"的语义，
+          // 用列表/菜单图标会让人以为是排序。
           SizedBox(
             width: 40,
-            height: _groupBarHeight,
             child: IconButton(
-              padding: EdgeInsets.zero,
-              iconSize: 19,
               tooltip: '全部分组',
-              onPressed: () => _showGroupPicker(provider, groups),
-              icon: Icon(Icons.filter_list,
-                  color: theme.colorScheme.onSurfaceVariant),
+              padding: EdgeInsets.zero,
+              iconSize: 18,
+              onPressed: () => _showGroupPicker(groups),
+              icon: Icon(
+                Icons.filter_alt_outlined,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
         ],
@@ -844,129 +838,144 @@ class _DiscoverPageState extends State<DiscoverPage>
     );
   }
 
-  /// 全部分组列表 —— 点哪个就跳到哪一组。
+  /// 「全部分组」面板 —— 点哪个就直接跳到哪一组。
   ///
-  /// 【为什么要它】知秋终版有 83 个分组，大灰狼 23 个。想从「共享服」滑到
-  /// 「玄幻」，靠一下下左滑要滑几十次。官方那个漏斗图标就是干这个的。
-  Future<void> _showGroupPicker(
-      DiscoverProvider provider, List<ExploreGroup> groups) async {
+  /// 走 `setCurrentGroup` 而不是只 `jumpToPage`：后者只动画面不动数据，
+  /// 书单会停在上一个组的书里，直到用户再滑一下才对上。
+  Future<void> _showGroupPicker(List<ExploreGroup> groups) async {
+    final token = _token;
+    if (token == null) return;
+    final provider = context.read<DiscoverProvider>();
+    final current = provider.groupIndex;
+
     final picked = await showModalBottomSheet<int>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
-      builder: (ctx) {
-        final theme = Theme.of(ctx);
-        return DraggableScrollableSheet(
-          expand: false,
-          initialChildSize: 0.6,
-          minChildSize: 0.3,
-          maxChildSize: 0.92,
-          builder: (ctx, controller) => Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                child: Row(
-                  children: [
-                    Text('全部分组',
-                        style: theme.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                    const Spacer(),
-                    Text('${groups.length} 个',
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        return SafeArea(
+          child: ConstrainedBox(
+            // 限制到屏幕 7 成高：83 个组铺满全屏会顶掉状态栏，
+            // 也不给人"这可以滑"的暗示。
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.7,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                  child: Row(
+                    children: [
+                      Text('全部分组', style: theme.textTheme.titleMedium),
+                      const Spacer(),
+                      Text(
+                        '${groups.length} 个',
                         style: theme.textTheme.bodySmall?.copyWith(
-                            color: theme.colorScheme.onSurfaceVariant)),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: ListView.builder(
-                  controller: controller,
-                  itemCount: groups.length,
-                  itemBuilder: (ctx, i) {
-                    final selected = i == provider.groupIndex;
-                    return ListTile(
-                      dense: true,
-                      selected: selected,
-                      title: Text(
-                        groups[i].label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight:
-                              selected ? FontWeight.w600 : FontWeight.w400,
+                          color: theme.colorScheme.onSurfaceVariant,
                         ),
                       ),
-                      subtitle: Text('${groups[i].items.length} 个分类'),
-                      trailing: selected
-                          ? Icon(Icons.check,
-                              size: 18, color: theme.colorScheme.primary)
-                          : null,
-                      onTap: () => Navigator.pop(ctx, i),
-                    );
-                  },
+                    ],
+                  ),
                 ),
-              ),
-            ],
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: groups.length,
+                    itemBuilder: (context, i) {
+                      final selected = i == current;
+                      return ListTile(
+                        dense: true,
+                        title: Text(
+                          groups[i].label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontWeight:
+                                selected ? FontWeight.w600 : FontWeight.w400,
+                            color:
+                                selected ? theme.colorScheme.primary : null,
+                          ),
+                        ),
+                        subtitle: Text('${groups[i].items.length} 个分类'),
+                        trailing: selected
+                            ? Icon(Icons.check,
+                                size: 18, color: theme.colorScheme.primary)
+                            : null,
+                        onTap: () => Navigator.of(sheetContext).pop(i),
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
         );
       },
     );
+
     if (picked == null || !mounted) return;
-    // 只跳页就行 —— onPageChanged 会带着 setCurrentGroup 一起跑，
-    // 这里再调一次只会被 setCurrentGroup 的相等判断挡掉。
+    await provider.setCurrentGroup(picked, token);
+    if (!mounted) return;
     if (_groupPageController.hasClients) {
       _groupPageController.jumpToPage(picked);
     }
   }
 
-  /// 把分类卡片滚到边界后的剩余位移交给整页滚动。
+  /// 第三级（两级书源时它就是第二级）—— **一行，横向滑动**。
   ///
-  /// 正数 = 内容已到底还在往上推 → 外层 offset 变大（书单上移、顶栏收起）；
-  /// 负数 = 到顶还在往下拉 → 外层往回滚（顶栏重新出现）。
-  /// 用 jumpTo 而不是 animateTo：这里跟着手指走，动画会明显拖手。
-  bool _forwardOverscroll(ScrollNotification n) {
-    if (n is! OverscrollNotification) return false;
-    if (n.metrics.axis != Axis.vertical) return false;
-    final d = n.overscroll;
-    if (d == 0 || !_scrollController.hasClients) return false;
-    final pos = _scrollController.position;
-    final target = (_scrollController.offset + d).clamp(0.0, pos.maxScrollExtent);
-    if ((target - _scrollController.offset).abs() < 0.5) return false;
-    _scrollController.jumpTo(target);
-    return false; // 继续向上冒泡，不影响其它监听者
-  }
-
-  /// 一行分类（第三级）—— 按 `layout_flexBasisPercent` 平分宽度。
+  /// 【为什么不折成多行】用户要求「第三级也要像第二级一样是左右滑动的，
+  /// 不要一起展示出来、上下滑动」。折行铺开的话，知秋「玄幻」组 16 个分类
+  /// 要占 4 行、把书单挤到屏幕外，还得在卡片里上下滚。
   ///
-  /// 【为什么从「横向滚动 + 按内容宽度」改成「平分」】参考「轻阅时光」
-  /// Windows 版的发现页：一行两个分类各占一半，右边正好对齐卡片边缘；
-  /// 之前按内容宽度铺开，第二个胶囊被右边缘裁掉一截，和它对不上。
+  /// 【宽度怎么算】书源给的 `layout_flexBasisPercent` 本来就是「这一项占整行
+  /// 的百分之几」，乘行宽就是项宽：0.25 的项一行正好四个，0.4 的项一行两个半，
+  /// 第 4 个/第 3 个露半个边 —— 提示还能往右滑，和参考截图一致。
   ///
-  /// 书源给的占比本来就是「这一项该占整行的百分之几」，直接当 flex 用
-  /// 才是它的原意。两个 0.4 的项相加是 0.8，按比例放大成各占 50% ——
-  /// 和官方那种「铺满一行」的观感一致，而不是右边留 20% 的空白。
+  /// 【总和不足 1 要放大】两个 0.4 的项加起来只有 0.8，照原样排右边会空一条；
+  /// 参考客户端里那两个是各占一半、铺满整行的。所以总数 < 1 时按比例放大。
+  /// 超过 1（比如 12 个 0.25）不能放大，保持原宽度靠滑动看剩下的。
   Widget _buildCategoryRow(
-      List<ExploreCategory> row, DiscoverProvider provider) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
-      child: Row(
-        children: [
-          for (var i = 0; i < row.length; i++) ...[
-            if (i > 0) const SizedBox(width: 6),
-            Expanded(
-              // flex 必须是正整数；占比 ×1000 保留三位小数足够
-              flex: (row[i].safeBasis * 1000).round().clamp(1, 1000),
-              child: _CategoryChip(
-                label: row[i].label,
-                selected: row[i].selectable &&
-                    row[i].url == provider.currentCategoryUrl,
-                // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
-                // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
-                onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
-              ),
+      List<ExploreCategory> items, DiscoverProvider provider) {
+    if (items.isEmpty) return const SizedBox(height: _categoryRowHeight);
+
+    var total = 0.0;
+    for (final e in items) {
+      total += e.safeBasis;
+    }
+    final scale = total > 0 && total < 1.0 ? 1.0 / total : 1.0;
+
+    return SizedBox(
+      height: _categoryRowHeight,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // 减掉左右各 10 的 padding，剩下的才是「一整行」的宽度
+          final unit = (constraints.maxWidth - 20).clamp(1.0, double.infinity);
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            physics: const ClampingScrollPhysics(),
+            child: Row(
+              children: [
+                for (var i = 0; i < items.length; i++)
+                  SizedBox(
+                    width: unit * items[i].safeBasis * scale,
+                    child: _CategoryChip(
+                      label: items[i].label,
+                      selected: items[i].selectable &&
+                          items[i].url == provider.currentCategoryUrl,
+                      // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
+                      // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
+                      onTap: items[i].selectable
+                          ? () => _pickCategory(items[i])
+                          : null,
+                    ),
+                  ),
+              ],
             ),
-          ],
-        ],
+          );
+        },
       ),
     );
   }
