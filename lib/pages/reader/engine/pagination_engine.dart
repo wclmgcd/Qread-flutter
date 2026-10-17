@@ -38,13 +38,16 @@ class PaginationEngine {
   ///
   /// 【为什么不直接把安全区高度全留给页脚】那样等于什么都没省。真正不能压住的
   /// 只有指示条本身：它高 5px、下沿离屏幕底 8px，也就是从屏幕底往上 13px 之后
-  /// 就是干净的。所以这里按「安全区 − 16px」让位：
-  ///   - iPhone（34）→ 18px，页脚底边比指示条顶沿还高 5px，不会打架；
-  ///   - Android 手势导航（约 24）→ 8px；
-  ///   - Android 三键导航（安全区 0）→ 退回 [defaultBottomPadding]，
-  ///     保持和以前一样的观感，不会因为「算出来是负数」把页脚贴到屏幕边上。
+  /// 就是干净的。所以这里按「安全区 − 20px」让位：
+  ///   - iPhone（34）→ 14px，页脚底边离指示条顶沿只剩 1px，刚好不打架；
+  ///   - Android 手势导航（约 24）→ 退回 [defaultBottomPadding]，保持老观感；
+  ///   - Android 三键导航（安全区 0）→ 同样退回 [defaultBottomPadding]。
+  ///
+  /// 【为什么从 −16 改成 −20】用户对比官方客户端后反馈「正文最后一行离页脚
+  /// 那一行还差一点」。那点差距就是正文区少了一行 —— 页脚下边距每收 1px，
+  /// 正文区就多 1px。再往下收就会压到手势条，所以 20 是这条线能到的极限。
   static double footerBottomPadding(double safeBottomInset) {
-    final relaxed = safeBottomInset - 16.0;
+    final relaxed = safeBottomInset - 20.0;
     return relaxed > defaultBottomPadding ? relaxed : defaultBottomPadding;
   }
   static const double defaultHeaderBottomSpacing = 6.0;
@@ -152,9 +155,13 @@ class PaginationEngine {
     // 实际行高会因字体度量有零点几 px 的出入；一页十几行累积起来就可能超过
     // 4px，于是最后一行被 ClipRect 切掉半截（反馈「文字显示不全」）。
     // 改成按行高的 1/4 留余量：缓冲足够，又不至于每页都白丢一行。
+    //
+    // 后来又收到「正文最后一行离页脚还差一点」的反馈，收到 0.15 ——
+    // 行高的 1/4 折算下来有 9~10px，而实际字体度量的累计误差通常不到 4px，
+    // 0.15（约 5~6px）仍然够用，还多还回 4px 给正文。
     final lineBoxHeightForMargin =
         textScaler.scale(fontSize) * lineHeight;
-    final safetyMargin = lineBoxHeightForMargin * 0.25;
+    final safetyMargin = lineBoxHeightForMargin * 0.15;
 
     final availableHeight = viewportSize.height -
         safeTop -

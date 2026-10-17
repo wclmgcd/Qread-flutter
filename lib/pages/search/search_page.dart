@@ -15,11 +15,27 @@ import '../../services/app_settings.dart';
 import '../../services/storage_service.dart';
 
 class SearchPage extends StatefulWidget {
-  const SearchPage({Key? key, this.initialKeyword}) : super(key: key);
+  const SearchPage({
+    Key? key,
+    this.initialKeyword,
+    this.sourceUrl,
+    this.sourceName,
+  }) : super(key: key);
 
   /// 带着关键词进来（例如从「书籍信息」页点作者名跳过来）。
   /// 非空时页面一挂载就自动搜一次，不用用户再点一下。
   final String? initialKeyword;
+
+  /// 只搜这一个书源 —— 从发现页点搜索进来时传「当前书源」。
+  ///
+  /// 【为什么发现页要限定范围】发现页的书源胶囊本身就在说"我现在在看知秋终版"，
+  /// 在它上面点搜索，用户的心理预期是「在知秋里搜」。搜全部书源的话，
+  /// 同一个书名会从七八个源里冒出七八条，还得自己挑 —— 与"当前上下文"脱节。
+  /// 想看全部时点一下提示条就放开了。
+  final String? sourceUrl;
+
+  /// 提示条上显示的书源名（`sourceUrl` 非空时才有意义）。
+  final String? sourceName;
 
   @override
   State<SearchPage> createState() => _SearchPageState();
@@ -43,6 +59,10 @@ class _SearchPageState extends State<SearchPage> {
   /// 用户手选的书源（bookSourceUrl 集合）；null 表示「全部已启用书源」。
   Set<String>? _pickedSourceUrls;
 
+  /// 当前是否处在「只搜发现页那个书源」的状态 —— 只影响顶部提示条的显隐。
+  /// 用户手动改过书源筛选、或者点了提示条，就置 false。
+  bool _scopedToSource = false;
+
   /// 最近一次搜索词（切换模糊/精确或改书源后自动重搜）
   String _lastKeyword = '';
 
@@ -55,6 +75,14 @@ class _SearchPageState extends State<SearchPage> {
   @override
   void initState() {
     super.initState();
+    // 从发现页进来时把搜索范围锁到当前书源（见 SearchPage.sourceUrl 的注释）。
+    // 放在 addPostFrameCallback 之前：_loadSources 完成后第一次 _search
+    // 就要看到这个范围，晚了会先按「全部书源」搜一遍再重搜，白费一轮请求。
+    final scoped = (widget.sourceUrl ?? '').trim();
+    if (scoped.isNotEmpty) {
+      _pickedSourceUrls = {scoped};
+      _scopedToSource = true;
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       // 【顺序不能换】_search 依赖 _enabledSources；不等书源加载完就搜，
       // 只会弹出「没有可用的搜索书源」。
@@ -424,6 +452,9 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       // 全选等价于「不限制」，存 null 更直观
       _pickedSourceUrls = picked.length == all.length ? null : picked;
+      // 用户自己动过筛选了，就不再是「仅搜发现页那个源」，
+      // 顶部那条提示得撤掉，否则和实际范围对不上。
+      _scopedToSource = false;
     });
     if (_lastKeyword.isNotEmpty) _search(_lastKeyword);
   }
@@ -476,8 +507,43 @@ class _SearchPageState extends State<SearchPage> {
             ],
           ),
         ],
+        // 从发现页进来时，标题下面挂一条「仅搜：xxx」的提示 ——
+        // 不提示的话，用户搜不到会以为真没有这本书，其实只是别的源没搜。
+        bottom: _scopedToSource
+            ? PreferredSize(
+                preferredSize: const Size.fromHeight(36),
+                child: _buildScopeHint(),
+              )
+            : null,
       ),
       body: _buildBody(),
+    );
+  }
+
+  /// 「只搜当前书源」提示条。点一下放开到全部书源。
+  Widget _buildScopeHint() {
+    final theme = Theme.of(context);
+    final name = (widget.sourceName ?? '').trim();
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+        child: ActionChip(
+          avatar: const Icon(Icons.filter_alt_outlined, size: 16),
+          label: Text('仅搜：${name.isEmpty ? '当前书源' : name}'),
+          labelStyle: theme.textTheme.bodySmall,
+          visualDensity: VisualDensity.compact,
+          tooltip: '点一下改为搜索全部书源',
+          onPressed: () {
+            setState(() {
+              _scopedToSource = false;
+              _pickedSourceUrls = null;
+            });
+            // 已经有结果就按新范围重搜一次，不然界面还停在单源结果上
+            if (_lastKeyword.isNotEmpty) _search(_lastKeyword);
+          },
+        ),
+      ),
     );
   }
 

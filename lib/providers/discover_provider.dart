@@ -6,8 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book_source.dart';
 import '../models/explore_category.dart';
+import '../models/explore_group.dart';
 import '../models/search_result.dart';
-import '../models/source_ui.dart';
 import '../services/api_service.dart';
 import '../services/error_text.dart';
 import '../services/local_cache_service.dart';
@@ -68,20 +68,103 @@ class DiscoverProvider extends ChangeNotifier {
       _categories.where((c) => c.selectable).toList(growable: false);
 
   // ============================================================
-  // 当前书源的自定义界面（登录 / 设置）
+  // 二级分组（发现页的「三级结构」中间那层）
   // ============================================================
-  List<SourceUiItem> _sourceUi = [];
-  bool _sourceUiLoading = false;
 
-  /// 书源登录信息的原文（可能是 `{"邮箱":"..."}` 这种 JSON，也可能是裸字符串）。
-  String _loginInfoRaw = '';
+  /// 分类按分组标题切好的组 —— 懒算并缓存。
+  ///
+  /// 【为什么要缓存】知秋终版有 1433 个分类项，切一遍要遍历全表。这个 getter
+  /// 会在 build 里被调用（每次滚动都可能重建），每次重切是纯浪费。
+  /// `_categories` 一换就置空缓存（见 [loadCategories] 和 [setCurrentSource]）。
+  List<ExploreGroup>? _groupsCache;
 
-  List<SourceUiItem> get sourceUi => _sourceUi;
-  bool get sourceUiLoading => _sourceUiLoading;
-  String get loginInfoRaw => _loginInfoRaw;
+  /// 当前停在第二级的第几组。
+  int _groupIndex = 0;
 
-  /// 这个源有没有自定义登录/设置界面 —— 决定界面右上角要不要显示人像按钮。
-  bool get hasSourceUi => _sourceUi.isNotEmpty;
+  List<ExploreGroup> get groups =>
+      _groupsCache ??= groupExploreCategories(_categories);
+
+  int get groupIndex {
+    if (_groupIndex < 0) return 0;
+    final n = groups.length;
+    return n == 0 || _groupIndex >= n ? 0 : _groupIndex;
+  }
+
+  /// 当前这一组（第二级选中的那个）。
+  ExploreGroup? get currentGroup {
+    final g = groups;
+    if (g.isEmpty) return null;
+    return g[groupIndex];
+  }
+
+  /// 当前这一组的三级分类。
+  List<ExploreCategory> get currentGroupItems => currentGroup?.items ?? const [];
+
+  /// 第二级要不要显示。
+  ///
+  /// 只有一个分组时没必要占一行 —— 实测有书源（半夏小说、屋檐下文学网）
+  /// 干脆没写分组标题，全部分类就是一整组，显示一个"全部"标签纯属噪音。
+  bool get showGroups => groups.length > 1;
+
+  /// 切到第二级的某一组。
+  ///
+  /// 【为什么切组要顺带换分类】三级分类是挂在组下面的，切了组却不换书单，
+  /// 用户看到的就是「标题变了、书还是上一组的」。所以这里直接选中新组的
+  /// 第一个可点分类，并重新拉书。
+  ///
+  /// 【为什么不用 await 通知界面】先把 `_groupIndex` 和 `_currentCategoryUrl`
+  /// 改掉再 notify，第二级和三级的高亮会立刻跟上，书单随后到 ——
+  /// 这样滑动的手感是"跟手的"，不会卡在旧内容上等网络。
+  Future<void> setCurrentGroup(int index, String accessToken) async {
+    final g = groups;
+    if (index < 0 || index >= g.length) return;
+    if (index == _groupIndex) return;
+    _groupIndex = index;
+
+    // 选中新组的第一个可点分类（不用 firstOrNull，免得为它引入 collection 包）
+    for (final c in g[index].items) {
+      if (c.selectable) {
+        _currentCategoryUrl = c.url;
+        break;
+      }
+    }
+    notifyListeners();
+
+    await reloadBooks(accessToken);
+  }
+
+  // ============================================================
+  // 当前书源对象（登录界面判断要用它的 loginUi / loginUrl）
+  // ============================================================
+
+  /// 当前选中的书源。
+  ///
+  /// 【为什么要从列表里现找，而不是存一份引用】书源对象是可变的：在书源管理
+  /// 里编辑过 `loginUi`、改过名字之后，列表会整体换新。存旧引用的话，
+  /// 表现就是「刚在书源管理里配好登录，回发现页点人像还是老界面」。
+  BookSource? get currentSource {
+    final url = _currentSourceUrl;
+    if (url == null) return null;
+    for (final s in _exploreSources) {
+      if (s.bookSourceUrl == url) return s;
+    }
+    return null;
+  }
+
+  /// 这个源有没有登录界面 —— 决定右上角要不要显示人像。
+  ///
+  /// 【为什么看书源自己的字段，而不是问后端】`loginUi` 是书源里写好的界面
+  /// 描述，书源列表接口本来就带着它（知秋终版一万多个字符）。为了判断
+  /// 「要不要显示一个按钮」再跑一次书源 JS 不值当 —— 那个请求要等好几秒，
+  /// 按钮会迟到，用户还以为没有登录入口。
+  ///
+  /// 只有 `loginUrl` 没有 `loginUi` 的源走 WebView 登录，同样算「有登录界面」。
+  bool get hasSourceLogin {
+    final s = currentSource;
+    if (s == null) return false;
+    return (s.loginUi ?? '').trim().isNotEmpty ||
+        (s.loginUrl ?? '').trim().isNotEmpty;
+  }
 
   // ============================================================
   // 当前分类的书籍列表（分页累积在内存里，离开发现页不丢）
@@ -205,10 +288,10 @@ class DiscoverProvider extends ChangeNotifier {
     _currentCategoryUrl = null;
     _categories = [];
     _categoriesNote = null;
-    // 登录界面是跟着书源走的，换源必须清掉 —— 否则新源会短暂顶着
-    // 上一个源的人像按钮，点开还是上个源的设置项
-    _sourceUi = [];
-    _loginInfoRaw = '';
+    // 分组是从分类切出来的，分类清了缓存也得清；组索引归零，
+    // 否则换到一个只有两组的源、索引还停在第 50 组，会直接越界。
+    _groupsCache = null;
+    _groupIndex = 0;
     _books = [];
     _booksPage = 1;
     _booksHasMore = true;
@@ -270,6 +353,8 @@ class DiscoverProvider extends ChangeNotifier {
       );
       if (result['isSuccess'] != true) {
         _categories = [];
+        _groupsCache = null;
+        _groupIndex = 0;
         _categoriesError = '获取发现分类失败';
         return;
       }
@@ -277,103 +362,17 @@ class DiscoverProvider extends ChangeNotifier {
       final parsed = ExploreCategory.parse(data?['found']);
       _categories = parsed.items;
       _categoriesNote = parsed.note;
-      // 顺手把书源自定义界面也拉回来（决定右上角显不显示人像按钮）。
-      // 【为什么不 await】它要先跑书源里的 JS、必要时还会去访问书源站点，
-      // 慢起来好几秒；分类和书单没必要等它 —— 拉到了再 notify 一次即可。
-      unawaited(loadSourceUi(accessToken, sourceUrl));
+      _groupsCache = null;
+      // 同一个源重载分类（下拉刷新 / 登录后刷新）时**不归零**：
+      // 用户停在第 7 组，归零会让第二级突然弹回第一组，很突兀。
+      // 只把索引夹回合法范围 —— 换源时是 setCurrentSource 负责归零。
+      final n = groups.length;
+      _groupIndex = n == 0 ? 0 : _groupIndex.clamp(0, n - 1);
     } catch (e) {
       _categoriesError = friendlyError(e);
     } finally {
       _categoriesLoading = false;
       notifyListeners();
-    }
-  }
-
-  // ============================================================
-  // 书源自定义界面（登录 / 设置）
-  // ============================================================
-
-  /// 拉书源自定义界面 + 当前登录信息。
-  ///
-  /// 拿不到（书源没写 loginUi）时就存空列表 —— 界面据此决定不显示人像按钮。
-  Future<void> loadSourceUi(String accessToken, String sourceUrl) async {
-    _sourceUiLoading = true;
-    try {
-      // 两个请求互不依赖，一起发，省一次往返
-      final results = await Future.wait([
-        ApiService.instance.getSourcesLoginUi(accessToken, sourceUrl),
-        ApiService.instance.getLoginInfo(accessToken, sourceUrl),
-      ]);
-      if (_currentSourceUrl != sourceUrl) return; // 期间切了书源，结果作废
-      final uiResp = results[0];
-      final infoResp = results[1];
-      final rawInfo = infoResp['isSuccess'] == true
-          ? SourceUiItem.rawLoginInfo(infoResp['data'])
-          : '';
-      final loginMap = SourceUiItem.parseLoginInfo(
-          infoResp['isSuccess'] == true ? infoResp['data'] : null);
-      _loginInfoRaw = rawInfo;
-      _sourceUi = uiResp['isSuccess'] == true
-          ? SourceUiItem.parse(uiResp['data'], loginInfo: loginMap)
-          : <SourceUiItem>[];
-    } catch (_) {
-      // 拉不到就当没有登录界面 —— 不要因为一个附加能力把整页搞成错误态
-      _sourceUi = [];
-      _loginInfoRaw = '';
-    } finally {
-      _sourceUiLoading = false;
-      notifyListeners();
-    }
-  }
-
-  /// 执行书源界面里某个按钮的 JS，然后刷新分类 + 书单。
-  ///
-  /// 【为什么执行完要重拉分类】很多按钮改的就是「发现页模式 / 频道」这类变量
-  /// （知秋终版的 `setType('all')`），而分类列表是书源的 JS 拿这些变量算出来的 ——
-  /// 不重拉的话，用户切了模式还看到旧分类，会以为没生效。
-  Future<String?> runSourceUiAction(
-    String accessToken,
-    String sourceUrl,
-    String action, {
-    String? info,
-  }) async {
-    try {
-      final resp = await ApiService.instance.runSourceAction(
-        accessToken,
-        sourceUrl,
-        action,
-        info: info,
-      );
-      if (resp['isSuccess'] == false) {
-        return resp['errorMsg']?.toString() ?? '执行失败';
-      }
-    } catch (e) {
-      return friendlyError(e);
-    }
-    if (_currentSourceUrl != sourceUrl) return null;
-    // 登录信息可能刚被改过，一起刷新
-    await loadSourceUi(accessToken, sourceUrl);
-    if (_currentSourceUrl != sourceUrl) return null;
-    await loadCategories(accessToken, sourceUrl);
-    if (_currentSourceUrl != sourceUrl) return null;
-    await reloadAfterSwitch(accessToken);
-    return null;
-  }
-
-  /// 保存界面上的输入框（走 `/setVariable` 之外的表单保存其实也是 action，
-  /// 这里留给"只改登录信息不跑 JS"的场景）。
-  Future<String?> saveSourceLoginInfo(
-      String accessToken, String sourceUrl, String info) async {
-    try {
-      final resp = await ApiService.instance
-          .setSourceVariable(accessToken, sourceUrl, info);
-      if (resp['isSuccess'] == false) {
-        return resp['errorMsg']?.toString() ?? '保存失败';
-      }
-      await loadSourceUi(accessToken, sourceUrl);
-      return null;
-    } catch (e) {
-      return friendlyError(e);
     }
   }
 

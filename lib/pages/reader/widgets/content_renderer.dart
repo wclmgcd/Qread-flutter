@@ -525,7 +525,7 @@ class ContentRenderer {
         horizontalPadding,
         topPadding,
         horizontalPadding,
-        // 由调用方传进来（阅读页会把它算成「安全区 − 16px」），
+        // 由调用方传进来（阅读页会把它算成「安全区 − 20px」），
         // 关掉页脚时不占位。
         showBottomBar ? bottomPadding : 0.0,
       ),

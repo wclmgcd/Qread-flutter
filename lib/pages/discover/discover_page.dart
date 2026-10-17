@@ -5,15 +5,18 @@ import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../models/explore_category.dart';
+import '../../models/explore_group.dart';
 import '../../models/flex_rows.dart';
 import '../../models/search_result.dart';
 import '../../providers/discover_provider.dart';
 import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
 import '../bookshelf/book_info_page.dart';
+import '../login/source_login_page.dart';
+import '../login/webview_login_page.dart';
+import '../search/search_page.dart';
 import 'widgets/explore_book_tile.dart';
 import 'widgets/source_picker_sheet.dart';
-import 'widgets/source_ui_sheet.dart';
 
 /// 发现页。
 ///
@@ -42,15 +45,15 @@ class DiscoverPage extends StatefulWidget {
   State<DiscoverPage> createState() => _DiscoverPageState();
 }
 
-/// 分类胶囊的行高（含行间距）。
+/// 一行分类的行高。
 ///
 /// 【为什么要固定行高】分类可能有上千个（知秋终版 1433 个 → 466 行），
 /// 用 Column 一次性铺出来就是上万个 widget，切书源时会明显卡一下。
 /// 固定行高之后就能用 `ListView.itemExtent`，只构建看得见的那三行。
+///
+/// 36 = 文字 18 + 上下各 9 的呼吸空间。改小会让三行挤在一起，
+/// 改大则书单被往下推 —— 参考客户端那张卡片差不多就是这么高一截。
 const double _categoryRowHeight = 36;
-
-/// 行间距
-const double _categoryRowGap = 6;
 
 /// 分类卡片最多显示几行，再多就卡片内部滚动。
 ///
@@ -58,12 +61,36 @@ const double _categoryRowGap = 6;
 /// 分类，又不会把下面的书单挤出屏幕。
 const int _categoryMaxRows = 3;
 
+/// 第二级（分组标题）那一条的高度。
+///
+/// 38 ≈ 标题文字 20 + 上下留白。再高就把书单往下挤了，再矮点击区不够。
+const double _groupBarHeight = 38;
+
+/// 第二级每屏露出几个组。
+///
+/// 1.0 = 整行只显示当前组、居中，不露邻组 —— 和「轻阅时光」Windows 版一致。
+/// 之前用 0.74 让左右各露半个邻组（像卡片轮播），和官方观感对不上。
+const double _groupViewportFraction = 1.0;
+
 class _DiscoverPageState extends State<DiscoverPage>
     with AutomaticKeepAliveClientMixin {
   @override
   bool get wantKeepAlive => true;
 
   final ScrollController _scrollController = ScrollController();
+
+  /// 第二级分组标题的翻页控制器。
+  ///
+  /// 【为什么换源时要重建它】`PageController` 的初始页只在创建时生效，
+  /// 换源后 `provider.groupIndex` 归零、但 controller 还停在第 N 页 ——
+  /// 表现就是"顶栏显示大灰狼，第二级还停在知秋的第 7 组"。
+  /// 重建一个干净的 controller 比 jumpToPage 可靠：换源瞬间分类还没回来，
+  /// PageView 的 itemCount 是 0，这时候 jump 会直接被丢掉。
+  PageController _groupPageController =
+      PageController(viewportFraction: _groupViewportFraction);
+
+  /// 上次构建时用的书源 URL —— 用来发现「换源了」，好重建上面的 controller。
+  String? _groupBarSourceUrl;
 
   /// 防止 didChangeDependencies 被反复触发时并发跑初始化。
   bool _bootstrapping = false;
@@ -81,6 +108,7 @@ class _DiscoverPageState extends State<DiscoverPage>
   void dispose() {
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
+    _groupPageController.dispose();
     super.dispose();
   }
 
@@ -226,33 +254,88 @@ class _DiscoverPageState extends State<DiscoverPage>
         group: 0,
       );
 
-  /// 右上角人像 → 书源自定义界面（登录 / 设置）。
+  /// 右上角人像 → 书源登录。
   ///
-  /// 【为什么这里可能还要现拉一次】书源界面是在分类加载完之后**异步**拉的
-  /// （它要先跑书源 JS，慢起来好几秒）。用户手快的话按钮还没出来就会点，
-  /// 所以这里兜一次：拉到了就弹，还是没有才说"这个书源没有自定义界面"。
-  Future<void> _openSourceUi() async {
-    final token = _token;
-    if (token == null) return;
+  /// 【为什么直接跳 `SourceLoginPage` 而不是自己画一套】书源的登录界面
+  /// （`loginUi`）是书源自己写的一段 JS 描述：里面有输入框、按钮、跳转，
+  /// 检测结果还要靠 WebSocket 从后端推回来。这套东西
+  /// `SourceLoginPage` 已经全部实现了（动作执行、cookie 同步、结果回推），
+  /// 而且「书源管理 → 三个横点 → 登录」走的就是它。
+  /// 发现页再画一份，两边行为必然会分叉 —— 用户在发现页登完，
+  /// 到书源管理里看还是没登录，这种 bug 最难查。
+  ///
+  /// 【怎么判断这个源有没有登录界面】直接看书源自己的字段（`loginUi` /
+  /// `loginUrl`），书源列表接口本来就带着它们，不用再问后端要一遍。
+  Future<void> _openSourceLogin() async {
     final provider = context.read<DiscoverProvider>();
-    final url = provider.currentSourceUrl;
-    if (url == null) return;
-    if (provider.sourceUi.isEmpty) {
-      await provider.loadSourceUi(token, url);
-      if (!mounted) return;
-    }
-    if (provider.sourceUi.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('这个书源没有自定义界面')),
+    final source = provider.currentSource;
+    if (source == null) return;
+
+    final loginUi = (source.loginUi ?? '').trim();
+    final loginUrl = (source.loginUrl ?? '').trim();
+
+    if (loginUi.isNotEmpty) {
+      await Navigator.pushNamed(
+        context,
+        AppRoutes.sourceLogin,
+        arguments: SourceLoginPageArgs(
+          sourceUrl: source.bookSourceUrl ?? '',
+          sourceName: source.bookSourceName ?? '书源',
+          type: 'bookSource',
+          loginUi: source.loginUi,
+          loginUrl: source.loginUrl,
+          variableComment: source.variableComment,
+          header: source.header,
+        ),
       );
+    } else if (loginUrl.isNotEmpty) {
+      await Navigator.pushNamed(
+        context,
+        AppRoutes.sourceWebLogin,
+        arguments: WebViewLoginPageArgs(
+          sourceUrl: source.bookSourceUrl ?? '',
+          sourceName: source.bookSourceName ?? '书源',
+          type: 'bookSource',
+          loginUrl: loginUrl,
+          headers: const {},
+        ),
+      );
+    } else {
       return;
     }
-    await showSourceUiSheet(
+
+    if (!mounted) return;
+    // 登录页回来：书源刚拿到 cookie，**分类要重拉** —— 很多源（知秋就是）
+    // 登录后会多出「我的 / 我的书架」这类分组，不重拉就永远看不到。
+    // reloadAfterSwitch 只在分类为空时才拉，所以这里先显式拉一次。
+    final token = _token;
+    final url = provider.currentSourceUrl;
+    if (token != null && url != null) {
+      await provider.loadCategories(token, url);
+    }
+    if (!mounted) return;
+    if (token != null) await provider.reloadAfterSwitch(token);
+  }
+
+  /// 搜索 —— 范围锁在**当前书源**。
+  ///
+  /// 【为什么不走 `AppRoutes.search`】那条路由注册的是 `const SearchPage()`，
+  /// 塞不进参数。而"搜当前书源"恰恰要靠参数表达，所以这里直接构造。
+  ///
+  /// 【为什么要限定范围】书源胶囊本身就在说"我现在在看知秋终版"，
+  /// 在这个上下文里点搜索，用户预期就是「在知秋里搜」。搜全部书源的话，
+  /// 同一个书名会从七八个源里冒出七八条重复结果，还得自己挑。
+  /// 想看全部时，搜索页顶部那条「仅搜：xxx」点一下就放开。
+  void _openSearch() {
+    final provider = context.read<DiscoverProvider>();
+    Navigator.push(
       context,
-      provider: provider,
-      accessToken: token,
-      sourceUrl: url,
-      sourceName: _currentSourceName() ?? '书源设置',
+      MaterialPageRoute(
+        builder: (_) => SearchPage(
+          sourceUrl: provider.currentSourceUrl,
+          sourceName: provider.currentSource?.bookSourceName,
+        ),
+      ),
     );
   }
 
@@ -310,6 +393,17 @@ class _DiscoverPageState extends State<DiscoverPage>
     context.watch<SourceManageProvider>();
     final sources = _visibleSources(provider.exploreSources);
 
+    // 换书源 → 第二级要回到第一组。PageController 的初始页只在创建时生效，
+    // 所以这里换一个全新的 controller（理由见 _groupPageController 的注释）。
+    // 旧的那个要等这一帧画完再 dispose —— 它可能正被当前这棵 PageView 持有。
+    if (_groupBarSourceUrl != provider.currentSourceUrl) {
+      _groupBarSourceUrl = provider.currentSourceUrl;
+      final old = _groupPageController;
+      _groupPageController =
+          PageController(viewportFraction: _groupViewportFraction);
+      WidgetsBinding.instance.addPostFrameCallback((_) => old.dispose());
+    }
+
     return Scaffold(
       body: _buildBody(loggedIn, provider, sources),
     );
@@ -336,8 +430,8 @@ class _DiscoverPageState extends State<DiscoverPage>
       leadingWidth: 56,
       leading: Center(
         child: IconButton(
-          tooltip: '搜索',
-          onPressed: () => Navigator.pushNamed(context, AppRoutes.search),
+          tooltip: '搜索当前书源',
+          onPressed: _openSearch,
           icon: const Icon(Icons.search),
           style: IconButton.styleFrom(
             backgroundColor:
@@ -354,14 +448,13 @@ class _DiscoverPageState extends State<DiscoverPage>
           onPressed: provider.booksLoading ? null : _refreshAll,
           icon: const Icon(Icons.refresh),
         ),
-        // 只有书源自己写了界面（loginUi）才显示人像 —— 参考里"没有登录界面的
-        // 书源就没有头像"。它是不是异步才拉到的，所以按钮会因为 provider
-        // 更新而出现/消失，这是预期的。
-        if (provider.hasSourceUi)
+        // 只有书源自己写了登录界面（loginUi / loginUrl）才显示人像 ——
+        // 参考客户端里"没有登录界面的书源就没有头像"。
+        if (provider.hasSourceLogin)
           Center(
             child: IconButton(
-              tooltip: '书源登录 / 设置',
-              onPressed: _openSourceUi,
+              tooltip: '书源登录',
+              onPressed: _openSourceLogin,
               icon: const Icon(Icons.person_outline),
               style: IconButton.styleFrom(
                 backgroundColor: theme.colorScheme.surfaceContainerHighest
@@ -596,14 +689,19 @@ class _DiscoverPageState extends State<DiscoverPage>
     ];
   }
 
-  /// 分类卡片：按 style 给的占比**分行**，每行内部横向滑动。
+  /// 分类卡片 = 第二级（分组标题，可左右滑）+ 第三级（该组的分类，行内可左右滑）。
   ///
-  /// 【为什么行内不是平分宽度】`layout_flexBasisPercent` 只管「这一项该占
+  /// 【为什么第二级要独立成一条可滑的】参考客户端的发现页是三级：
+  /// 一级书源（顶栏胶囊）→ 二级分组（「共享服」「我的」「小说」「首页」）→
+  /// 三级分类。第二级本身要能左右滑着换 —— 用户的原话是「第二级左滑就是我的，
+  /// 第二级小说就是新书强推」。所以它不能只是平铺分类里的一个"标题行"，
+  /// 必须是独立的、能吸附的横滑列表。
+  ///
+  /// 【为什么三级行内不是平分宽度】`layout_flexBasisPercent` 只管「这一项该占
   /// 整行的百分之几」，用来决定**切行**；行内每个胶囊按自己的文字宽度铺开，
   /// 放不下就横向滑。参考图里知秋第二行「小说·共享章节数量 /
   /// 小说·共享章节字数」两个胶囊都是 9 个字，加起来略超一行，第二个就被
   /// 右边缘裁掉了 —— 平分宽度的话两个都会完整显示，对不上。
-  /// 用户也明确说过三级界面「都可以左右滑动」。
   Widget _buildCategoryCard(DiscoverProvider provider) {
     final cats = provider.categories;
     if (cats.isEmpty && provider.categoriesLoading) {
@@ -622,16 +720,30 @@ class _DiscoverPageState extends State<DiscoverPage>
       );
     }
 
+    final groups = provider.groups;
+    if (groups.isEmpty) {
+      // 分类项全是标题、一个可点的都没有（实测有这种源）
+      return _CategoryNotice(
+        text: provider.categoriesNote ?? '这个书源没有可点的分类',
+      );
+    }
+
+    // 有多个分组才显示第二级 —— 只有一个组时那一行纯属占地方。
+    // 实测有书源（半夏小说、屋檐下文学网）干脆没写分组标题，全部分类就是一整组。
+    final showGroups = provider.showGroups;
+    final items = showGroups ? provider.currentGroupItems : groups.first.items;
+
     final rows = packFlexRows<ExploreCategory>(
-      cats,
+      items,
       (item) => item.safeBasis,
       wrapBeforeOf: (item) => item.wrapBefore,
     );
     final visibleRows =
         rows.length < _categoryMaxRows ? rows.length : _categoryMaxRows;
+
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-      padding: const EdgeInsets.symmetric(vertical: 6),
+      padding: const EdgeInsets.only(top: 4, bottom: 6),
       decoration: BoxDecoration(
         color: Theme.of(context)
             .colorScheme
@@ -639,30 +751,172 @@ class _DiscoverPageState extends State<DiscoverPage>
             .withValues(alpha: 0.45),
         borderRadius: BorderRadius.circular(14),
       ),
-      // 高度按「实际有几行」算，别写死三行 —— 70 个源里大多数只有一两行，
-      // 写死的话卡片下半截永远是空的。分类上千个时（知秋 466 行）这里内部滚动，
-      // 而且用 itemExtent 让行**懒构建** —— 全建出来是上万个 widget，
-      // 切换书源时会明显卡一下。
-      child: SizedBox(
-        height: visibleRows * _categoryRowHeight,
-        child: NotificationListener<ScrollNotification>(
-          // 分类卡片自己也能纵向滚（知秋 466 行），手指落在卡片上往上推时，
-          // 手势会被这张卡片的 ListView 吃掉，外层的顶栏就收不起来 ——
-          // 用户要的「上滑三级自动隐藏」在这个区域就失效了。
-          // 这里把内层滚到边界后多出来的位移（overscroll）转给外层控制器，
-          // 于是「先滚完分类、再收起顶栏」是一个连续动作。
-          // 只转 Overscroll 不转 ScrollUpdate：内层还有滚动空间时不该带动外层。
-          onNotification: _forwardOverscroll,
-          child: ListView.builder(
-            itemExtent: _categoryRowHeight,
-            physics: const ClampingScrollPhysics(),
-            itemCount: rows.length,
-            itemBuilder: (context, index) =>
-                _buildCategoryRow(rows[index], provider),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (showGroups) _buildGroupBar(provider, groups),
+          // 高度按「实际有几行」算，别写死三行 —— 70 个源里大多数只有一两行，
+          // 写死的话卡片下半截永远是空的。分类上千个时（知秋 466 行）这里内部滚动，
+          // 而且用 itemExtent 让行**懒构建** —— 全建出来是上万个 widget，
+          // 切换书源时会明显卡一下。
+          SizedBox(
+            height: visibleRows * _categoryRowHeight,
+            child: NotificationListener<ScrollNotification>(
+              // 分类卡片自己也能纵向滚（知秋一组几十行），手指落在卡片上往上推时，
+              // 手势会被这张卡片的 ListView 吃掉，外层的顶栏就收不起来 ——
+              // 用户要的「上滑三级自动隐藏」在这个区域就失效了。
+              // 这里把内层滚到边界后多出来的位移（overscroll）转给外层控制器，
+              // 于是「先滚完分类、再收起顶栏」是一个连续动作。
+              // 只转 Overscroll 不转 ScrollUpdate：内层还有滚动空间时不该带动外层。
+              onNotification: _forwardOverscroll,
+              child: ListView.builder(
+                itemExtent: _categoryRowHeight,
+                physics: const ClampingScrollPhysics(),
+                itemCount: rows.length,
+                itemBuilder: (context, index) =>
+                    _buildCategoryRow(rows[index], provider),
+              ),
+            ),
           ),
-        ),
+        ],
       ),
     );
+  }
+
+  /// 第二级：分组标题，整行居中，左右滑切换。
+  ///
+  /// 【为什么 viewportFraction 是 1.0】参考「轻阅时光」Windows 版的发现页
+  /// （用户专门指了这个）—— 第二级那一行**只显示当前这一个分组标题、整行居中**，
+  /// 不会像卡片轮播那样把左右邻组露出一截。之前设成 0.74 露出一半邻组，
+  /// 和它长得不一样。
+  ///
+  /// 【右侧那个漏斗是干什么的】官方那一行右边有个筛选图标，点开是
+  /// **全部分组的列表**（知秋有 83 组，一个个滑过去太慢）。这里照做：
+  /// 点开列出来，选哪个直接跳过去。
+  ///
+  /// 【标题为什么原样显示】书源写的标题自带 emoji 装饰
+  /// （`🟥 🟥 🟥  共享服  🟥 🟥 🟥`），参考客户端就是原样居中显示的 ——
+  /// 那些"红方块"是 🟥 这个 emoji 本身，不是图片，清洗掉反而对不上。
+  Widget _buildGroupBar(DiscoverProvider provider, List<ExploreGroup> groups) {
+    final theme = Theme.of(context);
+    return SizedBox(
+      height: _groupBarHeight,
+      child: Row(
+        children: [
+          Expanded(
+            child: PageView.builder(
+              controller: _groupPageController,
+              itemCount: groups.length,
+              onPageChanged: (i) {
+                final token = _token;
+                if (token != null) provider.setCurrentGroup(i, token);
+              },
+              itemBuilder: (context, i) => Center(
+                child: Text(
+                  groups[i].label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: theme.colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // 分组可能几十个，纯靠滑太慢 —— 给一个直接跳转的入口
+          SizedBox(
+            width: 40,
+            height: _groupBarHeight,
+            child: IconButton(
+              padding: EdgeInsets.zero,
+              iconSize: 19,
+              tooltip: '全部分组',
+              onPressed: () => _showGroupPicker(provider, groups),
+              icon: Icon(Icons.filter_list,
+                  color: theme.colorScheme.onSurfaceVariant),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 全部分组列表 —— 点哪个就跳到哪一组。
+  ///
+  /// 【为什么要它】知秋终版有 83 个分组，大灰狼 23 个。想从「共享服」滑到
+  /// 「玄幻」，靠一下下左滑要滑几十次。官方那个漏斗图标就是干这个的。
+  Future<void> _showGroupPicker(
+      DiscoverProvider provider, List<ExploreGroup> groups) async {
+    final picked = await showModalBottomSheet<int>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        final theme = Theme.of(ctx);
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          minChildSize: 0.3,
+          maxChildSize: 0.92,
+          builder: (ctx, controller) => Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+                child: Row(
+                  children: [
+                    Text('全部分组',
+                        style: theme.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600)),
+                    const Spacer(),
+                    Text('${groups.length} 个',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant)),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: ListView.builder(
+                  controller: controller,
+                  itemCount: groups.length,
+                  itemBuilder: (ctx, i) {
+                    final selected = i == provider.groupIndex;
+                    return ListTile(
+                      dense: true,
+                      selected: selected,
+                      title: Text(
+                        groups[i].label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontWeight:
+                              selected ? FontWeight.w600 : FontWeight.w400,
+                        ),
+                      ),
+                      subtitle: Text('${groups[i].items.length} 个分类'),
+                      trailing: selected
+                          ? Icon(Icons.check,
+                              size: 18, color: theme.colorScheme.primary)
+                          : null,
+                      onTap: () => Navigator.pop(ctx, i),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (picked == null || !mounted) return;
+    // 只跳页就行 —— onPageChanged 会带着 setCurrentGroup 一起跑，
+    // 这里再调一次只会被 setCurrentGroup 的相等判断挡掉。
+    if (_groupPageController.hasClients) {
+      _groupPageController.jumpToPage(picked);
+    }
   }
 
   /// 把分类卡片滚到边界后的剩余位移交给整页滚动。
@@ -682,37 +936,51 @@ class _DiscoverPageState extends State<DiscoverPage>
     return false; // 继续向上冒泡，不影响其它监听者
   }
 
-  /// 一行分类 —— 横向可滑动。
+  /// 一行分类（第三级）—— 按 `layout_flexBasisPercent` 平分宽度。
+  ///
+  /// 【为什么从「横向滚动 + 按内容宽度」改成「平分」】参考「轻阅时光」
+  /// Windows 版的发现页：一行两个分类各占一半，右边正好对齐卡片边缘；
+  /// 之前按内容宽度铺开，第二个胶囊被右边缘裁掉一截，和它对不上。
+  ///
+  /// 书源给的占比本来就是「这一项该占整行的百分之几」，直接当 flex 用
+  /// 才是它的原意。两个 0.4 的项相加是 0.8，按比例放大成各占 50% ——
+  /// 和官方那种「铺满一行」的观感一致，而不是右边留 20% 的空白。
   Widget _buildCategoryRow(
       List<ExploreCategory> row, DiscoverProvider provider) {
-    return ListView.separated(
-      scrollDirection: Axis.horizontal,
-      // 上下留出 _categoryRowGap 当行间距（itemExtent 里已经算进去了）
-      padding: const EdgeInsets.symmetric(
-          horizontal: 10, vertical: _categoryRowGap / 2),
-      itemCount: row.length,
-      separatorBuilder: (_, __) => const SizedBox(width: 8),
-      itemBuilder: (context, i) => _CategoryChip(
-        label: row[i].label,
-        selected: row[i].selectable &&
-            row[i].url == provider.currentCategoryUrl,
-        // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
-        // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
-        onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: Row(
+        children: [
+          for (var i = 0; i < row.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              // flex 必须是正整数；占比 ×1000 保留三位小数足够
+              flex: (row[i].safeBasis * 1000).round().clamp(1, 1000),
+              child: _CategoryChip(
+                label: row[i].label,
+                selected: row[i].selectable &&
+                    row[i].url == provider.currentCategoryUrl,
+                // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
+                // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
+                onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
 
 }
 
-/// 分类胶囊。
+/// 一个分类（第三级）—— **纯文字，没有胶囊底色**。
 ///
-/// 三种样子，靠 onTap 是否为空和 selected 区分：
-///   - 可选、未选中：浅底圆角
-///   - 可选、已选中：主题色淡底 + 主题色文字
-///   - **不可点（onTap == null）**：就是书源自己写的分组标题
-///     （「🔴 玄幻 🔴」这类），去掉底色只留文字，看起来像小标题而不是按钮 ——
-///     给个"按不动"的胶囊比什么都不显示更让人困惑。
+/// 【为什么不是胶囊】参考「轻阅时光」Windows 版的发现页：第三级就是一行文字，
+/// 选中的那项变成主题色、未选中的是灰色，靠**颜色**区分，不靠底色。
+/// 之前做成胶囊（浅底圆角 + 选中淡主题色底），和它对不上。
+///
+/// 【不可点的项】就是书源自己写的分组标题（「🔴 玄幻 🔴」这类），
+/// 颜色更淡一点，看起来像小标题而不是按钮。
 class _CategoryChip extends StatelessWidget {
   const _CategoryChip({
     required this.label,
@@ -733,8 +1001,8 @@ class _CategoryChip extends StatelessWidget {
 
     // 单行 + 省略号：行高是固定的（见 _categoryRowHeight），文字必须只占一行，
     // 否则 ListView 的 itemExtent 和实际高度对不上，会出现裁字或跳动。
-    // 窄胶囊里长标题（「小说·共享章节数量」这类）会被截断，这是必然的 ——
-    // 书源给的占比就那么大，想全显示只能牺牲排版一致性。
+    // 宽度按书源给的占比平分，长标题（「小说·共享章节数量」这类）会被截断 ——
+    // 这是必然的：占比就那么大，想全显示只能牺牲排版一致性。
     final text = Text(
       label,
       maxLines: 1,
@@ -742,35 +1010,20 @@ class _CategoryChip extends StatelessWidget {
       textAlign: TextAlign.center,
       style: TextStyle(
         color: onTap == null
-            ? theme.colorScheme.onSurfaceVariant
-            : (selected ? primary : theme.colorScheme.onSurface),
-        fontWeight:
-            onTap == null || selected ? FontWeight.w600 : FontWeight.w500,
-        fontSize: onTap == null ? 12 : 12.5,
+            ? theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.65)
+            : (selected ? primary : theme.colorScheme.onSurfaceVariant),
+        fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+        fontSize: 13.5,
       ),
     );
 
-    // 不可点（分组标题）：去掉底色，看着像小标题而不是"按不动的按钮"
-    if (onTap == null) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2),
-        child: Center(child: text),
-      );
-    }
+    if (onTap == null) return Center(child: text);
 
-    return Material(
-      color: selected
-          ? primary.withValues(alpha: 0.14)
-          : theme.colorScheme.surface.withValues(alpha: 0.9),
-      borderRadius: BorderRadius.circular(20),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          child: Center(child: text),
-        ),
-      ),
+    // 没有底色，但点按还是要有点反馈 —— 用 ink 的圆形扩散就够了。
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Center(child: text),
     );
   }
 }

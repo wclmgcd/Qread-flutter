@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -5,6 +6,28 @@ import 'config/theme.dart';
 import 'config/routes.dart';
 import 'providers/theme_provider.dart';
 import 'widgets/file_open_listener.dart';
+
+/// 允许**鼠标 / 触控板拖动**滚动。
+///
+/// 【为什么需要】Flutter 桌面端默认的 `dragDevices` 只有触摸和触控笔 ——
+/// 鼠标只能滚轮，按住左键拖 PageView 或列表是不动的。参考的
+/// 「轻阅时光」Windows 版里，发现页的第二级（分组）、第三级（分类）都是
+/// 按住左键拖着切；不配这个的话在 Windows 上就是「怎么拖都没反应」，
+/// 只能点两侧或者用滚轮。
+///
+/// 手机端不受影响：`touch` 本来就在默认集合里，这里只是把鼠标补进去。
+class AppScrollBehavior extends MaterialScrollBehavior {
+  const AppScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => const {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+        PointerDeviceKind.stylus,
+        PointerDeviceKind.invertedStylus,
+      };
+}
 
 class App extends StatelessWidget {
   const App({Key? key}) : super(key: key);
@@ -18,6 +41,8 @@ class App extends StatelessWidget {
         theme: AppTheme.lightTheme,
         darkTheme: AppTheme.darkTheme,
         themeMode: themeProvider.themeMode,
+        // 桌面端也能按住拖动（见 AppScrollBehavior 的注释）
+        scrollBehavior: const AppScrollBehavior(),
         initialRoute: '/',
         routes: AppRoutes.routes,
         onGenerateRoute: AppRoutes.onGenerateRoute,

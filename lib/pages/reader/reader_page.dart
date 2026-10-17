@@ -1827,8 +1827,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   /// 的页脚 Padding。任何一处用别的数，就会出现「最后一行被裁掉」或者
   /// 「正文底下凭空多一块空白」这种要对着像素找半天的 bug。
   ///
-  /// 取值的推导见 [PaginationEngine.footerBottomPadding]：安全区减 16px，
-  /// 让页脚比指示条还低一截，又能比原来少空 16px。
+  /// 取值的推导见 [PaginationEngine.footerBottomPadding]：安全区减 20px，
+  /// 让页脚尽量贴近屏幕底，同时不压住手势条。
   ///
   /// 用 `paddingOf` 而不是 `viewPaddingOf`：前者会被软键盘等临时遮挡扣掉，
   /// 后者不会。阅读页弹软键盘时（搜索正文）不需要为手势条留位，用 padding 更准。
