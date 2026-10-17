@@ -409,6 +409,79 @@ class ApiService {
     return resp.data;
   }
 
+  // ============ 书源自定义界面（登录 / 设置） ============
+
+  /// 书源自己写的登录/设置界面（legado 的 `loginUi`）。
+  ///
+  /// 【为什么「有没有登录界面」只能问后端】`loginUi` 里通常是一段 JS
+  /// （`@js:...`），要在书源的上下文里跑完才知道最终描述，客户端算不出来。
+  /// 所以只能靠这次请求的结果判断：拿到空数组就当这个源没有登录界面，
+  /// 界面右上角的人像按钮也就不显示。
+  ///
+  /// 参数名注意是 `url` 而不是 `bookSourceUrl`（后端这个接口就是这么写的）。
+  Future<Map<String, dynamic>> getSourcesLoginUi(
+      String accessToken, String bookSourceUrl) async {
+    final resp = await _dio.get('/getSourcesloginui', queryParameters: {
+      'accessToken': accessToken,
+      'url': bookSourceUrl,
+      'chapter': 'false',
+    });
+    return resp.data;
+  }
+
+  /// 书源当前的登录信息（形如 `{"邮箱":"a@b.c"}`，也可能是裸字符串）。
+  /// 用来给登录界面里的输入框回填。
+  Future<Map<String, dynamic>> getLoginInfo(
+      String accessToken, String bookSourceUrl) async {
+    final resp = await _dio.get('/getLoginInfo', queryParameters: {
+      'accessToken': accessToken,
+      'bookSourceUrl': bookSourceUrl,
+    });
+    return resp.data;
+  }
+
+  /// 执行书源界面里某个按钮的 JS（`_login()`、`setType('all')` 这类）。
+  ///
+  /// [info] 是界面上输入框的当前值（`{"邮箱":"...","密码":"..."}`）——
+  /// 后端会先把它存成登录信息再跑 JS，登录就是靠这一步。
+  ///
+  /// 【必须给足超时】这类 action 常常要真的去登录书源站点，几十秒很正常，
+  /// 用默认超时会在最关键的登录操作上超时失败。
+  Future<Map<String, dynamic>> runSourceAction(
+    String accessToken,
+    String bookSourceUrl,
+    String action, {
+    String? info,
+    String? bookUrl,
+    bool chapter = false,
+  }) async {
+    final resp = await _dio.get('/action',
+        queryParameters: {
+          'accessToken': accessToken,
+          'bookSourceUrl': bookSourceUrl,
+          'action': action,
+          if (info != null && info.isNotEmpty) 'info': info,
+          if (bookUrl != null && bookUrl.isNotEmpty) 'bookurl': bookUrl,
+          'chapter': chapter.toString(),
+        },
+        options: Options(
+          sendTimeout: const Duration(minutes: 2),
+          receiveTimeout: const Duration(minutes: 2),
+        ));
+    return resp.data;
+  }
+
+  /// 直接写书源变量（对应界面里的「保存……」按钮之外的表单保存）。
+  Future<Map<String, dynamic>> setSourceVariable(
+      String accessToken, String bookSourceUrl, String info) async {
+    final resp = await _dio.get('/setVariable', queryParameters: {
+      'accessToken': accessToken,
+      'bookSourceUrl': bookSourceUrl,
+      'info': info,
+    });
+    return resp.data;
+  }
+
   // ============ 书源 ============
 
   Future<Map<String, dynamic>> getBookSourcesPage(String accessToken) async {

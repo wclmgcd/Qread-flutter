@@ -5,15 +5,15 @@ import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/book_source.dart';
 import '../../models/explore_category.dart';
+import '../../models/flex_rows.dart';
 import '../../models/search_result.dart';
-import '../../providers/bookshelf_provider.dart';
 import '../../providers/discover_provider.dart';
 import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
-import '../../services/api_service.dart';
-import '../../services/error_text.dart';
+import '../bookshelf/book_info_page.dart';
 import 'widgets/explore_book_tile.dart';
 import 'widgets/source_picker_sheet.dart';
+import 'widgets/source_ui_sheet.dart';
 
 /// 发现页。
 ///
@@ -194,16 +194,85 @@ class _DiscoverPageState extends State<DiscoverPage>
     await provider.reloadBooks(token);
   }
 
-  /// 点一本书 → 底 sheet（简介 + 加入书架）。
-  void _showBookActions(SearchResult result) {
-    showModalBottomSheet<void>(
-      context: context,
-      builder: (_) => _BookSheet(
-        result: result,
-        sourceName: _currentSourceName(),
-        onAdd: () => _addToBookshelf(result),
-      ),
+  /// 点一本书 → 书籍信息页。
+  ///
+  /// 【为什么不再弹底 sheet】原来弹的是「简介 + 加入书架」，但这本书还能
+  /// 换书源、看目录、清除缓存、加书架、直接读 —— 这些能力在书籍信息页里已经
+  /// 全有了（`BookInfoPage` 本来就带 `fromBookshelf: false` 这条分支，
+  /// 专给搜索页/发现页这种"还没进书架"的场景用，底部左键是「加入书架」）。
+  /// 再弹一个半残的 sheet 等于让用户走一半路又得退出来。
+  void _openBook(SearchResult result) {
+    Navigator.pushNamed(
+      context,
+      AppRoutes.bookInfo,
+      arguments: BookInfoPageArgs(book: _toBook(result), fromBookshelf: false),
     );
+  }
+
+  /// 书源返回的书 → 书籍信息页要的 Book。
+  Book _toBook(SearchResult r) => Book(
+        bookUrl: r.bookUrl,
+        name: r.name,
+        author: r.author,
+        coverUrl: r.coverUrl,
+        intro: r.intro,
+        kind: r.kind,
+        latestChapterTitle: r.latestChapterTitle,
+        tocUrl: r.tocUrl,
+        origin: r.origin,
+        originName: r.originName,
+        wordCount: r.wordCount,
+        type: 0,
+        group: 0,
+      );
+
+  /// 右上角人像 → 书源自定义界面（登录 / 设置）。
+  ///
+  /// 【为什么这里可能还要现拉一次】书源界面是在分类加载完之后**异步**拉的
+  /// （它要先跑书源 JS，慢起来好几秒）。用户手快的话按钮还没出来就会点，
+  /// 所以这里兜一次：拉到了就弹，还是没有才说"这个书源没有自定义界面"。
+  Future<void> _openSourceUi() async {
+    final token = _token;
+    if (token == null) return;
+    final provider = context.read<DiscoverProvider>();
+    final url = provider.currentSourceUrl;
+    if (url == null) return;
+    if (provider.sourceUi.isEmpty) {
+      await provider.loadSourceUi(token, url);
+      if (!mounted) return;
+    }
+    if (provider.sourceUi.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('这个书源没有自定义界面')),
+      );
+      return;
+    }
+    await showSourceUiSheet(
+      context,
+      provider: provider,
+      accessToken: token,
+      sourceUrl: url,
+      sourceName: _currentSourceName() ?? '书源设置',
+    );
+  }
+
+  /// 一级分类 = 书源：在顶栏胶囊上左右滑动换上一个/下一个源。
+  ///
+  /// 【为什么不整页做成 PageView】每个源都要各自拉分类和书单，
+  /// PageView 会一次性把相邻源也建出来，请求和内存都翻倍。
+  /// 滑动换源 + 顶部胶囊显示当前源，观感一样但代价小得多。
+  Future<void> _stepSource(List<BookSource> sources, int delta) async {
+    final token = _token;
+    if (token == null || sources.isEmpty) return;
+    final provider = context.read<DiscoverProvider>();
+    final idx = sources
+        .indexWhere((s) => s.bookSourceUrl == provider.currentSourceUrl);
+    // Dart 的 % 对负数返回非负结果（-1 % 5 == 4），所以来回滑不会越界
+    final next = ((idx < 0 ? 0 : idx) + delta) % sources.length;
+    if (next == idx) return;
+    await provider.setCurrentSource(sources[next].bookSourceUrl);
+    if (!mounted) return;
+    await provider.reloadAfterSwitch(token);
   }
 
   String? _currentSourceName() {
@@ -215,50 +284,6 @@ class _DiscoverPageState extends State<DiscoverPage>
     }
     return null;
   }
-
-  Future<void> _addToBookshelf(SearchResult result) async {
-    final token = _token;
-    if (token == null) return;
-    final messenger = ScaffoldMessenger.of(context);
-    final bookshelf = context.read<BookshelfProvider>();
-    try {
-      final resp = await ApiService.instance.saveBook(
-        token,
-        Book(
-          bookUrl: result.bookUrl,
-          name: result.name,
-          author: result.author,
-          coverUrl: result.coverUrl,
-          intro: result.intro,
-          tocUrl: result.tocUrl,
-          origin: result.origin,
-          originName: result.originName,
-          type: 0,
-          group: 0,
-        ),
-      );
-      if (!mounted) return;
-      if (resp['isSuccess'] == false) {
-        messenger.showSnackBar(
-          SnackBar(content: Text('加入书架失败：${resp['errorMsg'] ?? '未知错误'}')),
-        );
-        return;
-      }
-      await bookshelf.loadBookshelf(token, refresh: true);
-      if (!mounted) return;
-      messenger.showSnackBar(
-        SnackBar(content: Text('已加入书架：${result.name ?? ''}')),
-      );
-    } catch (e) {
-      if (!mounted) return;
-      messenger.showSnackBar(SnackBar(content: Text('加入书架失败：${friendlyError(e)}')));
-    }
-  }
-
-  // ============================================================
-  // 分类分组
-  // ============================================================
-
   // ============================================================
   // 构建
   // ============================================================
@@ -286,35 +311,67 @@ class _DiscoverPageState extends State<DiscoverPage>
     final sources = _visibleSources(provider.exploreSources);
 
     return Scaffold(
-      appBar: AppBar(
-        toolbarHeight: 64,
-        titleSpacing: 4,
-        leadingWidth: 56,
-        leading: Center(
-          child: IconButton(
-            tooltip: '搜索',
-            onPressed: () => Navigator.pushNamed(context, AppRoutes.search),
-            icon: const Icon(Icons.search),
-            style: IconButton.styleFrom(
-              backgroundColor: Theme.of(context)
-                  .colorScheme
-                  .surfaceContainerHighest
-                  .withValues(alpha: 0.6),
-              minimumSize: const Size(40, 40),
-            ),
+      body: _buildBody(loggedIn, provider, sources),
+    );
+  }
+
+  /// 整页是一个 CustomScrollView，顶栏和分类卡片都是 sliver。
+  ///
+  /// 【为什么把 AppBar 放进滚动视图里】参考里书单上滑时，搜索栏、书源胶囊、
+  /// 分类卡片会**一起收起来**（图 image#2「向上滑动三级自动隐藏」），
+  /// 让书单占满整屏。`Scaffold(appBar:)` 是固定的，做不到这件事；
+  /// 换成 `SliverAppBar(floating: true, snap: true)` 之后：
+  ///   - 上滑：顶栏滚出屏幕，分类卡片（下一个 sliver）也跟着滚出去；
+  ///   - 稍微下滑：顶栏立刻弹回来（snap），分类卡片要再往下滚才出现。
+  Widget _buildAppBarSliver(
+      DiscoverProvider provider, List<BookSource> sources) {
+    final theme = Theme.of(context);
+    return SliverAppBar(
+      floating: true,
+      snap: true,
+      elevation: 0,
+      scrolledUnderElevation: 0,
+      toolbarHeight: 64,
+      titleSpacing: 4,
+      leadingWidth: 56,
+      leading: Center(
+        child: IconButton(
+          tooltip: '搜索',
+          onPressed: () => Navigator.pushNamed(context, AppRoutes.search),
+          icon: const Icon(Icons.search),
+          style: IconButton.styleFrom(
+            backgroundColor:
+                theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.6),
+            minimumSize: const Size(40, 40),
           ),
         ),
-        title: _buildSourcePill(sources),
-        actions: [
-          IconButton(
-            tooltip: '刷新',
-            onPressed: provider.booksLoading ? null : _refreshAll,
-            icon: const Icon(Icons.refresh),
-          ),
-          const SizedBox(width: 4),
-        ],
       ),
-      body: _buildBody(loggedIn, provider, sources),
+      // 横滑换源的手势挂在外层（见 _withSourceSwipe），这里只管显示
+      title: _buildSourcePill(sources),
+      actions: [
+        IconButton(
+          tooltip: '刷新',
+          onPressed: provider.booksLoading ? null : _refreshAll,
+          icon: const Icon(Icons.refresh),
+        ),
+        // 只有书源自己写了界面（loginUi）才显示人像 —— 参考里"没有登录界面的
+        // 书源就没有头像"。它是不是异步才拉到的，所以按钮会因为 provider
+        // 更新而出现/消失，这是预期的。
+        if (provider.hasSourceUi)
+          Center(
+            child: IconButton(
+              tooltip: '书源登录 / 设置',
+              onPressed: _openSourceUi,
+              icon: const Icon(Icons.person_outline),
+              style: IconButton.styleFrom(
+                backgroundColor: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: 0.6),
+                minimumSize: const Size(40, 40),
+              ),
+            ),
+          ),
+        const SizedBox(width: 6),
+      ],
     );
   }
 
@@ -375,42 +432,178 @@ class _DiscoverPageState extends State<DiscoverPage>
 
   Widget _buildBody(
       bool loggedIn, DiscoverProvider provider, List<BookSource> sources) {
+    // 没登录时也保留顶栏（搜索/书源胶囊），只把内容区换成提示 ——
+    // 否则这一页的观感会和登录后完全脱节。所以统一走同一棵 sliver 树。
     if (!loggedIn) {
-      return _CenterHint(
-        icon: Icons.lock_outline,
-        text: '登录后即可浏览书源的发现页',
-        actionText: '去登录',
-        onAction: () => Navigator.pushNamed(context, AppRoutes.login),
-      );
-    }
-    if (sources.isEmpty && provider.sourcesLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (sources.isEmpty) {
-      return _CenterHint(
-        icon: Icons.explore_off_rounded,
-        text: provider.sourcesError ?? '还没有开启「发现」的书源\n去书源管理里开一个吧',
-        actionText: '书源管理',
-        onAction: () => Navigator.pushNamed(context, AppRoutes.sourceManage),
+      return _withSourceSwipe(
+        sources,
+        RefreshIndicator(
+          onRefresh: _refreshAll,
+          child: CustomScrollView(
+            controller: _scrollController,
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              _buildAppBarSliver(provider, sources),
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _CenterHint(
+                  icon: Icons.lock_outline,
+                  text: '登录后即可浏览书源的发现页',
+                  actionText: '去登录',
+                  onAction: () => Navigator.pushNamed(context, AppRoutes.login),
+                ),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
-    return Column(
-      children: [
-        if (provider.categoriesLoading)
-          const LinearProgressIndicator(minHeight: 2),
-        _buildCategoryCard(provider),
-        const Divider(height: 1),
-        Expanded(child: _buildBookList(provider)),
-      ],
+    return _withSourceSwipe(
+      sources,
+      RefreshIndicator(
+        onRefresh: _refreshAll,
+        child: CustomScrollView(
+          controller: _scrollController,
+          physics: const AlwaysScrollableScrollPhysics(),
+          slivers: [
+            _buildAppBarSliver(provider, sources),
+            if (provider.categoriesLoading)
+              const SliverToBoxAdapter(
+                  child: LinearProgressIndicator(minHeight: 2)),
+            if (provider.sourcesLoading && sources.isEmpty)
+              const SliverFillRemaining(
+                  hasScrollBody: false,
+                  child: Center(child: CircularProgressIndicator()))
+            else if (sources.isEmpty)
+              SliverFillRemaining(
+                hasScrollBody: false,
+                child: _CenterHint(
+                  icon: Icons.explore_off_rounded,
+                  text: provider.sourcesError ??
+                      '还没有开启「发现」的书源\n去书源管理里开一个吧',
+                  actionText: '书源管理',
+                  onAction: () =>
+                      Navigator.pushNamed(context, AppRoutes.sourceManage),
+                ),
+              )
+            else ...[
+              SliverToBoxAdapter(child: _buildCategoryCard(provider)),
+              ..._buildBookSlivers(provider),
+            ],
+          ],
+        ),
+      ),
     );
   }
 
-  /// 分类卡片：流式排版的胶囊，按 style 给的占比分行、分行内平分宽度。
+  /// 整屏横滑 = 换书源（这就是「一级分类」）。
   ///
-  /// 【为什么不用 Wrap】Wrap 是按**内容宽度**排的，而书源给的占比是
-  /// 「占整行的百分之几」—— 4 个 0.25 的项必须各占 1/4 行，哪怕它们的
-  /// 文字只有两个字。所以这里自己算行，行内用 Expanded 按占比平分。
+  /// 【为什么不只用顶栏胶囊上的手势】胶囊只有一百多像素宽，手指落在书单或
+  /// 空白处横滑时也该能换源 —— 参考客户端就是整屏横滑。所以手势挂到最外层，
+  /// 顶栏那层不再单独挂，避免两处逻辑各写一遍。
+  ///
+  /// 【为什么不会和分类行的横滑打架】Flutter 的手势竞技场里越深的 recognizer
+  /// 越优先：手指落在分类行上时，那一行自己的横向 ListView 先接住手势，
+  /// 这里的 onHorizontalDragEnd 根本不会触发；而且行内滑到边界后
+  /// ClampingScrollPhysics 不会把剩余位移冒泡上来，所以不会出现
+  /// 「想滑分类却切了书源」。
+  ///
+  /// 【为什么只有一个源时不挂】没得切，挂了只会白吃手势。
+  Widget _withSourceSwipe(List<BookSource> sources, Widget child) {
+    if (sources.length < 2) return child;
+    return GestureDetector(
+      // translucent：空白处（sliver 之间的间隙）也能接到手势
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragEnd: (details) {
+        final v = details.primaryVelocity ?? 0;
+        if (v.abs() < 150) return; // 手抖不算
+        _stepSource(sources, v < 0 ? 1 : -1);
+      },
+      child: child,
+    );
+  }
+
+  /// 书单部分的 sliver。
+  ///
+  /// 【为什么要分这么多种】每种空/错状态都要占满剩余空间才好居中，
+  /// 用 SliverFillRemaining；有书时用 SliverList 懒加载，滚到底自动加载下一页。
+  List<Widget> _buildBookSlivers(DiscoverProvider provider) {
+    // 没有可点的分类时上面那张卡片已经把原因说清楚了，
+    // 这里再补一句「这个分类下暂时没有书」只会让人更糊涂。
+    if (!provider.categoriesLoading &&
+        provider.selectableCategories.isEmpty) {
+      return const [SliverToBoxAdapter(child: SizedBox(height: 8))];
+    }
+    if (provider.booksLoading && provider.books.isEmpty) {
+      return const [
+        SliverFillRemaining(
+            hasScrollBody: false,
+            child: Center(child: CircularProgressIndicator()))
+      ];
+    }
+    if (provider.booksError != null && provider.books.isEmpty) {
+      return [
+        SliverFillRemaining(
+          hasScrollBody: false,
+          child: _CenterHint(
+            icon: Icons.error_outline,
+            text: provider.booksError!,
+            actionText: '重试',
+            onAction: _refreshAll,
+          ),
+        ),
+      ];
+    }
+    if (provider.books.isEmpty) {
+      return const [
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: EdgeInsets.only(top: 60),
+            child: Center(child: Text('这个分类下暂时没有书')),
+          ),
+        ),
+      ];
+    }
+
+    return [
+      SliverPadding(
+        padding: const EdgeInsets.only(top: 4, bottom: 16),
+        sliver: SliverList.builder(
+          itemCount: provider.books.length + (provider.booksHasMore ? 1 : 0),
+          itemBuilder: (context, index) {
+            if (index >= provider.books.length) {
+              return const Padding(
+                padding: EdgeInsets.symmetric(vertical: 18),
+                child: Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                ),
+              );
+            }
+            final book = provider.books[index];
+            return ExploreBookTile(
+              book: book,
+              sourceName: _currentSourceName(),
+              onTap: () => _openBook(book),
+            );
+          },
+        ),
+      ),
+    ];
+  }
+
+  /// 分类卡片：按 style 给的占比**分行**，每行内部横向滑动。
+  ///
+  /// 【为什么行内不是平分宽度】`layout_flexBasisPercent` 只管「这一项该占
+  /// 整行的百分之几」，用来决定**切行**；行内每个胶囊按自己的文字宽度铺开，
+  /// 放不下就横向滑。参考图里知秋第二行「小说·共享章节数量 /
+  /// 小说·共享章节字数」两个胶囊都是 9 个字，加起来略超一行，第二个就被
+  /// 右边缘裁掉了 —— 平分宽度的话两个都会完整显示，对不上。
+  /// 用户也明确说过三级界面「都可以左右滑动」。
   Widget _buildCategoryCard(DiscoverProvider provider) {
     final cats = provider.categories;
     if (cats.isEmpty && provider.categoriesLoading) {
@@ -429,12 +622,16 @@ class _DiscoverPageState extends State<DiscoverPage>
       );
     }
 
-    final rows = _packCategoryRows(cats);
+    final rows = packFlexRows<ExploreCategory>(
+      cats,
+      (item) => item.safeBasis,
+      wrapBeforeOf: (item) => item.wrapBefore,
+    );
     final visibleRows =
         rows.length < _categoryMaxRows ? rows.length : _categoryMaxRows;
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.symmetric(vertical: 6),
       decoration: BoxDecoration(
         color: Theme.of(context)
             .colorScheme
@@ -443,141 +640,69 @@ class _DiscoverPageState extends State<DiscoverPage>
         borderRadius: BorderRadius.circular(14),
       ),
       // 高度按「实际有几行」算，别写死三行 —— 70 个源里大多数只有一两行，
-      // 写死的话卡片下半截永远是空的。
+      // 写死的话卡片下半截永远是空的。分类上千个时（知秋 466 行）这里内部滚动，
+      // 而且用 itemExtent 让行**懒构建** —— 全建出来是上万个 widget，
+      // 切换书源时会明显卡一下。
       child: SizedBox(
         height: visibleRows * _categoryRowHeight,
-        child: ListView.builder(
-          itemExtent: _categoryRowHeight,
-          physics: const ClampingScrollPhysics(),
-          itemCount: rows.length,
-          itemBuilder: (context, index) => _buildCategoryRow(rows[index], provider),
+        child: NotificationListener<ScrollNotification>(
+          // 分类卡片自己也能纵向滚（知秋 466 行），手指落在卡片上往上推时，
+          // 手势会被这张卡片的 ListView 吃掉，外层的顶栏就收不起来 ——
+          // 用户要的「上滑三级自动隐藏」在这个区域就失效了。
+          // 这里把内层滚到边界后多出来的位移（overscroll）转给外层控制器，
+          // 于是「先滚完分类、再收起顶栏」是一个连续动作。
+          // 只转 Overscroll 不转 ScrollUpdate：内层还有滚动空间时不该带动外层。
+          onNotification: _forwardOverscroll,
+          child: ListView.builder(
+            itemExtent: _categoryRowHeight,
+            physics: const ClampingScrollPhysics(),
+            itemCount: rows.length,
+            itemBuilder: (context, index) =>
+                _buildCategoryRow(rows[index], provider),
+          ),
         ),
       ),
     );
   }
 
+  /// 把分类卡片滚到边界后的剩余位移交给整页滚动。
+  ///
+  /// 正数 = 内容已到底还在往上推 → 外层 offset 变大（书单上移、顶栏收起）；
+  /// 负数 = 到顶还在往下拉 → 外层往回滚（顶栏重新出现）。
+  /// 用 jumpTo 而不是 animateTo：这里跟着手指走，动画会明显拖手。
+  bool _forwardOverscroll(ScrollNotification n) {
+    if (n is! OverscrollNotification) return false;
+    if (n.metrics.axis != Axis.vertical) return false;
+    final d = n.overscroll;
+    if (d == 0 || !_scrollController.hasClients) return false;
+    final pos = _scrollController.position;
+    final target = (_scrollController.offset + d).clamp(0.0, pos.maxScrollExtent);
+    if ((target - _scrollController.offset).abs() < 0.5) return false;
+    _scrollController.jumpTo(target);
+    return false; // 继续向上冒泡，不影响其它监听者
+  }
+
+  /// 一行分类 —— 横向可滑动。
   Widget _buildCategoryRow(
       List<ExploreCategory> row, DiscoverProvider provider) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: _categoryRowGap),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          for (var i = 0; i < row.length; i++) ...[
-            if (i > 0) const SizedBox(width: 6),
-            Expanded(
-              // flex 必须是正整数，占比 ×1000 保留三位小数够用了
-              flex: (row[i].safeBasis * 1000).round().clamp(1, 1000),
-              child: _CategoryChip(
-                label: row[i].label,
-                selected: row[i].selectable &&
-                    row[i].url == provider.currentCategoryUrl,
-                // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
-                // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
-                onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
-              ),
-            ),
-          ],
-        ],
+    return ListView.separated(
+      scrollDirection: Axis.horizontal,
+      // 上下留出 _categoryRowGap 当行间距（itemExtent 里已经算进去了）
+      padding: const EdgeInsets.symmetric(
+          horizontal: 10, vertical: _categoryRowGap / 2),
+      itemCount: row.length,
+      separatorBuilder: (_, __) => const SizedBox(width: 8),
+      itemBuilder: (context, i) => _CategoryChip(
+        label: row[i].label,
+        selected: row[i].selectable &&
+            row[i].url == provider.currentCategoryUrl,
+        // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
+        // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
+        onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
       ),
     );
   }
 
-  /// 把分类项按 `layout_flexBasisPercent` 分行。
-  ///
-  /// 规则就是 flexbox 的换行算法：一行里占比累加不超过 1 就继续塞，
-  /// 放不下就换行；占到正好 1（或更多）时收行。
-  ///   - 分组标题 basis=1  → 独占一行
-  ///   - basis=0.4 ×2     → 一行两个
-  ///   - basis=0.25 ×4    → 一行四个
-  ///   - 行内占比和不足 1（例如 3 个 0.29）→ 由 Expanded 平分拉满整行，
-  ///     和书源里普遍写着的 `layout_flexGrow: 1` 语义一致。
-  ///
-  /// `layout_wrapBefore` 为真的项强制另起一行（实测有 7 处这么写）。
-  List<List<ExploreCategory>> _packCategoryRows(List<ExploreCategory> cats) {
-    final rows = <List<ExploreCategory>>[];
-    var current = <ExploreCategory>[];
-    var used = 0.0;
-
-    void flush() {
-      if (current.isNotEmpty) rows.add(current);
-      current = <ExploreCategory>[];
-      used = 0;
-    }
-
-    for (final c in cats) {
-      if (c.wrapBefore && current.isNotEmpty) flush();
-      final b = c.safeBasis;
-      if (current.isNotEmpty && used + b > 1.0001) flush();
-      current.add(c);
-      used += b;
-      if (used >= 0.9999) flush();
-    }
-    flush();
-    return rows;
-  }
-
-  Widget _buildBookList(DiscoverProvider provider) {
-    // 没有可点的分类时上面那张卡片已经把原因说清楚了，
-    // 这里再补一句「这个分类下暂时没有书」只会让人更糊涂。
-    if (!provider.categoriesLoading &&
-        provider.selectableCategories.isEmpty) {
-      return const SizedBox.shrink();
-    }
-    if (provider.booksLoading && provider.books.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (provider.booksError != null && provider.books.isEmpty) {
-      return _CenterHint(
-        icon: Icons.error_outline,
-        text: provider.booksError!,
-        actionText: '重试',
-        onAction: _refreshAll,
-      );
-    }
-    if (provider.books.isEmpty) {
-      return RefreshIndicator(
-        onRefresh: _refreshAll,
-        child: ListView(
-          physics: const AlwaysScrollableScrollPhysics(),
-          children: const [
-            SizedBox(height: 140),
-            Center(child: Text('这个分类下暂时没有书')),
-          ],
-        ),
-      );
-    }
-
-    return RefreshIndicator(
-      onRefresh: _refreshAll,
-      child: ListView.builder(
-        controller: _scrollController,
-        physics: const AlwaysScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(top: 4, bottom: 16),
-        itemCount: provider.books.length + (provider.booksHasMore ? 1 : 0),
-        itemBuilder: (context, index) {
-          if (index >= provider.books.length) {
-            return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 18),
-              child: Center(
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            );
-          }
-          final book = provider.books[index];
-          return ExploreBookTile(
-            book: book,
-            sourceName: _currentSourceName(),
-            onTap: () => _showBookActions(book),
-          );
-        },
-      ),
-    );
-  }
 }
 
 /// 分类胶囊。
@@ -680,75 +805,6 @@ class _CategoryNotice extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-/// 书籍操作底 sheet。
-class _BookSheet extends StatelessWidget {
-  const _BookSheet({
-    required this.result,
-    required this.sourceName,
-    required this.onAdd,
-  });
-
-  final SearchResult result;
-  final String? sourceName;
-  final VoidCallback onAdd;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final intro = result.intro ?? '';
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              result.name ?? '未命名书籍',
-              style: theme.textTheme.titleLarge
-                  ?.copyWith(fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              '${result.author ?? '未知作者'}  ·  ${result.originName ?? sourceName ?? ''}',
-              style: theme.textTheme.bodySmall
-                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
-            ),
-            if ((result.latestChapterTitle ?? '').isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text('最新：${result.latestChapterTitle}',
-                  maxLines: 1, overflow: TextOverflow.ellipsis),
-            ],
-            if (intro.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 180),
-                child: SingleChildScrollView(
-                  child: Text(intro,
-                      style: theme.textTheme.bodyMedium
-                          ?.copyWith(height: 1.6)),
-                ),
-              ),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton.icon(
-                onPressed: () {
-                  Navigator.pop(context);
-                  onAdd();
-                },
-                icon: const Icon(Icons.add),
-                label: const Text('加入书架'),
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
