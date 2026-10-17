@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 
 import '../engine/models.dart';
+import '../engine/pagination_engine.dart';
 import '../reader_state.dart';
 import 'content_renderer.dart';
 import 'reader_theme.dart';
@@ -59,6 +60,10 @@ class PagedReader extends StatefulWidget {
   final bool showPageNumber;
   final double horizontalPadding;
   final double topPadding;
+
+  /// 页脚底部的额外留白。阅读页会把系统手势条安全区折进来
+  /// （见 PaginationEngine.footerBottomPadding），分页与渲染用的是同一个值。
+  final double bottomPadding;
   final double paragraphSpacing;
   final double firstLineIndent;
   final PageAnimType animType;
@@ -95,6 +100,7 @@ class PagedReader extends StatefulWidget {
     this.showPageNumber = true,
     this.horizontalPadding = 16.0,
     this.topPadding = 10.0,
+    this.bottomPadding = PaginationEngine.defaultBottomPadding,
     this.paragraphSpacing = 7.0,
     this.firstLineIndent = 2.0,
     this.animType = PageAnimType.cover,
@@ -402,6 +408,7 @@ class _PagedReaderState extends State<PagedReader>
         showPageNumber: widget.showPageNumber,
         horizontalPadding: widget.horizontalPadding,
         topPadding: widget.topPadding,
+        bottomPadding: widget.bottomPadding,
         paragraphSpacing: widget.paragraphSpacing,
         firstLineIndent: widget.firstLineIndent,
         fontFamily: widget.fontFamily,

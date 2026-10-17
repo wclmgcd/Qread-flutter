@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../engine/models.dart';
+import '../engine/pagination_engine.dart';
 import 'content_renderer.dart';
 import 'reader_theme.dart';
 
@@ -22,6 +23,11 @@ class ScrollReader extends StatelessWidget {
   /// "段间距""首行空格"四个滑块在滚动模式下完全没反应。
   final double horizontalPadding;
   final double topPadding;
+
+  /// 页脚（时间/页码/电量）底部的额外留白，原来这里硬编码 10。
+  /// 滚动模式同样不再由外层安全区兜底，得自己避开系统手势条，
+  /// 所以改由阅读页按 PaginationEngine.footerBottomPadding 算好传进来。
+  final double bottomPadding;
   final double paragraphSpacing;
   final double firstLineIndent;
   final String? fontFamily;
@@ -49,6 +55,7 @@ class ScrollReader extends StatelessWidget {
     required this.batteryLabel,
     this.horizontalPadding = 16.0,
     this.topPadding = 10.0,
+    this.bottomPadding = PaginationEngine.defaultBottomPadding,
     this.paragraphSpacing = 7.0,
     this.firstLineIndent = 2.0,
     this.fontFamily,
@@ -65,8 +72,8 @@ class ScrollReader extends StatelessWidget {
     }
 
     return Padding(
-      padding: EdgeInsets.fromLTRB(horizontalPadding, topPadding,
-          horizontalPadding, 10),
+      padding: EdgeInsets.fromLTRB(
+          horizontalPadding, topPadding, horizontalPadding, bottomPadding),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

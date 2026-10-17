@@ -25,9 +25,28 @@ class PaginationEngine {
   static const double defaultHorizontalPadding = 16.0;
   static const double defaultTopPadding = 10.0;
 
-  /// 底部留白。原来 10，反馈「页脚的时间/电量再往下一点」所以收到 6。
-  /// 注意这是**安全区之内**的额外留白，再小下去会被系统手势条压住。
+  /// 页脚底部的**额外**留白。原来 10，反馈「页脚的时间/电量再往下一点」所以收到 6。
   static const double defaultBottomPadding = 6.0;
+
+  /// 阅读页专门用的页脚下边距 —— 由外侧的系统手势条安全区高度换算而来。
+  ///
+  /// 【为什么需要它】阅读页的正文区不再整块套底部安全区（见 reader_page 里
+  /// `SafeArea(bottom: false)` 的说明）：原来那层安全区会在正文与屏幕底之间
+  /// 多垫一整条 iPhone 34px / Android 手势导航约 24px 的空白，叠加
+  /// [defaultBottomPadding] 之后页脚底下空了近 40px，反馈「下面太宽」说的就是它。
+  /// 把安全区关掉后，页脚得自己避开手势条，否则会被那根指示条压住。
+  ///
+  /// 【为什么不直接把安全区高度全留给页脚】那样等于什么都没省。真正不能压住的
+  /// 只有指示条本身：它高 5px、下沿离屏幕底 8px，也就是从屏幕底往上 13px 之后
+  /// 就是干净的。所以这里按「安全区 − 16px」让位：
+  ///   - iPhone（34）→ 18px，页脚底边比指示条顶沿还高 5px，不会打架；
+  ///   - Android 手势导航（约 24）→ 8px；
+  ///   - Android 三键导航（安全区 0）→ 退回 [defaultBottomPadding]，
+  ///     保持和以前一样的观感，不会因为「算出来是负数」把页脚贴到屏幕边上。
+  static double footerBottomPadding(double safeBottomInset) {
+    final relaxed = safeBottomInset - 16.0;
+    return relaxed > defaultBottomPadding ? relaxed : defaultBottomPadding;
+  }
   static const double defaultHeaderBottomSpacing = 6.0;
   static const double defaultParagraphSpacing = 7.0;
   static const double defaultLineSpacing = 1.0;
@@ -84,6 +103,7 @@ class PaginationEngine {
     double firstLineIndent = defaultFirstLineIndent,
     double horizontalPadding = defaultHorizontalPadding,
     double topPadding = defaultTopPadding,
+    double bottomPadding = defaultBottomPadding,
     bool showTopBar = true,
     bool showBottomBar = true,
     String? fontFamily,
@@ -121,7 +141,10 @@ class PaginationEngine {
     final footerHeight = showBottomBar
         ? textScaler.scale(footerFontSize) * footerLineHeight
         : 0.0;
-    final bottomPadding = showBottomBar ? defaultBottomPadding : 0.0;
+    // 底部留白：走参数而不是常量 —— 阅读页现在要把「避开系统手势条」这件事
+    // 算进页脚自己的下边距（见 [footerBottomPadding]），渲染端必须用同一个值，
+    // 否则分页按 A 留白、渲染按 B 留白，最后一行会被裁掉或者底下多出一块。
+    final footerPad = showBottomBar ? bottomPadding : 0.0;
 
     // 底部安全余量。
     //
@@ -137,7 +160,7 @@ class PaginationEngine {
         safeTop -
         safeBottom -
         topPadding -
-        bottomPadding -
+        footerPad -
         headerHeight -
         headerSpacing -
         footerHeight -

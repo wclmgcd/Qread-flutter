@@ -28,6 +28,13 @@ android {
     ndkVersion flutter.ndkVersion
 
     compileOptions {
+        // 【必须开启核心库脱糖】flutter_local_notifications 从 v10 起内部用了
+        // java.time 等 Java 8+ 的 API，在低版本 Android 上要被脱糖才能在运行时
+        // 可用（见插件的 Gradle setup 文档）。不开的话 CI 直接报：
+        //   Dependency ':flutter_local_notifications' requires
+        //   core library desugaring to be enabled for :app
+        // 这不是「可选优化」—— 插件作者明确写了「即使不用定时通知也必须开」。
+        coreLibraryDesugaringEnabled true
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
@@ -67,4 +74,7 @@ dependencies {
     // Flutter 引擎内部也用同一个类，但引擎的依赖不保证暴露到 app 模块的
     // **编译期** classpath，这里显式声明一次，免得 CI 上 import 解析不到。
     implementation "androidx.core:core:1.13.1"
+    // 脱糖库。版本不能低于 2.1.4 —— flutter_local_notifications 的 AAR metadata
+    // 里写了这个下限，写低了 Gradle 仍会以同样的错误拒绝构建。
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.4"
 }

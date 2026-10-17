@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/book_source.dart';
+import '../../models/explore_category.dart';
 import '../../models/search_result.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/discover_provider.dart';
@@ -22,10 +23,18 @@ import 'widgets/source_picker_sheet.dart';
 /// 少了两次点击，代价是页面要自己维护「当前书源/分类」——
 /// 这部分状态放在 [DiscoverProvider]，并且持久化，下次进来还在原处。
 ///
-/// 【分类为什么有两层】
-/// legado 的书源把发现分类写成 `父·子`（例如 `小说·共享章节数量`），
-/// 用同一个前缀聚成一组。所以这里第一行放父分类、第二行放该父下的子项。
-/// 书源没有 `·` 写法时第二行自动不出现，退化成单层，观感和旧版一致。
+/// 【分类区为什么是「流式排版」而不是两行胶囊】
+/// 书源的分类项自带 `style.layout_flexBasisPercent`（占整行的百分之几）和
+/// 「url 为空 = 分组标题」两个约定，官方客户端就是按这两个约定做流式布局的：
+///   分组标题 basis=1  → 独占一行，当小标题用（知秋终版有 93 个，如「🔴 玄幻 🔴」）
+///   普通项 basis=0.25 → 一行四个（实测 4000 个分类项里 2233 个是 0.25）
+///   普通项 basis=0.4  → 一行两个到三个
+/// 之前按标题里的 `·` 猜「父分类/子分类」两层 —— 那是巧合：知秋的
+/// 「小说·共享章节数量」正好 basis=0.4、一行两个，看起来像"第二行"，
+/// 但真正的排版依据是 style。换成 style 驱动之后，`·` 只是标题里的普通字符。
+///
+/// 分类项可能有上千个（知秋终版 1433 个），所以卡片限高、内部可滚动，
+/// 免得书单被顶到屏幕外。
 class DiscoverPage extends StatefulWidget {
   const DiscoverPage({Key? key}) : super(key: key);
 
@@ -33,26 +42,21 @@ class DiscoverPage extends StatefulWidget {
   State<DiscoverPage> createState() => _DiscoverPageState();
 }
 
-/// 一层父分类 + 它名下的所有子项。
-class _CategoryGroup {
-  _CategoryGroup(this.parent, this.children);
+/// 分类胶囊的行高（含行间距）。
+///
+/// 【为什么要固定行高】分类可能有上千个（知秋终版 1433 个 → 466 行），
+/// 用 Column 一次性铺出来就是上万个 widget，切书源时会明显卡一下。
+/// 固定行高之后就能用 `ListView.itemExtent`，只构建看得见的那三行。
+const double _categoryRowHeight = 36;
 
-  /// 父分类名（`·` 之前的部分）。
-  final String parent;
+/// 行间距
+const double _categoryRowGap = 6;
 
-  /// 原始分类项（key = 完整名，value = exploreUrl）。
-  final List<MapEntry<String, String>> children;
-
-  /// 子项在 UI 上显示的名字 —— 去掉父前缀和 `·`。
-  String labelOf(MapEntry<String, String> item) {
-    final full = item.key;
-    if (full.startsWith('$parent·')) {
-      final rest = full.substring(parent.length + 1);
-      if (rest.isNotEmpty) return rest;
-    }
-    return full;
-  }
-}
+/// 分类卡片最多显示几行，再多就卡片内部滚动。
+///
+/// 三行 ≈ 108px —— 参考图里那张卡片差不多就是这么高一截，既能看清有哪些
+/// 分类，又不会把下面的书单挤出屏幕。
+const int _categoryMaxRows = 3;
 
 class _DiscoverPageState extends State<DiscoverPage>
     with AutomaticKeepAliveClientMixin {
@@ -176,24 +180,16 @@ class _DiscoverPageState extends State<DiscoverPage>
     await provider.reloadAfterSwitch(token);
   }
 
-  /// 切父分类 → 落到它名下第一个子项。
-  Future<void> _pickParent(_CategoryGroup group) async {
+  /// 切分类 → 拉该分类的书。
+  ///
+  /// 不可点的项（分组标题 / 选择器）在 UI 层就不会绑 onTap，这里再挡一道：
+  /// 分组标题的 url 是空串，拿去请求等于让后端拿个空地址跑书源规则。
+  Future<void> _pickCategory(ExploreCategory item) async {
     final token = _token;
-    if (token == null || group.children.isEmpty) return;
+    if (token == null || !item.selectable) return;
     final provider = context.read<DiscoverProvider>();
-    final target = group.children.first.value;
-    if (provider.currentCategoryUrl == target) return;
-    await provider.setCurrentCategory(target);
-    if (!mounted) return;
-    await provider.reloadBooks(token);
-  }
-
-  Future<void> _pickChild(MapEntry<String, String> item) async {
-    final token = _token;
-    if (token == null) return;
-    final provider = context.read<DiscoverProvider>();
-    if (provider.currentCategoryUrl == item.value) return;
-    await provider.setCurrentCategory(item.value);
+    if (provider.currentCategoryUrl == item.url) return;
+    await provider.setCurrentCategory(item.url);
     if (!mounted) return;
     await provider.reloadBooks(token);
   }
@@ -262,19 +258,6 @@ class _DiscoverPageState extends State<DiscoverPage>
   // ============================================================
   // 分类分组
   // ============================================================
-
-  List<_CategoryGroup> _groupCategories(
-      List<MapEntry<String, String>> cats) {
-    final map = <String, List<MapEntry<String, String>>>{};
-    for (final c in cats) {
-      final parts = c.key.split('·');
-      final parent = parts.first.trim();
-      map.putIfAbsent(parent.isEmpty ? c.key : parent, () => []).add(c);
-    }
-    return map.entries
-        .map((e) => _CategoryGroup(e.key, e.value))
-        .toList(growable: false);
-  }
 
   // ============================================================
   // 构建
@@ -412,85 +395,135 @@ class _DiscoverPageState extends State<DiscoverPage>
       );
     }
 
-    final groups = _groupCategories(provider.categories);
-    final currentGroup = _groupOf(groups, provider.currentCategoryUrl) ??
-        (groups.isEmpty ? null : groups.first);
-
     return Column(
       children: [
         if (provider.categoriesLoading)
           const LinearProgressIndicator(minHeight: 2),
-        _buildParentBar(groups, currentGroup),
-        if (currentGroup != null && _needsChildBar(currentGroup))
-          _buildChildBar(currentGroup, provider.currentCategoryUrl),
+        _buildCategoryCard(provider),
         const Divider(height: 1),
         Expanded(child: _buildBookList(provider)),
       ],
     );
   }
 
-  _CategoryGroup? _groupOf(
-      List<_CategoryGroup> groups, String? categoryUrl) {
-    if (categoryUrl == null) return null;
-    for (final g in groups) {
-      if (g.children.any((c) => c.value == categoryUrl)) return g;
+  /// 分类卡片：流式排版的胶囊，按 style 给的占比分行、分行内平分宽度。
+  ///
+  /// 【为什么不用 Wrap】Wrap 是按**内容宽度**排的，而书源给的占比是
+  /// 「占整行的百分之几」—— 4 个 0.25 的项必须各占 1/4 行，哪怕它们的
+  /// 文字只有两个字。所以这里自己算行，行内用 Expanded 按占比平分。
+  Widget _buildCategoryCard(DiscoverProvider provider) {
+    final cats = provider.categories;
+    if (cats.isEmpty && provider.categoriesLoading) {
+      // 首次进页面时分类还在路上。顶部已经有进度条了，这里不能再显示
+      // 「发现页是空的」—— 那句话会先闪几秒，看着像书源坏了。
+      return const SizedBox.shrink();
     }
-    return null;
-  }
+    if (cats.isEmpty) {
+      // 账号里 86 个开了发现的书源有 15 个就是这样（found 是空串）。
+      // 还有一种是书源自己报错（需要登录），那个原因记在 categoriesNote 里，
+      // 直接显示出来 —— 比一句「没有发现页」更能说明问题。
+      return _CategoryNotice(
+        text: provider.categoriesError ??
+            provider.categoriesNote ??
+            '该书的发现页是空的（书源没写 exploreUrl，或它自己的接口挂了）',
+      );
+    }
 
-  /// 什么时候需要第二行：这个父分类下有多个子项，或者唯一的子项名字
-  /// 和父名不同（`小说·共享章节数量` 这种）。
-  bool _needsChildBar(_CategoryGroup group) {
-    if (group.children.length > 1) return true;
-    if (group.children.isEmpty) return false;
-    return group.children.first.key != group.parent;
-  }
-
-  Widget _buildParentBar(List<_CategoryGroup> groups, _CategoryGroup? current) {
-    if (groups.isEmpty) return const SizedBox(height: 4);
+    final rows = _packCategoryRows(cats);
+    final visibleRows =
+        rows.length < _categoryMaxRows ? rows.length : _categoryMaxRows;
     return Container(
-      height: 46,
-      alignment: Alignment.centerLeft,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: groups.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final g = groups[i];
-          return _CategoryChip(
-            label: g.parent,
-            selected: g.parent == current?.parent,
-            onTap: () => _pickParent(g),
-          );
-        },
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: Theme.of(context)
+            .colorScheme
+            .surfaceContainerHighest
+            .withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      // 高度按「实际有几行」算，别写死三行 —— 70 个源里大多数只有一两行，
+      // 写死的话卡片下半截永远是空的。
+      child: SizedBox(
+        height: visibleRows * _categoryRowHeight,
+        child: ListView.builder(
+          itemExtent: _categoryRowHeight,
+          physics: const ClampingScrollPhysics(),
+          itemCount: rows.length,
+          itemBuilder: (context, index) => _buildCategoryRow(rows[index], provider),
+        ),
       ),
     );
   }
 
-  Widget _buildChildBar(_CategoryGroup group, String? currentUrl) {
-    return Container(
-      height: 42,
-      alignment: Alignment.centerLeft,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: group.children.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (context, i) {
-          final item = group.children[i];
-          return _CategoryChip(
-            label: group.labelOf(item),
-            selected: item.value == currentUrl,
-            dense: true,
-            onTap: () => _pickChild(item),
-          );
-        },
+  Widget _buildCategoryRow(
+      List<ExploreCategory> row, DiscoverProvider provider) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: _categoryRowGap),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < row.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              // flex 必须是正整数，占比 ×1000 保留三位小数够用了
+              flex: (row[i].safeBasis * 1000).round().clamp(1, 1000),
+              child: _CategoryChip(
+                label: row[i].label,
+                selected: row[i].selectable &&
+                    row[i].url == provider.currentCategoryUrl,
+                // 分组标题（url 为空）不给 onTap —— 点了也没东西可请求，
+                // 而且后端会真的拿它的标题去当 ruleFindUrl 跑规则。
+                onTap: row[i].selectable ? () => _pickCategory(row[i]) : null,
+              ),
+            ),
+          ],
+        ],
       ),
     );
+  }
+
+  /// 把分类项按 `layout_flexBasisPercent` 分行。
+  ///
+  /// 规则就是 flexbox 的换行算法：一行里占比累加不超过 1 就继续塞，
+  /// 放不下就换行；占到正好 1（或更多）时收行。
+  ///   - 分组标题 basis=1  → 独占一行
+  ///   - basis=0.4 ×2     → 一行两个
+  ///   - basis=0.25 ×4    → 一行四个
+  ///   - 行内占比和不足 1（例如 3 个 0.29）→ 由 Expanded 平分拉满整行，
+  ///     和书源里普遍写着的 `layout_flexGrow: 1` 语义一致。
+  ///
+  /// `layout_wrapBefore` 为真的项强制另起一行（实测有 7 处这么写）。
+  List<List<ExploreCategory>> _packCategoryRows(List<ExploreCategory> cats) {
+    final rows = <List<ExploreCategory>>[];
+    var current = <ExploreCategory>[];
+    var used = 0.0;
+
+    void flush() {
+      if (current.isNotEmpty) rows.add(current);
+      current = <ExploreCategory>[];
+      used = 0;
+    }
+
+    for (final c in cats) {
+      if (c.wrapBefore && current.isNotEmpty) flush();
+      final b = c.safeBasis;
+      if (current.isNotEmpty && used + b > 1.0001) flush();
+      current.add(c);
+      used += b;
+      if (used >= 0.9999) flush();
+    }
+    flush();
+    return rows;
   }
 
   Widget _buildBookList(DiscoverProvider provider) {
+    // 没有可点的分类时上面那张卡片已经把原因说清楚了，
+    // 这里再补一句「这个分类下暂时没有书」只会让人更糊涂。
+    if (!provider.categoriesLoading &&
+        provider.selectableCategories.isEmpty) {
+      return const SizedBox.shrink();
+    }
     if (provider.booksLoading && provider.books.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
@@ -548,45 +581,105 @@ class _DiscoverPageState extends State<DiscoverPage>
 }
 
 /// 分类胶囊。
+///
+/// 三种样子，靠 onTap 是否为空和 selected 区分：
+///   - 可选、未选中：浅底圆角
+///   - 可选、已选中：主题色淡底 + 主题色文字
+///   - **不可点（onTap == null）**：就是书源自己写的分组标题
+///     （「🔴 玄幻 🔴」这类），去掉底色只留文字，看起来像小标题而不是按钮 ——
+///     给个"按不动"的胶囊比什么都不显示更让人困惑。
 class _CategoryChip extends StatelessWidget {
   const _CategoryChip({
     required this.label,
     required this.selected,
     required this.onTap,
-    this.dense = false,
   });
 
   final String label;
   final bool selected;
-  final VoidCallback onTap;
-  final bool dense;
+
+  /// 为空表示这一项不可点（分组标题 / 选择器控件）。
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final primary = theme.colorScheme.primary;
+
+    // 单行 + 省略号：行高是固定的（见 _categoryRowHeight），文字必须只占一行，
+    // 否则 ListView 的 itemExtent 和实际高度对不上，会出现裁字或跳动。
+    // 窄胶囊里长标题（「小说·共享章节数量」这类）会被截断，这是必然的 ——
+    // 书源给的占比就那么大，想全显示只能牺牲排版一致性。
+    final text = Text(
+      label,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        color: onTap == null
+            ? theme.colorScheme.onSurfaceVariant
+            : (selected ? primary : theme.colorScheme.onSurface),
+        fontWeight:
+            onTap == null || selected ? FontWeight.w600 : FontWeight.w500,
+        fontSize: onTap == null ? 12 : 12.5,
+      ),
+    );
+
+    // 不可点（分组标题）：去掉底色，看着像小标题而不是"按不动的按钮"
+    if (onTap == null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2),
+        child: Center(child: text),
+      );
+    }
+
     return Material(
       color: selected
           ? primary.withValues(alpha: 0.14)
-          : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+          : theme.colorScheme.surface.withValues(alpha: 0.9),
       borderRadius: BorderRadius.circular(20),
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: onTap,
         child: Padding(
-          padding: EdgeInsets.symmetric(
-            horizontal: dense ? 14 : 16,
-            vertical: dense ? 6 : 8,
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected ? primary : theme.colorScheme.onSurface,
-              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              fontSize: dense ? 13 : 14,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          child: Center(child: text),
+        ),
+      ),
+    );
+  }
+}
+
+/// 没有分类可显示时的提示条（不该占整屏 —— 书单区域自己还有一套空态）。
+class _CategoryNotice extends StatelessWidget {
+  const _CategoryNotice({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.info_outline,
+              size: 16, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodySmall
+                  ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

@@ -1020,6 +1020,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       firstLineIndent: _state.firstLineIndent,
       horizontalPadding: _state.horizontalPadding,
       topPadding: _state.topPadding,
+      // 页脚要自己避开手势条（外层 SafeArea 已 bottom: false），
+      // 渲染端走的是同一个 _readerFooterPadding()。
+      bottomPadding: _readerFooterPadding(),
       showTopBar: _state.showTopBar,
       showBottomBar: _state.showBottomBar,
       fontFamily: _state.textFontFamily,
@@ -1751,7 +1754,16 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (bookType == 1) return SafeArea(child: _buildAudioPlaceholder(provider));
     if (bookType == 3) return SafeArea(child: _buildFilePlaceholder());
 
+    // 【bottom: false —— 别再为手势条留那 34px】
+    // 原来这里是完整 SafeArea，底部会为系统手势条（iOS home indicator、
+    // Android 手势导航）再让出一整条安全区，正文与页脚底部于是叠出
+    // 「页脚 + 6px + 安全区(约34px)」≈ 40px 的空白，观感就是下面空一大块。
+    // 关掉底部的安全区让正文一直铺到屏幕底，避让改由**页脚自己的下边距**负责 ——
+    // 具体值见下面 _readerFooterPadding()，分页引擎和渲染端收的是同一个数，
+    // 三边（排版/绘制/滚动）必须一致，否则最后一行会被裁掉或底下多出一块空白。
+    // 顶部/左右仍然保留 —— 状态栏和刘海那一带是真不能压。
     return SafeArea(
+      bottom: false,
       child: _state.loadingDisplayedChapter && _state.displayedContent.isEmpty
           ? const Center(child: CircularProgressIndicator())
           : provider.error != null && _state.displayedContent.isEmpty
@@ -1805,6 +1817,24 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     return ((MediaQuery.of(context).size.width - maxWidth) / 2)
         .clamp(0.0, double.infinity)
         .toDouble();
+  }
+
+  /// 页脚（时间/页码/电量）底部的留白 —— 三种内容模式共用同一个数。
+  ///
+  /// 【为什么抽出来】`SafeArea(bottom: false)` 之后底部安全区不再由外层兜底，
+  /// 页脚得自己避开系统手势条。而这个数必须**同时**被三处看到：
+  /// 分页引擎（算每页能放几行）、ContentRenderer（真正画出来）、滚动/漫画模式
+  /// 的页脚 Padding。任何一处用别的数，就会出现「最后一行被裁掉」或者
+  /// 「正文底下凭空多一块空白」这种要对着像素找半天的 bug。
+  ///
+  /// 取值的推导见 [PaginationEngine.footerBottomPadding]：安全区减 16px，
+  /// 让页脚比指示条还低一截，又能比原来少空 16px。
+  ///
+  /// 用 `paddingOf` 而不是 `viewPaddingOf`：前者会被软键盘等临时遮挡扣掉，
+  /// 后者不会。阅读页弹软键盘时（搜索正文）不需要为手势条留位，用 padding 更准。
+  double _readerFooterPadding() {
+    return PaginationEngine.footerBottomPadding(
+        MediaQuery.paddingOf(context).bottom);
   }
 
   Widget _buildPagedNovelContent(ReaderProvider provider) {
@@ -1864,6 +1894,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             showPageNumber: _state.showPageNumber,
             horizontalPadding: _state.horizontalPadding,
             topPadding: _state.topPadding,
+            // 页脚自己要避开系统手势条（外层 SafeArea 已 bottom: false）
+            bottomPadding: _readerFooterPadding(),
             paragraphSpacing: _state.paragraphSpacing,
             firstLineIndent: _state.firstLineIndent,
             animType: _state.pageAnimType,
@@ -1912,6 +1944,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       // 这个 Padding 同时套住了正文和底部状态栏，两者一起收窄，视觉上是一致的。
       horizontalPadding: _state.horizontalPadding + _readerSideExtra(),
       topPadding: _state.topPadding,
+      bottomPadding: _readerFooterPadding(),
       paragraphSpacing: _state.paragraphSpacing,
       firstLineIndent: _state.firstLineIndent,
       fontFamily: _state.textFontFamily,
@@ -2000,7 +2033,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   Widget _buildComicFooter(ReaderProvider provider) {
     final theme = _state.currentTheme;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+      // 原来硬编码 10，且依赖外层 SafeArea 兜住手势条；现在外层是
+      // SafeArea(bottom: false)，这里得跟正文/滚动模式用同一个数。
+      padding: EdgeInsets.fromLTRB(24, 0, 24, _readerFooterPadding()),
       child: Row(
         children: [
           Text(_state.formatTime(),

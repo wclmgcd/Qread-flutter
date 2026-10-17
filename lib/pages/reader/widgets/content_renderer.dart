@@ -509,6 +509,9 @@ class ContentRenderer {
     bool showPageNumber = true,
     double horizontalPadding = 16.0,
     double topPadding = 10.0,
+    // 与分页引擎共用同一个值：阅读页把「避开系统手势条」算进了页脚下边距，
+    // 渲染端必须收同一个数，否则最后一行会被裁或底下多出一块（见 footerBottomPadding）。
+    double bottomPadding = PaginationEngine.defaultBottomPadding,
     double paragraphSpacing = 7.0,
     double firstLineIndent = 2.0,
     String? fontFamily,
@@ -522,8 +525,9 @@ class ContentRenderer {
         horizontalPadding,
         topPadding,
         horizontalPadding,
-        // 与分页引擎共用同一个常量，避免两处硬编码各走各的
-        showBottomBar ? PaginationEngine.defaultBottomPadding : 0.0,
+        // 由调用方传进来（阅读页会把它算成「安全区 − 16px」），
+        // 关掉页脚时不占位。
+        showBottomBar ? bottomPadding : 0.0,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

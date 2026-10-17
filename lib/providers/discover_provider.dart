@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/book_source.dart';
+import '../models/explore_category.dart';
 import '../models/search_result.dart';
 import '../services/api_service.dart';
 import '../services/error_text.dart';
@@ -41,13 +42,22 @@ class DiscoverProvider extends ChangeNotifier {
   // ============================================================
   // 当前书源的分类列表（内存，不持久化）
   // ============================================================
-  List<MapEntry<String, String>> _categories = [];
+  List<ExploreCategory> _categories = [];
   bool _categoriesLoading = false;
   String? _categoriesError;
 
-  List<MapEntry<String, String>> get categories => _categories;
+  /// 书源自己报的错（例如「请先登录」）。拿到分类的同时拿到，
+  /// 一个分类都没有时显示它，比一句「没有发现页」有用得多。
+  String? _categoriesNote;
+
+  List<ExploreCategory> get categories => _categories;
   bool get categoriesLoading => _categoriesLoading;
   String? get categoriesError => _categoriesError;
+  String? get categoriesNote => _categoriesNote;
+
+  /// 可点的分类（url 非空）—— 分组标题和选择器都排除掉。
+  List<ExploreCategory> get selectableCategories =>
+      _categories.where((c) => c.selectable).toList(growable: false);
 
   // ============================================================
   // 当前分类的书籍列表（分页累积在内存里，离开发现页不丢）
@@ -170,6 +180,7 @@ class DiscoverProvider extends ChangeNotifier {
     _currentSourceUrl = sourceUrl;
     _currentCategoryUrl = null;
     _categories = [];
+    _categoriesNote = null;
     _books = [];
     _booksPage = 1;
     _booksHasMore = true;
@@ -199,15 +210,17 @@ class DiscoverProvider extends ChangeNotifier {
     if (_categories.isEmpty) {
       await loadCategories(accessToken, url);
     }
-    if (_categories.isEmpty) return; // 该书源没有发现分类
+    // 只认**可点**的分类：分组标题（url 为空）和选择器不能当分类用，
+    // 拿它们的标题去请求，后端会真的拿标题去跑书源规则，必然是空列表。
+    final usable = selectableCategories;
+    if (usable.isEmpty) return; // 该书源没有发现页（或书源自己报了错）
     // 当前选中的分类可能已失效（换了书源/分类列表变了）→ 回落到第一个。
     // 【为什么要有这一步】原来写的是 if (cur == null) 才回落，
     // 于是「换书源后 currentCategoryUrl 还留着上一个源的 URL」这种情况
     // 会带着一个不属于本源的地址去请求，后端只会返回空列表。
-    final stillValid =
-        _categories.any((c) => c.value == _currentCategoryUrl);
+    final stillValid = usable.any((c) => c.url == _currentCategoryUrl);
     if (!stillValid) {
-      await setCurrentCategory(_categories.first.value);
+      await setCurrentCategory(usable.first.url);
     }
     await reloadBooks(accessToken);
   }
@@ -218,6 +231,9 @@ class DiscoverProvider extends ChangeNotifier {
   Future<void> loadCategories(String accessToken, String sourceUrl) async {
     _categoriesLoading = true;
     _categoriesError = null;
+    // 换源/重拉时把上一次的备注清掉，否则上本书源「请先登录」的提示
+    // 会挂在本源的卡片上，看着像误报。
+    _categoriesNote = null;
     notifyListeners();
     try {
       final result = await ApiService.instance.getBookSourcesExploreUrl(
@@ -230,27 +246,15 @@ class DiscoverProvider extends ChangeNotifier {
         return;
       }
       final data = result['data'];
-      _categories = _parseCategories(data?['found']);
+      final parsed = ExploreCategory.parse(data?['found']);
+      _categories = parsed.items;
+      _categoriesNote = parsed.note;
     } catch (e) {
       _categoriesError = friendlyError(e);
     } finally {
       _categoriesLoading = false;
       notifyListeners();
     }
-  }
-
-  List<MapEntry<String, String>> _parseCategories(dynamic foundRaw) {
-    if (foundRaw == null) return [];
-    if (foundRaw is List) {
-      return foundRaw.whereType<Map>().map((e) {
-        final title = (e['title'] ?? e['name'] ?? '').toString();
-        final url = (e['url'] ?? '').toString();
-        return MapEntry(title, url.isNotEmpty ? url : title);
-      }).toList();
-    }
-    final found = foundRaw.toString().trim();
-    if (found.isEmpty) return [];
-    return [const MapEntry('默认', '')];
   }
 
   // ============================================================
