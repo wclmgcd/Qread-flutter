@@ -35,6 +35,7 @@ import '../../services/reading_stats_service.dart';
 import '../../services/replace_rule_store.dart';
 import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
+import '../../widgets/batch_download_dialog.dart';
 import '../../widgets/book_cover.dart';
 import 'engine/engine.dart';
 import 'book_text_search_page.dart';
@@ -72,6 +73,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const _keyTopPadding = 'reader_top_padding';
   static const _keyPageAnimType = 'reader_page_anim_type';
   static const _keyBrightness = 'reader_brightness';
+  static const _keyBrightnessAuto = 'reader_brightness_auto';
   static const _keyFontFamily = 'reader_font_family';
   static const _keyBoldText = 'reader_bold_text';
   static const _keyShowParagraphComment = 'reader_show_paragraph_comment';
@@ -81,6 +83,21 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const _keyTtsDelayPageTurn = 'reader_tts_delay_page_turn';
   /// 老默认排版 → 官方客户端同款排版 的一次性迁移标记
   static const _keyLayoutMigrated = 'reader_layout_migrated_v2';
+  // ---- 更多设置（轻阅时光对齐批）----
+  static const _keyHideTitle = 'reader_hide_title';
+  static const _keyTitleAlign = 'reader_title_align';
+  static const _keyShowHfDivider = 'reader_show_hf_divider';
+  static const _keyProgressMode = 'reader_progress_mode';
+  static const _keyShowFooterTime = 'reader_show_footer_time';
+  static const _keyShowFooterBattery = 'reader_show_footer_battery';
+  static const _keyBottomAlignLast = 'reader_bottom_align_last';
+  static const _keyHideStatusBar = 'reader_hide_status_bar';
+  static const _keyLockOrientation = 'reader_lock_orientation';
+  static const _keyWakelockMinutes = 'reader_wakelock_minutes';
+  static const _keySliderByPage = 'reader_slider_by_page';
+  static const _keySwipeUpExit = 'reader_swipe_up_exit';
+  static const _keySwipeDownBookmark = 'reader_swipe_down_bookmark';
+  static const _keyTocReversed = 'reader_toc_reversed';
 
   late PageController _pageController;
   final PagedReaderController _pagedReaderController = PagedReaderController();
@@ -137,6 +154,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   /// 自动翻页控制条的兜底倒计时（它原来**完全没有**自动隐藏）。
   Timer? _autoPageBarTimer;
 
+  /// 「屏幕常亮」档位（5/10 分钟）的倒计时；到点自动放屏，翻页/点击会刷新。
+  Timer? _wakelockTimer;
+
   /// 自动翻页控制条自动隐藏延时。
   static const Duration _autoPageBarHideDelay = Duration(seconds: 4);
 
@@ -175,8 +195,42 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     // 通知栏上的朗读控制按钮（上一段 / 暂停 / 停止）回调到本页的方法。
     // 页面销毁时必须摘掉 —— 否则通知点一下会去调一个已经 dispose 的 State。
     NotificationService.instance.onTtsAction = _onTtsNotificationAction;
+    // 音量键翻页：原生侧把音量键消费掉后从这里推事件（"up"/"down"）。
+    // 监听器的注册与设置无关 —— active 与否由原生侧 volumeKeyFlipActive 决定，
+    // 这里只管收事件；是否真的翻页再看一次开关，防止设置刚关、事件已到。
+    SystemUiService.setVolumeKeyListener(_onVolumeKey);
     WidgetsBinding.instance.addPostFrameCallback((_) => _initBook());
     _ensureFontsThenRepaginate();
+  }
+
+  /// 音量键翻页事件（原生 dispatchKeyEvent 推过来的 "up"/"down"）。
+  void _onVolumeKey(String direction) {
+    if (!mounted || !_state.volumeKeyFlip) return;
+    final provider = _readerProvider;
+    if (provider == null) return;
+    _refreshWakelockTimer();
+    if (_state.isScrollMode) {
+      _scrollByVolumeKey(direction);
+    } else if (direction == 'down') {
+      _nextPage(provider);
+    } else {
+      _previousPage(provider);
+    }
+  }
+
+  /// 滚动/漫画模式下音量键 = 滚一屏的 90%。
+  void _scrollByVolumeKey(String direction) {
+    final controller =
+        _state.isComic ? _comicScrollController : _novelScrollController;
+    if (!controller.hasClients) return;
+    final step = controller.position.viewportDimension * 0.9 *
+        (direction == 'down' ? 1 : -1);
+    final target = (controller.offset + step).clamp(
+      controller.position.minScrollExtent,
+      controller.position.maxScrollExtent,
+    );
+    controller.animateTo(target,
+        duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
   }
 
   /// 通知栏朗读按钮被点了。
@@ -251,6 +305,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     unawaited(NotificationService.instance.cancelTts());
     // 离开阅读页要把系统导航栏还回来，否则整个 App 都点不到底部手势条
     unawaited(SystemUiService.showSystemBars());
+    // 更多设置的系统类开关也要一并还回去：iOS 的 showSystemBars 只恢复
+    // home indicator，状态栏/常亮/音量键/方向锁都得显式复位。
+    SystemUiService.setVolumeKeyListener(null);
+    unawaited(SystemUiService.setVolumeKeyActive(false));
+    unawaited(SystemUiService.setKeepScreenOn(false));
+    unawaited(SystemUiService.setStatusBarHidden(false));
+    unawaited(SystemChrome.setPreferredOrientations(const []));
+    _wakelockTimer?.cancel();
     _saveProgressSync();
     unawaited(ReadingStatsService.instance.endSession());
     super.dispose();
@@ -419,8 +481,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _state.theme = prefs.getString(_keyTheme) ?? 'green';
       _state.pageMode = prefs.getString(_keyPageMode) ?? 'paged';
       _state.autoPageInterval = prefs.getDouble(_keyAutoPageInterval) ?? 12.0;
-      _state.screenWakelock = prefs.getBool(_keyScreenWakelock) ?? true;
-      _state.showPageNumber = prefs.getBool(_keyShowPageNumber) ?? true;
+      // 常亮档位：新 int 键优先；老设备只有 bool 键时迁移语义（true=常亮/-1）。
+      _state.wakelockMinutes = prefs.getInt(_keyWakelockMinutes) ??
+          ((prefs.getBool(_keyScreenWakelock) ?? true) ? -1 : 0);
+      // 显示进度四档：同理，老的 bool「显示页码」映射到 关/本章。
+      _state.progressMode = prefs.getInt(_keyProgressMode) ??
+          ((prefs.getBool(_keyShowPageNumber) ?? true) ? 1 : 0);
       _state.volumeKeyFlip = prefs.getBool(_keyVolumeKeyFlip) ?? false;
       _state.showBottomBar = prefs.getBool(_keyShowBottomBar) ?? true;
       _state.showTopBar = prefs.getBool(_keyShowTopBar) ?? true;
@@ -429,10 +495,24 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _state.horizontalPadding = prefs.getDouble(_keyHorizontalPadding) ?? 16.0;
       _state.topPadding = prefs.getDouble(_keyTopPadding) ?? 10.0;
       _state.brightness = prefs.getDouble(_keyBrightness) ?? 1.0;
+      _state.brightnessAuto = prefs.getBool(_keyBrightnessAuto) ?? false;
       _state.fontFamily = prefs.getString(_keyFontFamily) ?? 'default';
       _state.boldText = prefs.getBool(_keyBoldText) ?? false;
       _state.showParagraphComment =
           prefs.getBool(_keyShowParagraphComment) ?? true;
+      _state.hideTitle = prefs.getBool(_keyHideTitle) ?? false;
+      _state.titleAlign = prefs.getInt(_keyTitleAlign) ?? 1;
+      _state.showHeaderFooterDivider =
+          prefs.getBool(_keyShowHfDivider) ?? false;
+      _state.showFooterTime = prefs.getBool(_keyShowFooterTime) ?? true;
+      _state.showFooterBattery = prefs.getBool(_keyShowFooterBattery) ?? true;
+      _state.bottomAlignLastPage = prefs.getBool(_keyBottomAlignLast) ?? false;
+      _state.hideStatusBar = prefs.getBool(_keyHideStatusBar) ?? false;
+      _state.lockOrientation = prefs.getBool(_keyLockOrientation) ?? false;
+      _state.sliderByPage = prefs.getBool(_keySliderByPage) ?? false;
+      _state.swipeUpExit = prefs.getBool(_keySwipeUpExit) ?? false;
+      _state.swipeDownBookmark = prefs.getBool(_keySwipeDownBookmark) ?? false;
+      _state.tocReversed = prefs.getBool(_keyTocReversed) ?? false;
       _state.ttsAllowPageTurn =
           prefs.getBool(_keyTtsAllowPageTurn) ?? true;
       _state.ttsShowChapterSwitch =
@@ -463,6 +543,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       await _saveSettings();
       await prefs.setBool(_keyLayoutMigrated, true);
     }
+    // 设置读完就把系统类开关（状态栏/常亮/音量键/方向锁）应用到原生侧
+    _applySystemUiSettings();
   }
 
   Future<void> _saveSettings() async {
@@ -476,8 +558,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       _state.pageAnimType.usesScrollReader ? 'scroll' : 'paged',
     );
     await prefs.setDouble(_keyAutoPageInterval, _state.autoPageInterval);
-    await prefs.setBool(_keyScreenWakelock, _state.screenWakelock);
-    await prefs.setBool(_keyShowPageNumber, _state.showPageNumber);
+    await prefs.setInt(_keyWakelockMinutes, _state.wakelockMinutes);
+    await prefs.setInt(_keyProgressMode, _state.progressMode);
     await prefs.setBool(_keyVolumeKeyFlip, _state.volumeKeyFlip);
     await prefs.setBool(_keyShowBottomBar, _state.showBottomBar);
     await prefs.setBool(_keyShowTopBar, _state.showTopBar);
@@ -487,9 +569,22 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     await prefs.setDouble(_keyTopPadding, _state.topPadding);
     await prefs.setString(_keyPageAnimType, _state.pageAnimType.id);
     await prefs.setDouble(_keyBrightness, _state.brightness);
+    await prefs.setBool(_keyBrightnessAuto, _state.brightnessAuto);
     await prefs.setString(_keyFontFamily, _state.fontFamily);
     await prefs.setBool(_keyBoldText, _state.boldText);
     await prefs.setBool(_keyShowParagraphComment, _state.showParagraphComment);
+    await prefs.setBool(_keyHideTitle, _state.hideTitle);
+    await prefs.setInt(_keyTitleAlign, _state.titleAlign);
+    await prefs.setBool(_keyShowHfDivider, _state.showHeaderFooterDivider);
+    await prefs.setBool(_keyShowFooterTime, _state.showFooterTime);
+    await prefs.setBool(_keyShowFooterBattery, _state.showFooterBattery);
+    await prefs.setBool(_keyBottomAlignLast, _state.bottomAlignLastPage);
+    await prefs.setBool(_keyHideStatusBar, _state.hideStatusBar);
+    await prefs.setBool(_keyLockOrientation, _state.lockOrientation);
+    await prefs.setBool(_keySliderByPage, _state.sliderByPage);
+    await prefs.setBool(_keySwipeUpExit, _state.swipeUpExit);
+    await prefs.setBool(_keySwipeDownBookmark, _state.swipeDownBookmark);
+    await prefs.setBool(_keyTocReversed, _state.tocReversed);
     await prefs.setBool(_keyTtsAllowPageTurn, _state.ttsAllowPageTurn);
     await prefs.setBool(_keyTtsShowChapterSwitch, _state.ttsShowChapterSwitch);
     await prefs.setBool(_keyTtsDelayPageTurn, _state.ttsDelayPageTurn);
@@ -1028,6 +1123,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       // 内置字体没读完时量出来的是回退字体的行宽，断行会偏。
       // 把它也放进 key，字体就绪后自动重排（见 ReaderFont.fontsReady 的注释）。
       fontsReady: ReaderFont.fontsReady,
+      hideTitle: _state.hideTitle,
+      headerFooterDivider: _state.showHeaderFooterDivider,
     );
 
     if (_state.layoutCache.containsKey(cacheKey)) {
@@ -1052,6 +1149,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       bottomPadding: _readerFooterPadding(),
       showTopBar: _state.showTopBar,
       showBottomBar: _state.showBottomBar,
+      hideTitle: _state.hideTitle,
+      showHeaderFooterDivider: _state.showHeaderFooterDivider,
       fontFamily: _state.textFontFamily,
       fontWeight: _state.textFontWeight,
       // 渲染端的 Text 会自动应用 MediaQuery.textScalerOf(context)（也就是系统的
@@ -1134,7 +1233,28 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   // 翻页
   // ============================================================
 
+  /// 「上滑退出 / 下滑书签」（更多设置里的手势开关）。
+  ///
+  /// 只有分页模式能走到这里（滚动/漫画的竖向拖动归 ListView）。
+  /// 阈值取 400 逻辑像素/秒，轻扫不会触发，得是明确的一甩。
+  void _handleContentVerticalDrag(
+      DragEndDetails details, ReaderProvider provider) {
+    final velocity = details.primaryVelocity ?? 0;
+    _refreshWakelockTimer();
+    if (velocity <= -400 && _state.swipeUpExit) {
+      // 和点控制栏「返回」同一条路径：先存进度再退出
+      _saveProgress(pos: _getProgress());
+      Navigator.pop(context);
+      return;
+    }
+    if (velocity >= 400 && _state.swipeDownBookmark) {
+      _toggleBookmark(provider);
+    }
+  }
+
   void _handleTap(TapUpDetails details, ReaderProvider provider) {
+    // 点击 = 用户还醒着，刷新「屏幕常亮」档位倒计时
+    _refreshWakelockTimer();
     // 有文字被选中时，单击只用来「取消选中」。
     // 否则用户点空白处想收起选区，页面却先翻走了。
     if (_hasSelection) {
@@ -1216,6 +1336,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   }
 
   void _moveToPage(int pageIndex) {
+    // 翻页 = 用户还醒着，刷新「屏幕常亮」档位倒计时
+    _refreshWakelockTimer();
     if (_state.pageAnimType.usesManualPaging) {
       if (_state.pageAnimType.instantTurn) {
         _pagedReaderController.jumpToPage(pageIndex);
@@ -1585,6 +1707,15 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       child: GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTapUp: (details) => _handleTap(details, provider),
+                        // 「上滑退出 / 下滑书签」（更多设置）。
+                        // 滚动/漫画模式的竖向拖动归内部 ListView，这个识别器
+                        // 赢不了竞技场，天然不会误触发；分页模式（含左右滑的
+                        // PageView）竖向没人认领，才会走到这里。
+                        onVerticalDragEnd:
+                            (_state.swipeUpExit || _state.swipeDownBookmark)
+                                ? (details) =>
+                                    _handleContentVerticalDrag(details, provider)
+                                : null,
                         child: _buildContent(provider),
                       ),
                     ),
@@ -1625,6 +1756,13 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                           provider.book?.durChapterIndex ?? 0),
                       totalChapters: provider.chapters.length,
                       chapterSliderValue: _state.chapterSliderValue,
+                      // 「菜单滑动条按分页」：只在分页模式且已排出页时有意义
+                      sliderByPage: _state.sliderByPage &&
+                          !_state.isScrollMode &&
+                          _state.pages.isNotEmpty,
+                      currentPage: _state.currentPage,
+                      totalPages: _state.pages.length,
+                      pageSliderValue: _state.pageSliderValue,
                     ),
                     callbacks: ReaderControllerCallbacks(
                       onBack: () {
@@ -1651,6 +1789,20 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                         if (target != ci && _token != null) {
                           _saveProgress(pos: _getProgress());
                           _openChapter(target, chapterPosition: 0);
+                        }
+                      },
+                      // 分页滑杆（「按分页」模式）：拖动只记瞬时值，松手跳页。
+                      // 左右箭头也走这里（直接提交目标页）。
+                      onPageSliderChanged: (value) {
+                        setState(() => _state.pageSliderValue = value);
+                      },
+                      onPageSliderEnd: (value) {
+                        setState(() => _state.pageSliderValue = null);
+                        if (_state.pages.isEmpty) return;
+                        final target =
+                            value.round().clamp(0, _state.pages.length - 1);
+                        if (target != _activePageIndex()) {
+                          _moveToPage(target);
                         }
                       },
                       onShowChapterList: () => _showChapterList(provider),
@@ -1945,6 +2097,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             fontWeight: _state.textFontWeight,
             onCommentTap:
                 _state.showParagraphComment ? _openParagraphComment : null,
+            titleAlign: _state.titleTextAlign,
+            showHeaderFooterDivider: _state.showHeaderFooterDivider,
+            showFooterTime: _state.showFooterTime,
+            showFooterBattery: _state.showFooterBattery,
+            bottomAlignLastPage: _state.bottomAlignLastPage,
+            progressMode: _state.progressMode,
+            chapterIndex: _state.laidOutChapterIndex,
+            totalChapters: provider.chapters.length,
             imageUrlBuilder: _buildImageUrl,
             onImageTap: _openImageViewer,
             onPageChanged: (page) {
@@ -1978,7 +2138,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       lineHeight: _state.lineHeight,
       chapterTitle: chapterTitle,
       ttsParagraphIndex: _state.ttsParagraphIndex,
-      pageIndicator: _state.pageIndicatorLabel(),
+      pageIndicator: _state.pageIndicatorLabel(
+        chapterIndex: _state.laidOutChapterIndex,
+        totalChapters: provider.chapters.length,
+      ),
       timeLabel: _state.formatTime(),
       batteryLabel: _state.batteryLabel(),
       // 【最大宽度】ScrollReader 内部没有 LayoutBuilder，宽度完全由这里传进去的
@@ -1993,6 +2156,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       fontWeight: _state.textFontWeight,
       onCommentTap:
           _state.showParagraphComment ? _openParagraphComment : null,
+      titleAlign: _state.titleTextAlign,
+      showHeaderFooterDivider: _state.showHeaderFooterDivider,
+      showFooterTime: _state.showFooterTime,
+      showFooterBattery: _state.showFooterBattery,
       imageUrlBuilder: _buildImageUrl,
       onImageTap: _openImageViewer,
     );
@@ -2242,6 +2409,27 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   }
 
   void _rebuildPages(ReaderProvider provider) {
+    // 滚动模式没有「页」可排，但段落列表同样来自分页引擎
+    // （正文顶部标题段的注入/隐藏），所以「隐藏标题」这类改动
+    // 在滚动模式下也要重抽段落，否则设置要等切章才生效。
+    if (_state.pageMode == 'scroll' &&
+        !_state.isComic &&
+        _state.displayedContent.isNotEmpty) {
+      final scrollChapterTitle = _displayedChapter(provider)?.title ??
+          provider.book?.durChapterTitle;
+      final scrollLayout = _layoutChapter(
+        content: _state.displayedContent,
+        chapterTitle: scrollChapterTitle,
+        chapterIndex: _state.laidOutChapterIndex,
+      );
+      setState(() {
+        _state.paragraphs = scrollLayout.paragraphs;
+        _paragraphKeys =
+            List.generate(_state.paragraphs.length, (_) => GlobalKey());
+      });
+      return;
+    }
+
     if (_state.pageMode != 'paged' ||
         _state.displayedContent.isEmpty ||
         _state.isComic ||
@@ -2676,18 +2864,36 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => BookTocSheet(book: book, token: token),
+      // 把 provider 已有的目录直接喂进去：弹层秒开，刷新由弹层后台做
+      builder: (_) => BookTocSheet(
+        book: book,
+        token: token,
+        initialChapters: provider.chapters,
+        // 「更多设置 → 目录倒序」：弹层里的正序/倒序按钮改动后也回写设置
+        initialAscending: !_state.tocReversed,
+        onOrderChanged: (ascending) {
+          setState(() => _state.tocReversed = !ascending);
+          _saveSettings();
+        },
+      ),
     );
     if (args == null || !mounted) return;
-    // 弹层的目录是它自己重新拉的，可能比 provider 里那份多几章；
-    // 先刷新 provider 的目录再跳，保证弹层给的下标不越界。
-    try {
-      await provider.refreshChapters(token);
-    } catch (_) {}
-    if (!mounted) return;
     _saveProgress(pos: _getProgress());
+    final index = args.chapterIndex ?? 0;
+    if (index >= provider.chapters.length) {
+      // 弹层后台刷新出的目录可能比 provider 这份多几章 —— 只有点到了
+      // 越界下标才值得等一次刷新，常见情况（下标有效）直接跳，别卡网络。
+      try {
+        await provider.refreshChapters(token);
+      } catch (_) {}
+      if (!mounted) return;
+    } else {
+      // 顺手把 provider 的目录刷齐（下一章预取、滑杆总章数都吃这份），
+      // 但不挡跳章。
+      unawaited(provider.refreshChapters(token).catchError((_) => 0));
+    }
     await _openChapter(
-      args.chapterIndex ?? 0,
+      index,
       chapterPosition: args.chapterPosition,
       openAtEnd: args.openAtEnd,
     );
@@ -3255,17 +3461,54 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                     overlayRadius: 18),
                               ),
                               child: Slider(
-                                value: _state.brightness.clamp(0.1, 1.0),
+                                // 自动档不压暗（见 ReaderState.brightnessAuto），
+                                // 滑条停在最亮并禁用。
+                                value: _state.brightnessAuto
+                                    ? 1.0
+                                    : _state.brightness.clamp(0.1, 1.0),
                                 min: 0.1,
                                 max: 1.0,
                                 divisions: 18,
-                                onChanged: (v) =>
-                                    commit(() => _state.brightness = v),
+                                onChanged: _state.brightnessAuto
+                                    ? null
+                                    : (v) =>
+                                        commit(() => _state.brightness = v),
                               ),
                             ),
                           ),
                           Icon(Icons.remove_red_eye_outlined,
                               size: 20, color: readerTheme.secondaryText),
+                          const SizedBox(width: 8),
+                          // 「自动」= 跟随系统亮度（不盖压暗蒙版）
+                          GestureDetector(
+                            onTap: () => commit(() =>
+                                _state.brightnessAuto =
+                                    !_state.brightnessAuto),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 5),
+                              decoration: BoxDecoration(
+                                color: _state.brightnessAuto
+                                    ? sliderAccent
+                                    : Colors.transparent,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: _state.brightnessAuto
+                                      ? sliderAccent
+                                      : readerTheme.secondaryText,
+                                ),
+                              ),
+                              child: Text(
+                                '自动',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: _state.brightnessAuto
+                                      ? Colors.white
+                                      : readerTheme.secondaryText,
+                                ),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -3350,30 +3593,55 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
               Widget switchRow(
                 String label,
                 bool value,
-                ValueChanged<bool> onChanged,
-              ) {
+                ValueChanged<bool> onChanged, {
+                bool enabled = true,
+                String? subtitle,
+              }) {
                 return Padding(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text(label,
-                            style: const TextStyle(
-                                fontSize: 15, color: Color(0xFF222222))),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(label,
+                                style: TextStyle(
+                                    fontSize: 15,
+                                    color: enabled
+                                        ? const Color(0xFF222222)
+                                        : const Color(0xFFAAAAAA))),
+                            if (subtitle != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(subtitle,
+                                    style: const TextStyle(
+                                        fontSize: 12,
+                                        color: Color(0xFF999999))),
+                              ),
+                          ],
+                        ),
                       ),
-                      Switch(value: value, onChanged: onChanged),
+                      Switch(
+                          value: value,
+                          onChanged: enabled ? onChanged : null),
                     ],
                   ),
                 );
               }
 
-              Widget entryRow(String label, VoidCallback onTap) {
+              /// 「多选一」行：右侧显示当前值，点了弹底部选项单。
+              Widget choiceRow(
+                String label,
+                String valueLabel,
+                VoidCallback onTap,
+              ) {
                 return InkWell(
                   onTap: onTap,
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 16, vertical: 13),
+                        horizontal: 16, vertical: 12),
                     child: Row(
                       children: [
                         Expanded(
@@ -3381,11 +3649,63 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                               style: const TextStyle(
                                   fontSize: 15, color: Color(0xFF222222))),
                         ),
+                        Text(valueLabel,
+                            style: const TextStyle(
+                                fontSize: 13, color: Color(0xFF888888))),
+                        const SizedBox(width: 4),
                         const Icon(Icons.chevron_right,
                             size: 20, color: Color(0xFFAAAAAA)),
                       ],
                     ),
                   ),
+                );
+              }
+
+              /// 底部选项单：标题 + 一排带 ✓ 的选项。
+              void pickOption({
+                required String title,
+                required List<String> options,
+                required int current,
+                required ValueChanged<int> onSelected,
+              }) {
+                showModalBottomSheet<void>(
+                  context: pageContext,
+                  backgroundColor: Colors.white,
+                  shape: const RoundedRectangleBorder(
+                    borderRadius:
+                        BorderRadius.vertical(top: Radius.circular(16)),
+                  ),
+                  builder: (sheetCtx) {
+                    return SafeArea(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                            child: Text(title,
+                                style: const TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF222222))),
+                          ),
+                          for (var i = 0; i < options.length; i++)
+                            ListTile(
+                              title: Text(options[i],
+                                  style: const TextStyle(fontSize: 15)),
+                              trailing: i == current
+                                  ? const Icon(Icons.check,
+                                      color: Color(0xFF7CB7B2))
+                                  : null,
+                              onTap: () {
+                                Navigator.pop(sheetCtx);
+                                onSelected(i);
+                              },
+                            ),
+                          const SizedBox(height: 8),
+                        ],
+                      ),
+                    );
+                  },
                 );
               }
 
@@ -3475,10 +3795,62 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                     rebuildPages: true),
                               ),
                               switchRow(
-                                '显示进度',
-                                _state.showPageNumber,
-                                (v) => commit(() => _state.showPageNumber = v,
+                                '隐藏状态栏',
+                                _state.hideStatusBar,
+                                (v) => commit(() {
+                                  _state.hideStatusBar = v;
+                                  unawaited(
+                                      SystemUiService.setStatusBarHidden(v));
+                                }),
+                              ),
+                              switchRow(
+                                '隐藏标题',
+                                _state.hideTitle,
+                                (v) => commit(() => _state.hideTitle = v,
                                     rebuildPages: true),
+                              ),
+                              choiceRow(
+                                '标题对齐',
+                                const ['左对齐', '居中', '右对齐']
+                                    [_state.titleAlign.clamp(0, 2)],
+                                () => pickOption(
+                                  title: '标题对齐',
+                                  options: const ['左对齐', '居中', '右对齐'],
+                                  current: _state.titleAlign.clamp(0, 2),
+                                  onSelected: (i) => commit(
+                                      () => _state.titleAlign = i),
+                                ),
+                              ),
+                              switchRow(
+                                '页眉页脚分割线',
+                                _state.showHeaderFooterDivider,
+                                (v) => commit(
+                                    () => _state.showHeaderFooterDivider = v,
+                                    rebuildPages: true),
+                              ),
+                              choiceRow(
+                                '显示进度',
+                                const ['关闭', '本章', '全书', '本章+全书']
+                                    [_state.progressMode.clamp(0, 3)],
+                                () => pickOption(
+                                  title: '显示进度',
+                                  options: const ['关闭', '本章', '全书', '本章+全书'],
+                                  current: _state.progressMode.clamp(0, 3),
+                                  onSelected: (i) => commit(
+                                      () => _state.progressMode = i),
+                                ),
+                              ),
+                              switchRow(
+                                '显示时间',
+                                _state.showFooterTime,
+                                (v) =>
+                                    commit(() => _state.showFooterTime = v),
+                              ),
+                              switchRow(
+                                '显示电量',
+                                _state.showFooterBattery,
+                                (v) =>
+                                    commit(() => _state.showFooterBattery = v),
                               ),
                               switchRow(
                                 '显示段评',
@@ -3489,11 +3861,50 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                               ),
                             ]),
                             card('翻页设置', [
+                              // iOS 没有公开的音量键事件 API（原生侧直接回 false），
+                              // 这行在 iPhone 上置灰并说明原因。
                               switchRow(
                                 '音量键翻页',
                                 _state.volumeKeyFlip,
+                                (v) => commit(() {
+                                  _state.volumeKeyFlip = v;
+                                  unawaited(
+                                      SystemUiService.setVolumeKeyActive(v));
+                                }),
+                                enabled: defaultTargetPlatform !=
+                                    TargetPlatform.iOS,
+                                subtitle: defaultTargetPlatform ==
+                                        TargetPlatform.iOS
+                                    ? 'iOS 系统不开放音量键，无法翻页'
+                                    : null,
+                              ),
+                              switchRow(
+                                '上滑退出',
+                                _state.swipeUpExit,
+                                (v) => commit(() => _state.swipeUpExit = v),
+                              ),
+                              switchRow(
+                                '下滑书签',
+                                _state.swipeDownBookmark,
                                 (v) =>
-                                    commit(() => _state.volumeKeyFlip = v),
+                                    commit(() => _state.swipeDownBookmark = v),
+                              ),
+                              switchRow(
+                                '底部对齐',
+                                _state.bottomAlignLastPage,
+                                (v) => commit(
+                                    () => _state.bottomAlignLastPage = v),
+                              ),
+                              choiceRow(
+                                '菜单滑动条',
+                                _state.sliderByPage ? '按分页' : '按章节',
+                                () => pickOption(
+                                  title: '菜单滑动条',
+                                  options: const ['按章节', '按分页'],
+                                  current: _state.sliderByPage ? 1 : 0,
+                                  onSelected: (i) => commit(
+                                      () => _state.sliderByPage = i == 1),
+                                ),
                               ),
                               switchRow(
                                 '自动下一章',
@@ -3533,27 +3944,49 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                 ),
                             ]),
                             card('其他', [
-                              switchRow(
+                              choiceRow(
                                 '屏幕常亮',
-                                _state.screenWakelock,
+                                switch (_state.wakelockMinutes) {
+                                  0 => '关闭',
+                                  5 => '5 分钟',
+                                  10 => '10 分钟',
+                                  _ => '常亮',
+                                },
+                                () => pickOption(
+                                  title: '屏幕常亮',
+                                  options: const ['关闭', '5 分钟', '10 分钟', '常亮'],
+                                  current: switch (_state.wakelockMinutes) {
+                                    0 => 0,
+                                    5 => 1,
+                                    10 => 2,
+                                    _ => 3,
+                                  },
+                                  onSelected: (i) => commit(() {
+                                    _state.wakelockMinutes =
+                                        const [0, 5, 10, -1][i];
+                                    _applyWakelock();
+                                  }),
+                                ),
+                              ),
+                              switchRow(
+                                '锁定屏幕（竖屏）',
+                                _state.lockOrientation,
                                 (v) => commit(() {
-                                  _state.screenWakelock = v;
-                                  _applyWakelock();
+                                  _state.lockOrientation = v;
+                                  unawaited(
+                                      SystemChrome.setPreferredOrientations(
+                                          v
+                                              ? const [
+                                                  DeviceOrientation.portraitUp
+                                                ]
+                                              : const []));
                                 }),
                               ),
-                              entryRow('备份设置', () {
-                                Navigator.pop(pageContext);
-                                _backupReaderSettings();
-                              }),
-                              entryRow('恢复设置', () {
-                                Navigator.pop(pageContext);
-                                _restoreReaderSettings();
-                              }),
-                              entryRow('更改类型', () {
-                                Navigator.pop(pageContext);
-                                _showChangeTypeDialog(
-                                    context.read<ReaderProvider>());
-                              }),
+                              switchRow(
+                                '目录倒序',
+                                _state.tocReversed,
+                                (v) => commit(() => _state.tocReversed = v),
+                              ),
                             ]),
                           ],
                         ),
@@ -4510,209 +4943,29 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   ///
   /// 下载走的是 [ReaderProvider.cacheChapterRange]：逐章写进本地磁盘缓存，
   /// 已在缓存里的章节会跳过，所以重复下载同一区间不会浪费流量。
+  /// 批量下载（轻阅时光样式）—— 弹窗与进度条在
+  /// [showBatchDownloadDialog] 里，详情页「缓存书籍」也用它。
   void _showBatchDownloadSheet(ReaderProvider provider) {
-    final total = provider.chapters.length;
-    final current =
-        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
-    final remaining = total - current - 1;
-
-    Widget row(String label, VoidCallback onTap) {
-      return InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(label,
-                    style: const TextStyle(
-                        fontSize: 15, color: Color(0xFF222222))),
-              ),
-              const Icon(Icons.chevron_right,
-                  size: 20, color: Color(0xFFAAAAAA)),
-            ],
-          ),
-        ),
-      );
-    }
-
-    showDialog<void>(
-      context: context,
-      builder: (dialogContext) {
-        void pick(int count) {
-          Navigator.pop(dialogContext);
-          _runBatchDownload(provider, count);
-        }
-
-        return Dialog(
-          backgroundColor: Colors.white,
-          insetPadding:
-              const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(20),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text(
-                  '选择下载章节',
-                  style: TextStyle(
-                    fontSize: 17,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF222222),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF7F8FA),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      row('后20章', () => pick(20)),
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      row('后50章', () => pick(50)),
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      row('后100章', () => pick(100)),
-                      const Divider(height: 1, indent: 16, endIndent: 16),
-                      row('后面全部章节', () => pick(remaining)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFF7F8FA),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: row('自定义后多少章', () async {
-                    Navigator.pop(dialogContext);
-                    final count = await _askDownloadCount();
-                    if (count != null && count > 0 && mounted) {
-                      _runBatchDownload(provider, count);
-                    }
-                  }),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  style: TextButton.styleFrom(
-                    foregroundColor: const Color(0xFF222222),
-                    minimumSize: const Size(120, 44),
-                  ),
-                  child: const Text('取消', style: TextStyle(fontSize: 16)),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  /// 「自定义后多少章」的数字输入框。
-  Future<int?> _askDownloadCount() {
-    final controller = TextEditingController();
-    return showDialog<int>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('自定义后多少章'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          autofocus: true,
-          decoration: const InputDecoration(
-            hintText: '输入章节数，如 30',
-            isDense: true,
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              final n = int.tryParse(controller.text.trim());
-              Navigator.pop(ctx, n);
-            },
-            child: const Text('确定'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 跑批量下载：带进度条弹窗，可中途取消。
-  Future<void> _runBatchDownload(ReaderProvider provider, int count) async {
     final token = _token;
     if (token == null || token.isEmpty) {
       _toast('请先登录');
       return;
     }
-    final current =
-        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
-    final total = provider.chapters.length;
-    final start = current + 1;
-    if (start >= total || count <= 0) {
-      _toast('后面没有章节了');
-      return;
-    }
-    final actual = (start + count) > total ? total - start : count;
-
-    var done = 0;
-    var cancelled = false;
-    StateSetter? progressSetState;
-
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) {
-          progressSetState = setState;
-          return AlertDialog(
-            title: const Text('批量下载'),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                LinearProgressIndicator(
-                  value: actual == 0 ? 0 : done / actual,
-                ),
-                const SizedBox(height: 12),
-                Text('正在下载 $done/$actual 章'),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => cancelled = true,
-                child: const Text('取消'),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-
-    int downloaded = 0;
-    try {
-      downloaded = await provider.cacheChapterRange(
+    showBatchDownloadDialog(
+      context,
+      totalChapters: provider.chapters.length,
+      currentChapterIndex:
+          _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0),
+      runner: (start, count, {required onProgress, required isCancelled}) =>
+          provider.cacheChapterRange(
         token,
         start,
-        actual,
-        onProgress: (d) {
-          done = d;
-          progressSetState?.call(() {});
-        },
-        isCancelled: () => cancelled,
-      );
-    } finally {
-      if (mounted) Navigator.of(context, rootNavigator: true).pop();
-    }
-    if (!mounted) return;
-    _toast(cancelled ? '已取消，新下载 $downloaded 章' : '下载完成，新下载 $downloaded 章');
+        count,
+        onProgress: onProgress,
+        isCancelled: isCancelled,
+      ),
+      onToast: _toast,
+    );
   }
 
   /// 书源登录：取书源详情，按 loginUi / loginUrl 走 JS 登录或 WebView 登录，
@@ -4896,91 +5149,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         duration: const Duration(seconds: 2),
       ),
     );
-  }
-
-  /// 把阅读器的排版设置导出到剪贴板
-  Future<void> _backupReaderSettings() async {
-    final data = <String, dynamic>{
-      'fontSize': _state.fontSize,
-      'lineHeight': _state.lineHeight,
-      'theme': _state.theme,
-      'fontFamily': _state.fontFamily,
-      'boldText': _state.boldText,
-      'paragraphSpacing': _state.paragraphSpacing,
-      'firstLineIndent': _state.firstLineIndent,
-      'horizontalPadding': _state.horizontalPadding,
-      'topPadding': _state.topPadding,
-      'pageAnimType': _state.pageAnimType.id,
-      'showTopBar': _state.showTopBar,
-      'showBottomBar': _state.showBottomBar,
-      'showPageNumber': _state.showPageNumber,
-      'showParagraphComment': _state.showParagraphComment,
-      'brightness': _state.brightness,
-      'autoNext': _state.autoNext,
-      'autoPageInterval': _state.autoPageInterval,
-    };
-    final text = const JsonEncoder.withIndent('  ').convert(data);
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('阅读设置已复制到剪贴板'),
-        duration: Duration(seconds: 2),
-      ),
-    );
-  }
-
-  /// 从剪贴板恢复阅读设置
-  Future<void> _restoreReaderSettings() async {
-    final clip = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = clip?.text?.trim() ?? '';
-    if (text.isEmpty) {
-      _toast('剪贴板是空的');
-      return;
-    }
-    Map<String, dynamic> data;
-    try {
-      final decoded = jsonDecode(text);
-      if (decoded is! Map) throw const FormatException('不是对象');
-      data = Map<String, dynamic>.from(decoded);
-    } catch (_) {
-      _toast('剪贴板内容不是阅读设置 JSON');
-      return;
-    }
-    if (!mounted) return;
-    setState(() {
-      double? d(Object? v) => v is num ? v.toDouble() : null;
-      bool? b(Object? v) => v is bool ? v : null;
-      _state.fontSize = d(data['fontSize']) ?? _state.fontSize;
-      _state.lineHeight = d(data['lineHeight']) ?? _state.lineHeight;
-      _state.theme = (data['theme'] ?? _state.theme).toString();
-      _state.fontFamily = (data['fontFamily'] ?? _state.fontFamily).toString();
-      _state.boldText = b(data['boldText']) ?? _state.boldText;
-      _state.paragraphSpacing =
-          d(data['paragraphSpacing']) ?? _state.paragraphSpacing;
-      _state.firstLineIndent =
-          d(data['firstLineIndent']) ?? _state.firstLineIndent;
-      _state.horizontalPadding =
-          d(data['horizontalPadding']) ?? _state.horizontalPadding;
-      _state.topPadding = d(data['topPadding']) ?? _state.topPadding;
-      _state.pageAnimType =
-          PageAnimType.fromId(data['pageAnimType']?.toString()) ??
-              _state.pageAnimType;
-      _state.showTopBar = b(data['showTopBar']) ?? _state.showTopBar;
-      _state.showBottomBar = b(data['showBottomBar']) ?? _state.showBottomBar;
-      _state.showPageNumber =
-          b(data['showPageNumber']) ?? _state.showPageNumber;
-      _state.showParagraphComment =
-          b(data['showParagraphComment']) ?? _state.showParagraphComment;
-      _state.brightness = d(data['brightness']) ?? _state.brightness;
-      _state.autoNext = b(data['autoNext']) ?? _state.autoNext;
-      _state.autoPageInterval =
-          d(data['autoPageInterval']) ?? _state.autoPageInterval;
-    });
-    await _saveSettings();
-    if (!mounted) return;
-    _toast('阅读设置已恢复');
   }
 
   /// 显示运行日志（段评打不开 / 换源失败等都会记在这里）
@@ -5174,9 +5342,46 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
+  /// 把「更多设置」里的系统类开关一次性应用到原生侧。
+  /// 设置载入完成时、以及相关开关被改动后调用。
+  void _applySystemUiSettings() {
+    unawaited(SystemUiService.setStatusBarHidden(_state.hideStatusBar));
+    unawaited(SystemUiService.setVolumeKeyActive(_state.volumeKeyFlip));
+    if (_state.lockOrientation) {
+      // 锁定竖屏（SystemChrome 是 Flutter 内置能力，不用动原生）
+      unawaited(SystemChrome.setPreferredOrientations(const [
+        DeviceOrientation.portraitUp,
+      ]));
+    } else {
+      unawaited(SystemChrome.setPreferredOrientations(const []));
+    }
+    _applyWakelock();
+  }
+
+  /// 「屏幕常亮」四档：0 关 / -1 常亮 / 5 / 10（分钟）。
+  ///
+  /// 档位模式（5/10）是「N 分钟无翻页后自动放屏」：先开常亮并起一个
+  /// 倒计时，[_moveToPage] / 音量键等翻页动作会调 [_refreshWakelockTimer]
+  /// 重置计时。到点放屏后设置值不变 —— 下一次翻页又会重新点亮并开始计时，
+  /// 这正是轻阅时光档位档的行为。
   void _applyWakelock() {
-    // wakelock 屏幕常亮——后续可接入 wakelock_plus 插件
-    // 当前为占位方法，预留设置入口
+    _wakelockTimer?.cancel();
+    final minutes = _state.wakelockMinutes;
+    if (minutes == 0) {
+      unawaited(SystemUiService.setKeepScreenOn(false));
+      return;
+    }
+    unawaited(SystemUiService.setKeepScreenOn(true));
+    if (minutes > 0) {
+      _wakelockTimer = Timer(Duration(minutes: minutes), () {
+        unawaited(SystemUiService.setKeepScreenOn(false));
+      });
+    }
+  }
+
+  /// 翻页/点击时刷新档位倒计时（0 关 / -1 常亮时没有计时可刷）。
+  void _refreshWakelockTimer() {
+    if (_state.wakelockMinutes > 0) _applyWakelock();
   }
 
   /// 显示颜色选择器

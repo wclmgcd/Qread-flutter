@@ -13,6 +13,15 @@ import 'reader_theme.dart';
 /// 关键：分页引擎已经精确计算了每页的行数（以及段评气泡占的高度），
 /// 渲染端必须严格适配，不能超出可用区域。
 
+/// 气泡描边和条数数字共用的墨色。
+///
+/// 【为什么不直接用 secondaryText】secondaryText 是「次要文字」灰
+/// （浅色主题 0xFF999999），画成 0.7 像素的细描边在正文边上几乎看不见，
+/// 用户反馈「图标和数字颜色加深一点」。往主题正文色上靠 45%：浅色主题
+/// 变成深灰，深色主题也跟着提亮，不用分主题写死颜色。
+Color _bubbleInkColor(ReaderTheme theme) =>
+    Color.lerp(theme.secondaryText, theme.text, 0.45) ?? theme.text;
+
 /// 段评气泡
 ///
 /// 外观完全照书源下发的 SVG 来画：圆角方框 + 左侧小尾巴，中间是评论条数。
@@ -67,7 +76,7 @@ class CommentBubble extends StatelessWidget {
                   painter: _BubblePainter(
                     geometry: geo,
                     scale: scale,
-                    color: theme.secondaryText,
+                    color: _bubbleInkColor(theme),
                     label: comment.count,
                   ),
                 ),
@@ -198,7 +207,7 @@ class InlineCommentBubble extends StatelessWidget {
             painter: _BubblePainter(
               geometry: geo,
               scale: scale,
-              color: theme.secondaryText,
+              color: _bubbleInkColor(theme),
               label: comment.count,
             ),
           ),
@@ -299,6 +308,16 @@ class ContentRenderer {
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
     ValueChanged<String>? onImageTap,
+    // ---- 更多设置（轻阅时光对齐项） ----
+    /// 正文大标题的对齐（更多设置「标题对齐」）。
+    TextAlign titleAlign = TextAlign.center,
+    /// 页眉/页脚与正文之间的细分隔线。
+    bool showHeaderFooterDivider = false,
+    /// 页脚左/右两侧的时间与电量。
+    bool showFooterTime = true,
+    bool showFooterBattery = true,
+    /// 本章末页内容不满一页时贴底（顶部补空隙）。
+    bool bottomAlignLastPage = false,
   }) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -313,55 +332,84 @@ class ContentRenderer {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (showTopBar) buildChapterHeader(chapterTitle, theme, fontFamily),
-          if (showTopBar) const SizedBox(height: 6),
+          // 页眉分割线嵌在原有 6px 间距里（1px 线 + 5px 距），
+          // 总高度不变，分页预算不用跟着改。
+          if (showTopBar && showHeaderFooterDivider) ...[
+            Divider(height: 1, thickness: 1, color: theme.divider),
+            const SizedBox(height: 5),
+          ] else if (showTopBar)
+            const SizedBox(height: 6),
           // 使用 Expanded 限制文字区域高度，内部用 ClipRect 裁剪
           Expanded(
             child: ClipRect(
-              child: SingleChildScrollView(
-                physics: const NeverScrollableScrollPhysics(),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    for (final line in page.lines) ...[
-                      _buildTextLine(
-                        line: line,
-                        theme: theme,
-                        fontSize: fontSize,
-                        lineHeight: lineHeight,
-                        ttsParagraphIndex: ttsParagraphIndex,
-                        paragraphSpacing: paragraphSpacing,
-                        firstLineIndent: firstLineIndent,
-                        fontFamily: fontFamily,
-                        fontWeight: fontWeight,
-                        onCommentTap: onCommentTap,
-                        imageUrlBuilder: imageUrlBuilder,
-                        onImageTap: onImageTap,
+              // 「底部对齐」用 LayoutBuilder 量真实剩余高度，顶部补
+              // 「剩余 − 分页时累计的内容高度」的空隙 —— 不信引擎的预算值，
+              // 两边算法天然一致（详见 PageSlice.contentHeight）。
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final topPad = (bottomAlignLastPage &&
+                          page.isLastPageOfChapter &&
+                          page.contentHeight > 0)
+                      ? (constraints.maxHeight - page.contentHeight)
+                          .clamp(0.0, double.infinity)
+                      : 0.0;
+                  return SingleChildScrollView(
+                    physics: const NeverScrollableScrollPhysics(),
+                    child: Padding(
+                      padding: EdgeInsets.only(top: topPad),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          for (final line in page.lines) ...[
+                            _buildTextLine(
+                              line: line,
+                              theme: theme,
+                              fontSize: fontSize,
+                              lineHeight: lineHeight,
+                              ttsParagraphIndex: ttsParagraphIndex,
+                              paragraphSpacing: paragraphSpacing,
+                              firstLineIndent: firstLineIndent,
+                              fontFamily: fontFamily,
+                              fontWeight: fontWeight,
+                              onCommentTap: onCommentTap,
+                              imageUrlBuilder: imageUrlBuilder,
+                              onImageTap: onImageTap,
+                              titleAlign: titleAlign,
+                            ),
+                            // 小气泡已经嵌在文字行内（见 _buildTextLine），
+                            // 这里只把「神评论」横幅单独排在行下方。
+                            for (final comment
+                                in line.comments.where((c) => c.isBanner))
+                              CommentBubble(
+                                comment: comment,
+                                theme: theme,
+                                fontSize: fontSize,
+                                onTap: onCommentTap == null
+                                    ? null
+                                    : () => onCommentTap(comment),
+                              ),
+                            // 有横幅时，间距排在横幅**下面**（见分页引擎里的同款注释），
+                            // 否则横幅会比官方客户端低一个段间距
+                            if (line.comments.any((c) => c.isBanner))
+                              SizedBox(
+                                  height: line.isLastLineOfParagraph
+                                      ? paragraphSpacing
+                                      : 1.0),
+                          ],
+                        ],
                       ),
-                      // 小气泡已经嵌在文字行内（见 _buildTextLine），
-                      // 这里只把「神评论」横幅单独排在行下方。
-                      for (final comment
-                          in line.comments.where((c) => c.isBanner))
-                        CommentBubble(
-                          comment: comment,
-                          theme: theme,
-                          fontSize: fontSize,
-                          onTap: onCommentTap == null
-                              ? null
-                              : () => onCommentTap(comment),
-                        ),
-                      // 有横幅时，间距排在横幅**下面**（见分页引擎里的同款注释），
-                      // 否则横幅会比官方客户端低一个段间距
-                      if (line.comments.any((c) => c.isBanner))
-                        SizedBox(
-                            height: line.isLastLineOfParagraph
-                                ? paragraphSpacing
-                                : 1.0),
-                    ],
-                  ],
-                ),
+                    ),
+                  );
+                },
               ),
             ),
           ),
+          // 页脚分割线是额外占高的 6px（1px 线 + 5px 距），
+          // 分页引擎 showHeaderFooterDivider 已在可用高度里扣掉同一份。
+          if (showBottomBar && showHeaderFooterDivider) ...[
+            Divider(height: 1, thickness: 1, color: theme.divider),
+            const SizedBox(height: 5),
+          ],
           // 页脚固定在底部
           if (showBottomBar)
             _buildFooter(
@@ -370,6 +418,8 @@ class ContentRenderer {
               timeLabel: timeLabel,
               batteryLabel: batteryLabel,
               fontFamily: fontFamily,
+              showTime: showFooterTime,
+              showBattery: showFooterBattery,
             ),
         ],
       ),
@@ -490,6 +540,7 @@ class ContentRenderer {
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
     ValueChanged<String>? onImageTap,
+    TextAlign titleAlign = TextAlign.center,
   }) {
     // 【插图行】整行就是一张图，独占一页。
     // 高度由分页引擎给（= 正文可用高度），这里按 BoxFit.contain 缩放进框。
@@ -563,7 +614,7 @@ class ContentRenderer {
         ? Text(
             displayText,
             style: style,
-            textAlign: isTitle ? TextAlign.center : null,
+            textAlign: isTitle ? titleAlign : null,
           )
         // 有行内段评时改用 Row：气泡是固定宽度的尾部元素，文字用
         // Flexible 吃掉剩余宽度。气泡**不可能**再被挤到下一行 ——
@@ -577,7 +628,7 @@ class ContentRenderer {
                 child: Text(
                   displayText,
                   style: style,
-                  textAlign: isTitle ? TextAlign.center : null,
+                  textAlign: isTitle ? titleAlign : null,
                   // 单行硬约束：留给气泡的宽度由分页引擎按同一个
                   // SVG 包围盒预留（见 inlineCommentBubbleWidth），
                   // 正常情况下不会触发裁切。
@@ -618,6 +669,7 @@ class ContentRenderer {
     ValueChanged<ParagraphComment>? onCommentTap,
     String Function(String src)? imageUrlBuilder,
     ValueChanged<String>? onImageTap,
+    TextAlign titleAlign = TextAlign.center,
   }) {
     // 【插图段】滚动模式没有「页」的概念，交给图片按自身宽高比铺满行宽。
     if (paragraph.isImage) {
@@ -682,7 +734,7 @@ class ContentRenderer {
                   ),
               ],
             ),
-            textAlign: isTitle ? TextAlign.center : TextAlign.justify,
+            textAlign: isTitle ? titleAlign : TextAlign.justify,
             style: TextStyle(
               fontSize: effectiveFontSize,
               color: theme.text,
@@ -721,6 +773,8 @@ class ContentRenderer {
     required String timeLabel,
     required String batteryLabel,
     String? fontFamily,
+    bool showTime = true,
+    bool showBattery = true,
   }) {
     final style = TextStyle(
       fontSize: 11,
@@ -730,18 +784,19 @@ class ContentRenderer {
     );
     return Row(
       children: [
-        Text(timeLabel, style: style),
+        if (showTime) Text(timeLabel, style: style),
         const Spacer(),
         Text(pageIndicator, style: style),
         const Spacer(),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.battery_std, size: 13, color: theme.secondaryText),
-            const SizedBox(width: 4),
-            Text(batteryLabel, style: style),
-          ],
-        ),
+        if (showBattery)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.battery_std, size: 13, color: theme.secondaryText),
+              const SizedBox(width: 4),
+              Text(batteryLabel, style: style),
+            ],
+          ),
       ],
     );
   }

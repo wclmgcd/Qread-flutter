@@ -71,6 +71,25 @@ class PagedReader extends StatefulWidget {
   final FontWeight fontWeight;
   final ValueChanged<ParagraphComment>? onCommentTap;
 
+  /// 正文大标题对齐（更多设置「标题对齐」）。
+  final TextAlign titleAlign;
+
+  /// 页眉/页脚与正文之间的细分隔线。
+  final bool showHeaderFooterDivider;
+
+  /// 页脚左侧时间 / 右侧电量。
+  final bool showFooterTime;
+  final bool showFooterBattery;
+
+  /// 本章末页内容不满一页时贴底（顶部补空隙）。
+  final bool bottomAlignLastPage;
+
+  /// 页脚「显示进度」四档（0 关/1 本章/2 全书/3 本章+全书）
+  /// 及算全书百分比所需的章节位置。
+  final int progressMode;
+  final int chapterIndex;
+  final int totalChapters;
+
   /// 正文插图的地址构造器（原始 src → 可加载的完整 URL）。
   ///
   /// 由阅读页注入：只有它知道当前 token、书源，才能拼出官方的
@@ -107,6 +126,14 @@ class PagedReader extends StatefulWidget {
     this.fontFamily,
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
+    this.titleAlign = TextAlign.center,
+    this.showHeaderFooterDivider = false,
+    this.showFooterTime = true,
+    this.showFooterBattery = true,
+    this.bottomAlignLastPage = false,
+    this.progressMode = 1,
+    this.chapterIndex = 0,
+    this.totalChapters = 0,
     this.imageUrlBuilder,
     this.onImageTap,
   }) : super(key: key);
@@ -229,6 +256,15 @@ class _PagedReaderState extends State<PagedReader>
       widget.showPageNumber,
       widget.fontFamily,
       widget.fontWeight,
+      // 这些也画在页面上：变了必须重抓仿真快照
+      widget.titleAlign,
+      widget.showHeaderFooterDivider,
+      widget.showFooterTime,
+      widget.showFooterBattery,
+      widget.bottomAlignLastPage,
+      widget.progressMode,
+      widget.chapterIndex,
+      widget.totalChapters,
     );
   }
 
@@ -399,7 +435,13 @@ class _PagedReaderState extends State<PagedReader>
         fontSize: widget.fontSize,
         lineHeight: widget.lineHeight,
         chapterTitle: widget.chapterTitle,
-        pageIndicator: '$currentDisplay/${widget.totalPages}',
+        pageIndicator: ReaderState.progressLabel(
+          mode: widget.progressMode,
+          currentDisplay: currentDisplay,
+          totalPages: widget.totalPages,
+          chapterIndex: widget.chapterIndex,
+          totalChapters: widget.totalChapters,
+        ),
         timeLabel: widget.timeLabel,
         batteryLabel: widget.batteryLabel,
         ttsParagraphIndex: widget.ttsParagraphIndex,
@@ -414,6 +456,11 @@ class _PagedReaderState extends State<PagedReader>
         fontFamily: widget.fontFamily,
         fontWeight: widget.fontWeight,
         onCommentTap: widget.onCommentTap,
+        titleAlign: widget.titleAlign,
+        showHeaderFooterDivider: widget.showHeaderFooterDivider,
+        showFooterTime: widget.showFooterTime,
+        showFooterBattery: widget.showFooterBattery,
+        bottomAlignLastPage: widget.bottomAlignLastPage,
         imageUrlBuilder: widget.imageUrlBuilder,
         onImageTap: widget.onImageTap,
       ),

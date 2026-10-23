@@ -48,7 +48,7 @@ class DiscoverProvider extends ChangeNotifier {
   String? get currentCategoryUrl => _currentCategoryUrl;
 
   // ============================================================
-  // 当前书源的分类列表（内存，不持久化）
+  // 当前书源的分类列表（内存 + 磁盘缓存：冷启动先贴磁盘再拉网络）
   // ============================================================
   List<ExploreCategory> _categories = [];
   bool _categoriesLoading = false;
@@ -185,6 +185,16 @@ class DiscoverProvider extends ChangeNotifier {
   String _cacheScope(String accessToken) =>
       LocalCacheService.instance.scopedKey('${accessToken}_discover');
 
+  /// 分类的磁盘缓存键（按书源分）。
+  String _categoriesCacheKey(String accessToken, String sourceUrl) =>
+      'discover_categories_${_cacheScope(accessToken)}_'
+      '${LocalCacheService.instance.scopedKey(sourceUrl)}';
+
+  /// 首屏书籍的磁盘缓存键（按书源+分类分）。
+  String _booksCacheKey(String accessToken, String src, String cat) =>
+      'discover_books_${_cacheScope(accessToken)}_'
+      '${LocalCacheService.instance.scopedKey('$src|$cat')}';
+
   // ============================================================
   // 持久化键
   // ============================================================
@@ -315,10 +325,16 @@ class DiscoverProvider extends ChangeNotifier {
   }
 
   /// 切完书源/分类后由 UI 主动触发：拉分类 → 校正选中 → 拉书籍。
+  ///
+  /// 【先贴磁盘缓存再走网络】分类和首屏书籍都只在内存里，冷启动进发现页
+  /// 必转圈 —— 用户反馈「每次打开都重新连接」。现在内存为空时先从磁盘
+  /// 贴上一次的缓存（秒出），网络回来后原地换新；网络失败也不清空已贴
+  /// 上的内容（见 [loadCategories] / [reloadBooks] 的失败分支）。
   Future<void> reloadAfterSwitch(String accessToken) async {
     final url = _currentSourceUrl;
     if (url == null) return;
     if (_categories.isEmpty) {
+      await _readCategoriesCache(accessToken, url);
       await loadCategories(accessToken, url);
     }
     // 只认**可点**的分类：分组标题（url 为空）和选择器不能当分类用，
@@ -333,7 +349,47 @@ class DiscoverProvider extends ChangeNotifier {
     if (!stillValid) {
       await setCurrentCategory(usable.first.url);
     }
+    if (_books.isEmpty) {
+      await _readBooksCache(accessToken, url, _currentCategoryUrl!);
+    }
     await reloadBooks(accessToken);
+  }
+
+  /// 从磁盘贴上一次的分类（内存里已有就不动）。
+  Future<void> _readCategoriesCache(
+      String accessToken, String sourceUrl) async {
+    final raw = await LocalCacheService.instance
+        .readJsonList(_categoriesCacheKey(accessToken, sourceUrl));
+    if (raw == null || _categories.isNotEmpty) return;
+    final items = <ExploreCategory>[];
+    for (final e in raw) {
+      if (e is Map) {
+        items.add(ExploreCategory.fromJson(Map<String, dynamic>.from(e)));
+      }
+    }
+    if (items.isEmpty) return;
+    _categories = items;
+    _groupsCache = null;
+    final n = groups.length;
+    _groupIndex = n == 0 ? 0 : _groupIndex.clamp(0, n - 1);
+    notifyListeners();
+  }
+
+  /// 从磁盘贴上一次的首屏书籍（内存里已有就不动）。
+  Future<void> _readBooksCache(
+      String accessToken, String src, String cat) async {
+    final raw = await LocalCacheService.instance
+        .readJsonList(_booksCacheKey(accessToken, src, cat));
+    if (raw == null || _books.isNotEmpty) return;
+    final items = <SearchResult>[];
+    for (final e in raw) {
+      if (e is Map) {
+        items.add(SearchResult.fromJson(Map<String, dynamic>.from(e)));
+      }
+    }
+    if (items.isEmpty) return;
+    _books = items;
+    notifyListeners();
   }
 
   // ============================================================
@@ -352,10 +408,12 @@ class DiscoverProvider extends ChangeNotifier {
         sourceUrl,
       );
       if (result['isSuccess'] != true) {
-        _categories = [];
-        _groupsCache = null;
-        _groupIndex = 0;
-        _categoriesError = '获取发现分类失败';
+        // 已经贴着磁盘缓存时不清空 —— 一次网络抖动不该把首屏抹成报错。
+        if (_categories.isEmpty) {
+          _groupsCache = null;
+          _groupIndex = 0;
+          _categoriesError = '获取发现分类失败';
+        }
         return;
       }
       final data = result['data'];
@@ -368,8 +426,13 @@ class DiscoverProvider extends ChangeNotifier {
       // 只把索引夹回合法范围 —— 换源时是 setCurrentSource 负责归零。
       final n = groups.length;
       _groupIndex = n == 0 ? 0 : _groupIndex.clamp(0, n - 1);
+      unawaited(LocalCacheService.instance.saveJson(
+        _categoriesCacheKey(accessToken, sourceUrl),
+        [for (final c in _categories) c.toJson()],
+      ));
     } catch (e) {
-      _categoriesError = friendlyError(e);
+      // 同上：有缓存兜底时静默，没缓存才报错。
+      if (_categories.isEmpty) _categoriesError = friendlyError(e);
     } finally {
       _categoriesLoading = false;
       notifyListeners();
@@ -397,8 +460,14 @@ class DiscoverProvider extends ChangeNotifier {
       _books = _parseBooks(response);
       _booksPage = 2;
       _booksHasMore = _parseHasMore(response, _books.length);
+      // 首屏落盘（限 60 条，够贴一屏半），下次冷启动先贴缓存再刷新。
+      unawaited(LocalCacheService.instance.saveJson(
+        _booksCacheKey(accessToken, src, cat),
+        [for (final b in _books.take(60)) b.toJson()],
+      ));
     } catch (e) {
-      _booksError = friendlyError(e);
+      // 有磁盘缓存贴上时就别用报错盖掉它（见 reloadAfterSwitch 的注释）。
+      if (_books.isEmpty) _booksError = friendlyError(e);
     } finally {
       _booksLoading = false;
       notifyListeners();

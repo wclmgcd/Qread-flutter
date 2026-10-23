@@ -9,11 +9,13 @@ import '../../models/book.dart';
 import '../../models/book_group.dart';
 import '../../models/reader_launch_args.dart';
 import '../../providers/bookshelf_provider.dart';
+import '../../providers/reader_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/book_update_prefs.dart';
 import '../../services/error_text.dart';
 import '../../services/local_cache_service.dart';
+import '../../widgets/batch_download_dialog.dart';
 import '../../widgets/book_cover.dart';
 import '../../widgets/book_detail_style.dart';
 import '../login/source_login_page.dart';
@@ -1077,27 +1079,58 @@ class _BookInfoPageState extends State<BookInfoPage> {
     }
   }
 
-  /// 加入服务端缓存队列（最多 5 本）
+  /// 「缓存书籍」入口。
+  ///
+  /// 【为什么不再调服务端 addCache】那个接口是权限受限的服务端预缓存队列，
+  /// 普通用户点了只回一句「无权限」。用户要的就是阅读页菜单里的那套本地
+  /// 批量下载，所以这里直接把批量下载对话框搬过来共用（runner 委托给
+  /// 应用级 [ReaderProvider]，缓存落到和阅读页完全相同的磁盘位置）。
+  ///
+  /// 【目录从哪来】批量下载需要章节总数。详情页挂在阅读页之上时，provider
+  /// 里就是这本书、目录现成；从书架冷启动进来时 provider 可能还是空的或
+  /// 是别的书 —— 这种情况先 setBook + 拉一次目录（不加载正文）。
   Future<void> _cacheBook() async {
+    if (_token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
     final url = _book.bookUrl ?? '';
     if (url.isEmpty) {
       _toast('缺少书籍地址');
       return;
     }
-    setState(() => _busy = true);
-    try {
-      final resp = await ApiService.instance.addCache(_token, url);
-      if (resp['isSuccess'] == false) {
-        // 服务端直接回中文原因（最多5个缓存任务 / 已在缓存进程中 / …）
-        _toast(friendlyServerMessage(resp['errorMsg']?.toString()));
-      } else {
-        _toast('已加入缓存队列');
+    final provider = context.read<ReaderProvider>();
+    if (provider.book?.bookUrl != url || provider.chapters.isEmpty) {
+      setState(() => _busy = true);
+      try {
+        if (provider.book?.bookUrl != url) provider.setBook(_book);
+        await provider.loadChapters(_token, loadInitialContent: false);
+      } catch (e) {
+        _toast('获取目录失败：${friendlyError(e)}');
+        return;
+      } finally {
+        if (mounted) setState(() => _busy = false);
       }
-    } catch (e) {
-      _toast('缓存失败：${friendlyError(e)}');
-    } finally {
-      if (mounted) setState(() => _busy = false);
     }
+    if (!mounted) return;
+    if (provider.chapters.isEmpty) {
+      _toast('目录为空，无法下载');
+      return;
+    }
+    showBatchDownloadDialog(
+      context,
+      totalChapters: provider.chapters.length,
+      currentChapterIndex: _book.durChapterIndex ?? 0,
+      runner: (start, count, {required onProgress, required isCancelled}) =>
+          provider.cacheChapterRange(
+        _token,
+        start,
+        count,
+        onProgress: onProgress,
+        isCancelled: isCancelled,
+      ),
+      onToast: _toast,
+    );
   }
 
   Future<void> _changeType() async {

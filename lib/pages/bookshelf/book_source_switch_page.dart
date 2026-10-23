@@ -39,6 +39,16 @@ class BookSourceSwitchPage extends StatefulWidget {
 class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
   final _keywordCtrl = TextEditingController();
 
+  /// 搜索结果缓存（会话级）：同一本书 + 同一关键词第二次进换源页直接贴，
+  /// 不再把几十个源全跑一遍 —— 用户反馈「第二次搜索又要重新搜索」。
+  ///
+  /// 【键里为什么带 origin】搜索会排除当前来源自己，换过源之后同一关键词
+  /// 的候选集就变了。
+  /// 【为什么只在完整跑完后写入】分批并发里单源失败会被静默吞成空列表，
+  /// 半途缓存会把「那次某源刚好挂了」冻结一整个会话；想刷新就再提交一次
+  /// 关键词（onSubmitted 走 force）。
+  static final Map<String, List<SearchResult>> _resultCache = {};
+
   List<BookSource> _sources = [];
   List<SearchResult> _results = [];
   bool _loading = true;
@@ -64,7 +74,22 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
 
   String get _token => context.read<UserProvider>().token ?? '';
 
-  Future<void> _start() async {
+  Future<void> _start({bool force = false}) async {
+    final keyword = _keywordCtrl.text.trim();
+    final cacheKey = '${_book.origin ?? ''}|$keyword';
+    if (!force) {
+      final cached = _resultCache[cacheKey];
+      if (cached != null) {
+        setState(() {
+          _loading = false;
+          _results = cached;
+          _done = 0;
+          _total = 0;
+          _error = cached.isEmpty ? '没有找到其它来源的同名书籍' : null;
+        });
+        return;
+      }
+    }
     setState(() {
       _loading = true;
       _error = null;
@@ -106,7 +131,6 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
       }
       setState(() => _total = targets.length);
 
-      final keyword = _keywordCtrl.text.trim();
       final merged = <String, SearchResult>{};
       // 分批并发，避免一次性打爆后端
       for (var i = 0; i < targets.length; i += maxConcurrent) {
@@ -145,6 +169,9 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
           if (_results.isEmpty) _error = '没有找到其它来源的同名书籍';
         });
       }
+      // 完整跑完才进缓存（半途失败的结果不冻结合话），空结果也记 ——
+      // 「没有候选」本身也是个值得秒出的答案。
+      _resultCache[cacheKey] = List<SearchResult>.of(_results);
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -230,7 +257,7 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
           IconButton(
             tooltip: '重新搜索',
             icon: const Icon(Icons.refresh),
-            onPressed: _switching ? null : _start,
+            onPressed: _switching ? null : () => _start(force: true),
           ),
         ],
         bottom: PreferredSize(
@@ -240,7 +267,7 @@ class _BookSourceSwitchPageState extends State<BookSourceSwitchPage> {
             child: TextField(
               controller: _keywordCtrl,
               textInputAction: TextInputAction.search,
-              onSubmitted: (_) => _start(),
+              onSubmitted: (_) => _start(force: true),
               decoration: InputDecoration(
                 isDense: true,
                 hintText: '搜索书名',

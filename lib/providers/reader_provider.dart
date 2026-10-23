@@ -195,6 +195,8 @@ class ReaderProvider extends ChangeNotifier {
             .toSet();
       }
 
+      _cacheTocToDisk();
+
       _loadingChapters = false;
       notifyListeners();
       if (loadInitialContent) {
@@ -236,7 +238,18 @@ class ReaderProvider extends ChangeNotifier {
     }
     _chapters = fresh;
     notifyListeners();
+    _cacheTocToDisk();
     return fresh.length - oldCount;
+  }
+
+  /// 把当前目录写进磁盘缓存 —— 目录弹层下次打开先放它，不再干等网络。
+  void _cacheTocToDisk() {
+    final url = _book?.bookUrl ?? '';
+    if (url.isEmpty || _chapters.isEmpty) return;
+    unawaited(LocalCacheService.instance.writeChapterToc(
+      url,
+      [for (final c in _chapters) c.toJson()],
+    ));
   }
 
   /// 读「已读章节」失败不该影响打开书 —— 兜成空串。

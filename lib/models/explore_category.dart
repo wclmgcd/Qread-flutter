@@ -63,6 +63,26 @@ class ExploreCategory {
     return b;
   }
 
+  /// 磁盘缓存用（发现页冷启动先贴缓存再拉网络，见 DiscoverProvider）。
+  Map<String, dynamic> toJson() => {
+        'title': title,
+        'url': url,
+        'basis': basis,
+        if (type != null) 'type': type,
+        if (wrapBefore) 'wrapBefore': true,
+      };
+
+  factory ExploreCategory.fromJson(Map<String, dynamic> json) =>
+      ExploreCategory(
+        title: (json['title'] ?? '').toString(),
+        url: (json['url'] ?? '').toString(),
+        basis: json['basis'] is num
+            ? (json['basis'] as num).toDouble()
+            : defaultBasis,
+        type: json['type']?.toString(),
+        wrapBefore: json['wrapBefore'] == true,
+      );
+
   /// 解析 `/getBookSourcesExploreUrl` 返回的 `data.found`。
   ///
   /// 【三种形态，缺一不可】`found` 长什么样取决于书源怎么写 `exploreUrl`。

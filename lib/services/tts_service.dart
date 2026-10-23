@@ -5,6 +5,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 
 import '../models/tts_engine.dart';
 import 'api_service.dart';
+import 'app_log.dart';
 import 'storage_service.dart';
 
 enum TtsState { stopped, playing, paused }
@@ -34,6 +35,15 @@ class TtsService extends ChangeNotifier {
   static const String selectedEngineKey = 'tts_selected_engine_id';
 
   String? _accessToken;
+
+  /// 引擎选择的版本号。
+  ///
+  /// 【防竞态】loadSelectedHttpEngine 里「读本地 id → 网络拉引擎列表 →
+  /// 写回 _httpEngine」中间隔着一次网络请求；用户若在这期间另选了引擎，
+  /// 慢吞吞的旧请求回来后会把新选择覆盖掉 —— 表现就是「点了没反应，
+  /// 还在用旧引擎」。setHttpEngine 先 bump 版本号，load 落地前比对，
+  /// 对不上就丢弃本次结果。
+  int _engineEpoch = 0;
 
   TtsState _state = TtsState.stopped;
   TtsState get state => _state;
@@ -150,6 +160,7 @@ class TtsService extends ChangeNotifier {
   /// 阅读页进入朗读前调用一次即可；引擎在「我的」里被删掉时会自动退回系统语音。
   Future<void> loadSelectedHttpEngine(String? token) async {
     _accessToken = token;
+    final epoch = ++_engineEpoch;
     if (token == null || token.isEmpty) return;
     final storage = await StorageService.instance;
     final id = storage.readString(selectedEngineKey);
@@ -162,6 +173,8 @@ class TtsService extends ChangeNotifier {
     }
     try {
       final list = await ApiService.instance.getAllTts(token);
+      // 网络返回时用户可能已另选了引擎，旧结果落地会把新选择冲掉
+      if (epoch != _engineEpoch) return;
       TtsEngine? found;
       for (final e in list) {
         if (e.id == id) {
@@ -170,6 +183,9 @@ class TtsService extends ChangeNotifier {
         }
       }
       _httpEngine = found;
+      if (found == null) {
+        AppLog.add('朗读引擎：本地选的引擎在服务端已不存在，回退系统语音');
+      }
     } catch (_) {
       // 后端不可达时保持原状，别把用户的选中项清掉
     }
@@ -178,14 +194,17 @@ class TtsService extends ChangeNotifier {
 
   /// 选择/取消一个 HTTP 朗读引擎（null = 用系统语音）
   Future<void> setHttpEngine(TtsEngine? engine) async {
+    _engineEpoch++;
     final storage = await StorageService.instance;
     final id = engine?.id ?? '';
     if (id.isEmpty) {
       await storage.remove(selectedEngineKey);
       _httpEngine = null;
+      AppLog.add('朗读引擎：切换为系统语音');
     } else {
       await storage.setString(selectedEngineKey, id);
       _httpEngine = engine;
+      AppLog.add('朗读引擎：切换为 ${engine!.name}');
     }
     notifyListeners();
   }
@@ -256,7 +275,9 @@ class TtsService extends ChangeNotifier {
         await _player.play(UrlSource(url));
         return;
       } catch (e) {
-        // 引擎挂了就退回系统语音，别让用户点了朗读一点声音都没有
+        // 引擎挂了就退回系统语音，别让用户点了朗读一点声音都没有；
+        // 但必须留下痕迹，否则「选了引擎没效果」根本无从排查
+        AppLog.add('HTTP 朗读失败（${engine.name}），已回退系统语音：$e');
         debugPrint('HTTP TTS 失败，回退系统语音: $e');
       }
     }

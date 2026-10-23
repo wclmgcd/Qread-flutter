@@ -414,8 +414,16 @@ class QreadFlutterViewController: FlutterViewController {
   /// 当前是否隐藏 home indicator。默认 false —— 只有阅读页会把它打开。
   private var homeIndicatorHidden = false
 
+  /// 当前是否隐藏状态栏（阅读页「更多设置 → 隐藏状态栏」）。默认 false。
+  /// 依赖 Info.plist 的 UIViewControllerBasedStatusBarAppearance = true。
+  private var statusBarHidden = false
+
   override var prefersHomeIndicatorAutoHidden: Bool {
     return homeIndicatorHidden
+  }
+
+  override var prefersStatusBarHidden: Bool {
+    return statusBarHidden
   }
 
   // 【注意】这里原本还有一个 override：
@@ -491,6 +499,19 @@ class QreadFlutterViewController: FlutterViewController {
       case "showSystemBars":
         self.setHomeIndicatorHidden(false)
         result(true)
+      case "setStatusBarHidden":
+        let hidden = (call.arguments as? [String: Any])?["hidden"] as? Bool ?? false
+        self.setStatusBarHidden(hidden)
+        result(true)
+      case "setKeepScreenOn":
+        let on = (call.arguments as? [String: Any])?["on"] as? Bool ?? false
+        // 屏幕常亮：禁止系统自动锁屏。离开阅读页时 Dart 会调回 false。
+        UIApplication.shared.isIdleTimerDisabled = on
+        result(true)
+      case "setVolumeKeyActive":
+        // iOS 没有公开的音量键事件 API（音量键归系统管），
+        // 明确回 false，Dart 侧据此把「音量键翻页」一行置灰。
+        result(false)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -521,6 +542,14 @@ class QreadFlutterViewController: FlutterViewController {
     // 改完要主动通知系统，否则得等下一次转场才生效
     DispatchQueue.main.async { [weak self] in
       self?.setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+  }
+
+  private func setStatusBarHidden(_ hidden: Bool) {
+    if statusBarHidden == hidden { return }
+    statusBarHidden = hidden
+    DispatchQueue.main.async { [weak self] in
+      self?.setNeedsStatusBarAppearanceUpdate()
     }
   }
 }

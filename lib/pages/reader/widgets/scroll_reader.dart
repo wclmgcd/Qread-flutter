@@ -34,6 +34,16 @@ class ScrollReader extends StatelessWidget {
   final FontWeight fontWeight;
   final ValueChanged<ParagraphComment>? onCommentTap;
 
+  /// 正文大标题对齐（更多设置「标题对齐」），分页/滚动共用。
+  final TextAlign titleAlign;
+
+  /// 页眉/页脚与正文之间的细分隔线。
+  final bool showHeaderFooterDivider;
+
+  /// 页脚左侧时间 / 右侧电量。
+  final bool showFooterTime;
+  final bool showFooterBattery;
+
   /// 正文插图的地址构造器（原始 src → 可加载的完整 URL），由阅读页注入。
   /// 见 PagedReader.imageUrlBuilder 的同款说明。
   final String Function(String src)? imageUrlBuilder;
@@ -61,6 +71,10 @@ class ScrollReader extends StatelessWidget {
     this.fontFamily,
     this.fontWeight = FontWeight.normal,
     this.onCommentTap,
+    this.titleAlign = TextAlign.center,
+    this.showHeaderFooterDivider = false,
+    this.showFooterTime = true,
+    this.showFooterBattery = true,
     this.imageUrlBuilder,
     this.onImageTap,
   }) : super(key: key);
@@ -85,7 +99,12 @@ class ScrollReader extends StatelessWidget {
             theme,
             fontFamily,
           ),
-          const SizedBox(height: 6),
+          // 与分页模式同款：分割线嵌在原有 6px 间距里（1px 线 + 5px 距）
+          if (showHeaderFooterDivider) ...[
+            Divider(height: 1, thickness: 1, color: theme.divider),
+            const SizedBox(height: 5),
+          ] else
+            const SizedBox(height: 6),
           Expanded(
             child: ListView.builder(
               controller: scrollController,
@@ -103,13 +122,19 @@ class ScrollReader extends StatelessWidget {
                   fontFamily: fontFamily,
                   fontWeight: fontWeight,
                   onCommentTap: onCommentTap,
+                  titleAlign: titleAlign,
                   imageUrlBuilder: imageUrlBuilder,
                   onImageTap: onImageTap,
                 );
               },
             ),
           ),
-          const SizedBox(height: 8),
+          // 页脚分割线（1px 线 + 5px 距），与分页模式同一观感
+          if (showHeaderFooterDivider) ...[
+            const SizedBox(height: 5),
+            Divider(height: 1, thickness: 1, color: theme.divider),
+          ] else
+            const SizedBox(height: 8),
           _buildFooter(),
         ],
       ),
@@ -124,18 +149,19 @@ class ScrollReader extends StatelessWidget {
     );
     return Row(
       children: [
-        Text(timeLabel, style: style),
+        if (showFooterTime) Text(timeLabel, style: style),
         const Spacer(),
         Text(pageIndicator, style: style),
         const Spacer(),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.battery_std, size: 13, color: theme.secondaryText),
-            const SizedBox(width: 4),
-            Text(batteryLabel, style: style),
-          ],
-        ),
+        if (showFooterBattery)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.battery_std, size: 13, color: theme.secondaryText),
+              const SizedBox(width: 4),
+              Text(batteryLabel, style: style),
+            ],
+          ),
       ],
     );
   }

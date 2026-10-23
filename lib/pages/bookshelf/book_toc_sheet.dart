@@ -1,5 +1,8 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
@@ -8,6 +11,7 @@ import '../../models/reader_launch_args.dart';
 import '../../services/api_service.dart';
 import '../../services/chapter_cache_export.dart';
 import '../../services/error_text.dart';
+import '../../services/export_file_saver.dart';
 import '../../services/local_cache_service.dart';
 import '../../widgets/book_cover.dart';
 import '../../widgets/book_detail_style.dart';
@@ -21,10 +25,25 @@ class BookTocSheet extends StatefulWidget {
     Key? key,
     required this.book,
     required this.token,
+    this.initialChapters,
+    this.initialAscending = true,
+    this.onOrderChanged,
   }) : super(key: key);
 
   final Book book;
   final String token;
+
+  /// 调用方手里已有的目录（阅读页传 provider.chapters）。
+  ///
+  /// 传了就先直接渲染、后台再静默刷新 —— 弹层秒开，不用干等网络。
+  /// 不传（书籍详情页）则先试磁盘目录缓存，同样秒开。
+  final List<Chapter>? initialChapters;
+
+  /// 目录的初始排序（阅读页「更多设置 → 目录倒序」会把持久化的默认值传进来）。
+  final bool initialAscending;
+
+  /// 用户在弹层里点了「正序/倒序」按钮后回调，调用方负责持久化。
+  final ValueChanged<bool>? onOrderChanged;
 
   @override
   State<BookTocSheet> createState() => _BookTocSheetState();
@@ -34,13 +53,14 @@ class _BookTocSheetState extends State<BookTocSheet> {
   int _tab = 0;
   bool _loading = true;
   bool _refreshing = false;
-  bool _ascending = true;
+  late bool _ascending = widget.initialAscending;
   String? _error;
   String _query = '';
 
   List<Chapter> _chapters = [];
   List<Bookmark> _bookmarks = [];
   Set<int> _readIndices = {};
+  Set<int> _cachedIndices = {};
   bool _bookmarksLoaded = false;
 
   final _searchCtl = TextEditingController();
@@ -49,7 +69,13 @@ class _BookTocSheetState extends State<BookTocSheet> {
   @override
   void initState() {
     super.initState();
-    _load();
+    final initial = widget.initialChapters;
+    if (initial != null && initial.isNotEmpty) {
+      _chapters = List.of(initial);
+      _loading = false;
+    }
+    unawaited(_loadCachedIndices());
+    unawaited(_load());
   }
 
   @override
@@ -62,6 +88,17 @@ class _BookTocSheetState extends State<BookTocSheet> {
   String get _bookUrl => widget.book.bookUrl ?? '';
   String get _origin => widget.book.origin ?? '';
 
+  /// 「已缓存 ✓」的数据源：本地章节缓存里出现过的章节号。
+  Future<void> _loadCachedIndices() async {
+    if (_bookUrl.isEmpty) return;
+    try {
+      final indices =
+          await LocalCacheService.instance.cachedChapterIndices(_bookUrl);
+      if (!mounted || indices.isEmpty) return;
+      setState(() => _cachedIndices = indices);
+    } catch (_) {}
+  }
+
   Future<void> _load({bool refresh = false}) async {
     if (widget.token.isEmpty || _bookUrl.isEmpty || _origin.isEmpty) {
       setState(() {
@@ -70,8 +107,23 @@ class _BookTocSheetState extends State<BookTocSheet> {
       });
       return;
     }
+    // 手里没有列表时先试磁盘缓存 —— 目录弹层秒开的关键
+    if (!refresh && _chapters.isEmpty) {
+      try {
+        final cached = await LocalCacheService.instance.readChapterToc(_bookUrl);
+        if (cached != null && cached.isNotEmpty && mounted) {
+          setState(() {
+            _chapters = cached.map(Chapter.fromJson).toList();
+            _loading = false;
+          });
+          _jumpToCurrent();
+        }
+      } catch (_) {}
+    }
+    // 已经有列表可看时，网络刷新转入后台 —— 失败也不清屏
+    final hasList = _chapters.isNotEmpty;
     setState(() {
-      if (refresh) {
+      if (hasList) {
         _refreshing = true;
       } else {
         _loading = true;
@@ -94,13 +146,19 @@ class _BookTocSheetState extends State<BookTocSheet> {
         _loading = false;
         _refreshing = false;
       });
+      unawaited(LocalCacheService.instance.writeChapterToc(
+        _bookUrl,
+        [for (final c in chapters) c.toJson()],
+      ));
       _jumpToCurrent();
     } catch (e) {
       if (!mounted) return;
       setState(() {
         _loading = false;
         _refreshing = false;
-        _error = '目录加载失败：${friendlyError(e)}';
+        if (_chapters.isEmpty) {
+          _error = '目录加载失败：${friendlyError(e)}';
+        }
       });
     }
   }
@@ -431,7 +489,10 @@ class _BookTocSheetState extends State<BookTocSheet> {
                 ),
               const SizedBox(width: 8),
               GestureDetector(
-                onTap: () => setState(() => _ascending = !_ascending),
+                onTap: () {
+                  setState(() => _ascending = !_ascending);
+                  widget.onOrderChanged?.call(_ascending);
+                },
                 child: Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -520,7 +581,8 @@ class _BookTocSheetState extends State<BookTocSheet> {
             ? BookDetailStyle.sub(context)
             : BookDetailStyle.text(context);
     final subtitle = _chapterSubtitle(chapter);
-    final showCheck = _readIndices.contains(index) || current;
+    // 行尾 ✓ = 这章已下载到本地缓存（轻阅时光同款标记语义）
+    final showCheck = _cachedIndices.contains(index);
     return InkWell(
       onTap: () => Navigator.pop(
         context,
@@ -699,9 +761,31 @@ class _BookTocSheetState extends State<BookTocSheet> {
 
   // ---------------------------------------------------------------- 刷新 / 导出
 
+  /// 把这本书的本地缓存导出成 txt —— 轻阅时光同款：先弹「确认导出」，
+  /// 确定后交给系统分享面板（iOS）/ 另存为（桌面）。
   Future<void> _exportCached() async {
     final url = _bookUrl;
     if (url.isEmpty) return;
+    final bookName = widget.book.name ?? '未知书籍';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('确认导出'),
+        content: Text('是否将《$bookName》的缓存导出为txt?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+
     final hash = LocalCacheService.instance.scopedKey(url);
     try {
       final books = await LocalCacheService.instance.listChapterCacheBooks();
@@ -731,14 +815,22 @@ class _BookTocSheetState extends State<BookTocSheet> {
         return;
       }
       final text = ChapterCacheExport.buildBookSection(
-        bookName: widget.book.name ?? '未知书籍',
+        bookName: bookName,
         author: widget.book.author,
         chapters: chapters,
         exportedAt:
             ChapterCacheExport.timestampLabel(DateTime.now()),
       );
-      await Clipboard.setData(ClipboardData(text: text));
-      _toast('已复制 ${chapters.length} 章到剪贴板');
+      final fileName =
+          '${ChapterCacheExport.sanitizeFileName(bookName)}.txt';
+      final message = await deliverExport(
+        bytes: ChapterCacheExport.withUtf8Bom(utf8.encode(text)),
+        fileName: fileName,
+        mimeType: 'text/plain',
+        typeGroup: const XTypeGroup(label: 'TXT', extensions: ['txt']),
+        shareTitle: fileName,
+      );
+      if (message != null) _toast(message);
     } catch (e) {
       _toast('导出失败：${friendlyError(e)}');
     }

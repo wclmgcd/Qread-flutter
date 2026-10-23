@@ -104,10 +104,20 @@ class ReaderTheme {
     highlight: Color(0x3300A88F),
   );
 
+  /// 深色牛皮纸 —— 暖棕底 + 米黄字，比纯黑柔和的夜读配色
+  static const darkKraft = ReaderTheme(
+    name: 'dark_kraft',
+    background: Color(0xFF3B2F23),
+    text: Color(0xFFD8C8B0),
+    secondaryText: Color(0xFF9A8870),
+    divider: Color(0xFF544534),
+    highlight: Color(0x3300A88F),
+  );
+
   // ---- 所有预设主题列表 ----
   //
-  // 只放 6 个：官方客户端的「背景」一行正好是 6 个圆点，多出来的会换行，
-  // 面板样式就和参考图对不上了。被裁掉的「微信」「淡蓝」两个配色仍然保留
+  // 圆点一个 29pt（见 _ThemeColorDot），7 个预设 + 自定义共 8 个也就 232pt，
+  // 主流机型宽度都放得下。被裁掉的「微信」「淡蓝」两个配色仍然保留
   // 成常量（老配置还能解析），需要的话可以用面板里的「自定义」取色拿到。
   static const List<ReaderTheme> presets = [
     white,
@@ -116,6 +126,7 @@ class ReaderTheme {
     green,
     purple,
     dark,
+    darkKraft,
   ];
 
   // ---- 自定义颜色主题 ----
@@ -175,6 +186,7 @@ class ReaderTheme {
       'blue': '淡蓝',
       'purple': '淡紫',
       'dark': '深色',
+      'dark_kraft': '深色牛皮纸',
     };
     if (name.startsWith('custom_')) return '自定义';
     return names[name] ?? name;

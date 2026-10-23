@@ -45,4 +45,53 @@ class SystemUiService {
       debugPrint('恢复系统导航栏失败: $e');
     }
   }
+
+  /// 「更多设置 → 隐藏状态栏」。只动状态栏，不影响导航栏的隐藏状态。
+  static Future<void> setStatusBarHidden(bool hidden) async {
+    try {
+      await _channel.invokeMethod<void>('setStatusBarHidden', {'hidden': hidden});
+    } on MissingPluginException {
+      // 桌面端没有这个通道
+    } catch (e) {
+      debugPrint('设置状态栏隐藏失败: $e');
+    }
+  }
+
+  /// 「更多设置 → 屏幕常亮」（Android FLAG_KEEP_SCREEN_ON / iOS idleTimer）。
+  static Future<void> setKeepScreenOn(bool on) async {
+    try {
+      await _channel.invokeMethod<void>('setKeepScreenOn', {'on': on});
+    } on MissingPluginException {
+      // 桌面端
+    } catch (e) {
+      debugPrint('设置屏幕常亮失败: $e');
+    }
+  }
+
+  /// 「更多设置 → 音量键翻页」。
+  ///
+  /// Android 侧 active 时会把音量键消费掉并通过 [volumeKeyListener] 回调
+  /// "up"/"down"；iOS 没有公开 API，原生侧直接回 false（置灰那行设置）。
+  static Future<void> setVolumeKeyActive(bool active) async {
+    try {
+      await _channel.invokeMethod<void>('setVolumeKeyActive', {'active': active});
+    } on MissingPluginException {
+      // 桌面端
+    } catch (e) {
+      debugPrint('设置音量键翻页失败: $e');
+    }
+  }
+
+  /// 注册/注销音量键回调（原生侧 dispatchKeyEvent 推过来的 "up"/"down"）。
+  static void setVolumeKeyListener(void Function(String direction)? listener) {
+    if (listener == null) {
+      _channel.setMethodCallHandler(null);
+      return;
+    }
+    _channel.setMethodCallHandler((call) async {
+      if (call.method == 'onVolumeKey' && call.arguments is String) {
+        listener(call.arguments as String);
+      }
+    });
+  }
 }

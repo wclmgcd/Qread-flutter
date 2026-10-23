@@ -4,7 +4,9 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.OpenableColumns
+import android.view.KeyEvent
 import android.view.View
+import android.view.WindowManager
 import androidx.core.content.FileProvider
 import androidx.core.content.IntentCompat
 import androidx.core.view.WindowInsetsCompat
@@ -117,13 +119,19 @@ class MainActivity : FlutterActivity() {
 
     private var fileOpenChannel: MethodChannel? = null
 
+    /** 阅读页 system_ui 通道。音量键翻页要靠它把按键事件推回 Dart 侧。 */
+    private var systemUiChannel: MethodChannel? = null
+
+    /** 「音量键翻页」是否生效：true 时音量键被消费掉并转成翻页事件。 */
+    private var volumeKeyFlipActive = false
+
     /** 正在等待结果的文件选择框。同一时刻只允许一个。 */
     private var pendingPickResult: MethodChannel.Result? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, systemUiChannelName)
-            .setMethodCallHandler { call, result ->
+        systemUiChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, systemUiChannelName)
+        systemUiChannel?.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "hideNavigationBar" -> {
                         hideNavigationBar()
@@ -131,6 +139,18 @@ class MainActivity : FlutterActivity() {
                     }
                     "showSystemBars" -> {
                         showSystemBars()
+                        result.success(true)
+                    }
+                    "setStatusBarHidden" -> {
+                        setStatusBarHidden(call.argument<Boolean>("hidden") ?: false)
+                        result.success(true)
+                    }
+                    "setKeepScreenOn" -> {
+                        setKeepScreenOn(call.argument<Boolean>("on") ?: false)
+                        result.success(true)
+                    }
+                    "setVolumeKeyActive" -> {
+                        volumeKeyFlipActive = call.argument<Boolean>("active") ?: false
                         result.success(true)
                     }
                     else -> result.notImplemented()
@@ -495,5 +515,72 @@ class MainActivity : FlutterActivity() {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
         }
+    }
+
+    // ==================================================================
+    // 更多设置：状态栏 / 屏幕常亮 / 音量键翻页
+    // ==================================================================
+
+    /**
+     * 阅读页「隐藏状态栏」。和导航栏同款 API（WindowInsetsControllerCompat），
+     * Android 15+ 强制 edge-to-edge 下依然有效；和导航栏互不影响。
+     */
+    private fun setStatusBarHidden(hidden: Boolean) {
+        val window = window ?: return
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (hidden) {
+                controller.hide(WindowInsetsCompat.Type.statusBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.statusBars())
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (hidden) {
+                window.decorView.systemUiVisibility or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                window.decorView.systemUiVisibility and
+                    View.SYSTEM_UI_FLAG_FULLSCREEN.inv() and
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN.inv()
+            }
+        }
+    }
+
+    /** 「屏幕常亮」：FLAG_KEEP_SCREEN_ON，离开阅读页时 Dart 侧会调回 false。 */
+    private fun setKeepScreenOn(on: Boolean) {
+        val window = window ?: return
+        if (on) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    /**
+     * 「音量键翻页」：active 时在 Activity 层把音量键消费掉（不再调音量），
+     * 转成一次翻页事件推给 Dart（"onVolumeKey": "up"/"down"）。
+     *
+     * 只拦 ACTION_DOWN。按住不放系统会自动 repeat —— 每次 repeat 翻一页，
+     * 正好是用户想要的连续翻页。UP 事件也一并消费，否则会漏回系统引起
+     * 音量条闪现。
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (volumeKeyFlipActive) {
+            val direction = when (event.keyCode) {
+                KeyEvent.KEYCODE_VOLUME_UP -> "up"
+                KeyEvent.KEYCODE_VOLUME_DOWN -> "down"
+                else -> null
+            }
+            if (direction != null) {
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    systemUiChannel?.invokeMethod("onVolumeKey", direction)
+                }
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
     }
 }

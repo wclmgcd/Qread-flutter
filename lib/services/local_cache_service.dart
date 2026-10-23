@@ -263,6 +263,47 @@ class LocalCacheService {
 
   // -------------------------------------------------------- 缓存清单 / 导出
 
+  /// 某本书已落盘的章节号集合（所有净化变体取并集）。
+  ///
+  /// 给目录弹层的「已缓存 ✓」标记用。只数 `.txt` 正文文件；变体不区分 ——
+  /// 标记的语义是「这章下载过」，和导出时挑变体（[ChapterCacheBook.preferred]）
+  /// 是两回事。
+  Future<Set<int>> cachedChapterIndices(String bookUrl) async {
+    final bookDir = '$_readerRoot/${scopedKey(bookUrl)}';
+    final out = <int>{};
+    for (final dirName in await _store.listDirs(bookDir)) {
+      if (_parseVariantDirName(dirName) == null) continue;
+      for (final fileName in await _store.listNames('$bookDir/$dirName')) {
+        if (!fileName.endsWith('.txt')) continue;
+        final index = _chapterIndexOf(fileName);
+        if (index != null) out.add(index);
+      }
+    }
+    return out;
+  }
+
+  /// 目录（章节列表）的磁盘缓存 —— 打开目录弹层先放缓存的列表，
+  /// 网络回来再原位覆盖，解决「每次点目录都要干等刷新」。
+  ///
+  /// 【为什么单独放 `reader_toc/`】不能放 `reader/<hash>/` 里：
+  /// [clearBookChapterCache]（换净化规则时）会把那个目录整个端掉，
+  /// 目录缓存是无辜的，不该跟着陪葬。
+  Future<void> writeChapterToc(
+      String bookUrl, List<Map<String, dynamic>> chapters) {
+    return saveJson('reader_toc/${scopedKey(bookUrl)}', chapters);
+  }
+
+  /// 读目录磁盘缓存；没有或损坏都返回 null（调用方直接走网络）。
+  Future<List<Map<String, dynamic>>?> readChapterToc(String bookUrl) async {
+    final raw = await readJsonList('reader_toc/${scopedKey(bookUrl)}');
+    if (raw == null) return null;
+    final out = <Map<String, dynamic>>[];
+    for (final e in raw) {
+      if (e is Map) out.add(Map<String, dynamic>.from(e));
+    }
+    return out.isEmpty ? null : out;
+  }
+
   /// 列出所有有章节缓存的书（按占用体积降序）。
   ///
   /// 【变体目录是怎么认出来的】[`_chapterDir`] 生成的名字只有三种形态：

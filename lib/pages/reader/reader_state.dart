@@ -121,6 +121,14 @@ class ReaderState with ChangeNotifier {
   /// 实现方式是盖一层黑色蒙版，不动系统亮度。
   double brightness = 1.0;
 
+  /// 「自动」亮度 = 不盖压暗蒙版，完全交给系统亮度。
+  ///
+  /// 【为什么自动就是 1.0】我们没有也不打算引入读写系统亮度的插件
+  /// （本机没有 Flutter SDK，新依赖无法验证）。压暗蒙版本质是「在系统亮度
+  /// 之上再压一档」，自动档的语义自然是「不压」—— 和轻阅时光「跟随系统」
+  /// 的效果一致。
+  bool brightnessAuto = false;
+
   /// 字体 id，见 widgets/reader_fonts.dart
   String fontFamily = 'default';
 
@@ -131,11 +139,61 @@ class ReaderState with ChangeNotifier {
   bool showParagraphComment = true;
 
   // ---- 更多设置（默认值） ----
-  bool screenWakelock = true; // 屏幕常亮
-  bool showPageNumber = true; // 显示页码
   bool volumeKeyFlip = false; // 音量键翻页
   bool showBottomBar = true; // 底部区域（时间/电量/页码）
   bool showTopBar = true; // 顶部区域（章节序号/章节名）
+
+  /// 屏幕常亮档位：0 关 / -1 常亮 / 5 / 10（分钟，倒计时到点自动放屏）。
+  int wakelockMinutes = -1;
+
+  /// 页脚「显示进度」四档：0 关 / 1 本章 / 2 全书 / 3 本章+全书。
+  int progressMode = 1;
+
+  /// 旧「显示页码」开关的兼容视图：进度关 = 不显示页码。
+  bool get showPageNumber => progressMode != 0;
+
+  // ---- 更多设置·排版与页眉页脚 ----
+
+  /// 隐藏正文顶部的大标题段（每章第一页居中加粗的章节名）。
+  /// 页眉那行小字不受影响 —— 归 showTopBar 管。
+  bool hideTitle = false;
+
+  /// 大标题对齐：0 左 / 1 中 / 2 右。
+  int titleAlign = 1;
+
+  /// 页眉/页脚与正文之间画一条细分隔线。
+  bool showHeaderFooterDivider = false;
+
+  /// 页脚左侧的时间。
+  bool showFooterTime = true;
+
+  /// 页脚右侧的电量。
+  bool showFooterBattery = true;
+
+  /// 本章最后一页内容不满一页时，顶部补空隙让文字贴底（轻阅时光「底部对齐」）。
+  bool bottomAlignLastPage = false;
+
+  // ---- 更多设置·系统 ----
+
+  /// 阅读页内隐藏系统状态栏。
+  bool hideStatusBar = false;
+
+  /// 锁定竖屏。
+  bool lockOrientation = false;
+
+  // ---- 更多设置·交互 ----
+
+  /// 底部章节滑杆按「分页」拖动（false = 按章节）。
+  bool sliderByPage = false;
+
+  /// 正文区域上滑退出阅读页。
+  bool swipeUpExit = false;
+
+  /// 正文区域下滑加/减书签。
+  bool swipeDownBookmark = false;
+
+  /// 目录弹层默认倒序。
+  bool tocReversed = false;
 
   // ---- 间距设置 ----
   double paragraphSpacing = 7.0; // 段间距 (px)
@@ -184,6 +242,9 @@ class ReaderState with ChangeNotifier {
   int? batteryLevel;
   double? chapterSliderValue;
 
+  /// 「菜单滑动条按分页」时，分页滑杆拖动中的瞬时值（松手即清 null）。
+  double? pageSliderValue;
+
   // ---- 视口 ----
   Size? pagedViewportSize;
 
@@ -216,8 +277,21 @@ class ReaderState with ChangeNotifier {
   FontWeight get textFontWeight =>
       boldText ? FontWeight.w600 : FontWeight.normal;
 
+  /// [titleAlign] 的 TextAlign 版（0 左 / 1 中 / 2 右）。
+  TextAlign get titleTextAlign {
+    switch (titleAlign) {
+      case 0:
+        return TextAlign.left;
+      case 2:
+        return TextAlign.right;
+      default:
+        return TextAlign.center;
+    }
+  }
+
   /// 屏幕压暗蒙版透明度（0 = 不压暗）
-  double get dimOpacity => ((1.0 - brightness) * 0.85).clamp(0.0, 0.85);
+  double get dimOpacity =>
+      brightnessAuto ? 0.0 : ((1.0 - brightness) * 0.85).clamp(0.0, 0.85);
 
   bool get isScrollMode => isComic || pageAnimType.usesScrollReader;
 
@@ -282,14 +356,70 @@ class ReaderState with ChangeNotifier {
     return pages.length - 1;
   }
 
-  String pageIndicatorLabel() {
-    if (isScrollMode) {
-      final total = paragraphs.isEmpty ? 1 : paragraphs.length;
-      return '1/$total';
+  /// 页脚「进度」文案的四档计算（静态版，PagedReader 按页调用）。
+  ///
+  /// [mode]：0 关（空串）/ 1 本章（页码 x/y）/ 2 全书（章节百分比）/ 3 两個都要。
+  /// [currentDisplay] 是正在渲染的那一页（1-based），[totalPages] 本章总页数。
+  static String progressLabel({
+    required int mode,
+    required int currentDisplay,
+    required int totalPages,
+    required int chapterIndex,
+    required int totalChapters,
+  }) {
+    final total = totalPages <= 0 ? 1 : totalPages;
+    final current = currentDisplay.clamp(1, total);
+    final chapterPart = '$current/$total';
+    String bookPart() {
+      if (totalChapters <= 0) return '--';
+      final pct =
+          (chapterIndex + 1).clamp(0, totalChapters) / totalChapters * 100;
+      return '${pct.toStringAsFixed(1)}%';
     }
-    final total = pages.isEmpty ? 1 : pages.length;
-    final current = total == 0 ? 1 : (currentPage + 1).clamp(1, total);
-    return '$current/$total';
+
+    switch (mode) {
+      case 0:
+        return '';
+      case 2:
+        return bookPart();
+      case 3:
+        return '$chapterPart  ${bookPart()}';
+      case 1:
+      default:
+        return chapterPart;
+    }
+  }
+
+  /// 页脚「进度」那一格的文案，按 [progressMode] 出四档（见 [progressLabel]）。
+  ///
+  /// [displayPage]/[displayTotal] 由分页渲染器按「正在画的这一页」传入
+  /// （1-based）；不传则用当前页。滚动模式的「本章」仍是 1/段数。
+  String pageIndicatorLabel({
+    int chapterIndex = 0,
+    int totalChapters = 0,
+    int displayPage = 0,
+    int displayTotal = 0,
+  }) {
+    if (isScrollMode) {
+      // 滚动模式没有「页」，本章进度固定 1/段数；全书档仍按章节百分比。
+      final total = paragraphs.isEmpty ? 1 : paragraphs.length;
+      return progressLabel(
+        mode: progressMode,
+        currentDisplay: 1,
+        totalPages: total,
+        chapterIndex: chapterIndex,
+        totalChapters: totalChapters,
+      );
+    }
+    final total = displayTotal > 0 ? displayTotal : pages.length;
+    final current = displayPage > 0 ? displayPage : currentPage + 1;
+    return progressLabel(
+      mode: progressMode,
+      currentDisplay: current,
+      totalPages: total,
+      chapterIndex: chapterIndex,
+      totalChapters: totalChapters,
+    );
   }
 
   String formatTime() {

@@ -30,6 +30,12 @@ class ReaderControllerViewData {
   final int totalChapters;
   final double? chapterSliderValue;
 
+  /// 「菜单滑动条按分页」（更多设置）：true 时滑杆操作本章页码。
+  final bool sliderByPage;
+  final int currentPage;
+  final int totalPages;
+  final double? pageSliderValue;
+
   const ReaderControllerViewData({
     required this.capsuleMode,
     required this.ttsState,
@@ -37,6 +43,10 @@ class ReaderControllerViewData {
     required this.chapterIndex,
     required this.totalChapters,
     this.chapterSliderValue,
+    this.sliderByPage = false,
+    this.currentPage = 0,
+    this.totalPages = 0,
+    this.pageSliderValue,
   });
 }
 
@@ -59,6 +69,11 @@ class ReaderControllerCallbacks {
   final VoidCallback onNextChapter;
   final ValueChanged<double> onChapterSliderChanged;
   final ValueChanged<double> onChapterSliderEnd;
+
+  // ---- 分页滑杆（「菜单滑动条按分页」时替代章节滑杆） ----
+  /// changed 只管拖动中的瞬时值；end 在松手时提交（左右箭头也走这里）。
+  final ValueChanged<double> onPageSliderChanged;
+  final ValueChanged<double> onPageSliderEnd;
 
   // ---- 底部工具 ----
   final VoidCallback onShowChapterList;
@@ -103,6 +118,8 @@ class ReaderControllerCallbacks {
     required this.onNextChapter,
     required this.onChapterSliderChanged,
     required this.onChapterSliderEnd,
+    required this.onPageSliderChanged,
+    required this.onPageSliderEnd,
     required this.onShowChapterList,
     required this.onShowSettings,
     required this.onShowBackground,
@@ -440,8 +457,20 @@ class _SliderPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = _ChromeColors(theme);
-    final canPrev = data.chapterIndex > 0;
-    final canNext = data.chapterIndex < data.totalChapters - 1;
+    // 「按分页」模式：滑杆与箭头操作的是本章页码；章节语义不变（箭头翻页）。
+    final byPage = data.sliderByPage && data.totalPages > 0;
+    final canPrev = byPage ? data.currentPage > 0 : data.chapterIndex > 0;
+    final canNext = byPage
+        ? data.currentPage < data.totalPages - 1
+        : data.chapterIndex < data.totalChapters - 1;
+    final sliderValue = byPage
+        ? (data.pageSliderValue ?? data.currentPage.toDouble())
+            .clamp(0.0, (data.totalPages - 1).toDouble())
+        : (data.chapterSliderValue ?? data.chapterIndex.toDouble())
+            .clamp(0, (data.totalChapters - 1).toDouble());
+    final sliderMax = byPage
+        ? (data.totalPages <= 1 ? 1.0 : (data.totalPages - 1).toDouble())
+        : (data.totalChapters <= 1 ? 1.0 : (data.totalChapters - 1).toDouble());
     return Container(
       height: 48,
       decoration: BoxDecoration(
@@ -458,7 +487,12 @@ class _SliderPill extends StatelessWidget {
       child: Row(
         children: [
           InkWell(
-            onTap: canPrev ? callbacks.onPrevChapter : null,
+            onTap: canPrev
+                ? (byPage
+                    ? () => callbacks
+                        .onPageSliderEnd((data.currentPage - 1).toDouble())
+                    : callbacks.onPrevChapter)
+                : null,
             borderRadius:
                 const BorderRadius.horizontal(left: Radius.circular(24)),
             child: SizedBox(
@@ -482,20 +516,25 @@ class _SliderPill extends StatelessWidget {
                 inactiveTrackColor: colors.sliderInactive,
               ),
               child: Slider(
-                value:
-                    (data.chapterSliderValue ?? data.chapterIndex.toDouble())
-                        .clamp(0, (data.totalChapters - 1).toDouble()),
+                value: sliderValue.toDouble(),
                 min: 0,
-                max: data.totalChapters <= 1
-                    ? 1
-                    : (data.totalChapters - 1).toDouble(),
-                onChanged: callbacks.onChapterSliderChanged,
-                onChangeEnd: callbacks.onChapterSliderEnd,
+                max: sliderMax,
+                onChanged: byPage
+                    ? callbacks.onPageSliderChanged
+                    : callbacks.onChapterSliderChanged,
+                onChangeEnd: byPage
+                    ? callbacks.onPageSliderEnd
+                    : callbacks.onChapterSliderEnd,
               ),
             ),
           ),
           InkWell(
-            onTap: canNext ? callbacks.onNextChapter : null,
+            onTap: canNext
+                ? (byPage
+                    ? () => callbacks
+                        .onPageSliderEnd((data.currentPage + 1).toDouble())
+                    : callbacks.onNextChapter)
+                : null,
             borderRadius:
                 const BorderRadius.horizontal(right: Radius.circular(24)),
             child: SizedBox(

@@ -119,7 +119,10 @@
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
-	<false/>
+	<!-- 阅读页「隐藏状态栏」需要走 prefersStatusBarHidden（控制器粒度），
+	     必须是 true；false 时该 override 被系统忽略，全局也藏不掉。
+	     根控制器是 QreadFlutterViewController，默认值 false，其它页面不受影响。 -->
+	<true/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<!-- 【扫码导入书源用】书源管理 ⋮ → 扫码导入。

@@ -110,12 +110,18 @@ class PaginationEngine {
     double bottomPadding = defaultBottomPadding,
     bool showTopBar = true,
     bool showBottomBar = true,
+    bool hideTitle = false,
+    // 页眉/页脚分割线。页眉那根嵌在原有 6px 间距里不占预算；
+    // 页脚那根是额外多出来的 6px（1px 线 + 5px 距），必须在这里扣掉，
+    // 否则正文最后一行会被页脚 Divider 顶出去。
+    bool showHeaderFooterDivider = false,
     String? fontFamily,
     FontWeight fontWeight = FontWeight.normal,
     TextScaler textScaler = TextScaler.noScaling,
   }) {
     // 1. 提取段落
-    final paragraphs = _extractParagraphs(content, chapterTitle: chapterTitle);
+    final paragraphs = _extractParagraphs(content,
+        chapterTitle: chapterTitle, hideTitle: hideTitle);
 
     if (paragraphs.isEmpty) {
       return ChapterLayout(
@@ -149,6 +155,10 @@ class PaginationEngine {
     // 算进页脚自己的下边距（见 [footerBottomPadding]），渲染端必须用同一个值，
     // 否则分页按 A 留白、渲染按 B 留白，最后一行会被裁掉或者底下多出一块。
     final footerPad = showBottomBar ? bottomPadding : 0.0;
+    // 页脚分割线是渲染端额外画的一条 1px 线 + 5px 间距（见 buildPage），
+    // 固定像素、不随系统字号缩放。
+    final footerDividerHeight =
+        (showBottomBar && showHeaderFooterDivider) ? 6.0 : 0.0;
 
     // 底部安全余量。
     //
@@ -172,6 +182,7 @@ class PaginationEngine {
         headerHeight -
         headerSpacing -
         footerHeight -
+        footerDividerHeight -
         safetyMargin;
 
     // 3. 逐段落 → 逐行 → 分页
@@ -202,6 +213,7 @@ class PaginationEngine {
         startPosition: startPos,
         endPosition: endPos,
         chapterIndex: chapterIndex,
+        contentHeight: currentHeight,
       ));
 
       for (final line in currentLines) {
@@ -262,6 +274,13 @@ class PaginationEngine {
     }
 
     commitPage();
+
+    // 回填「本章最后一页」标记 —— 渲染端「底部对齐」只垫末页，
+    // 中间页垫了会出现半页空白。
+    if (pages.isNotEmpty) {
+      pages[pages.length - 1] =
+          pages.last.copyWith(isLastPageOfChapter: true);
+    }
 
     return ChapterLayout(
       paragraphs: paragraphs,
@@ -860,9 +879,14 @@ class PaginationEngine {
   }
 
   /// 将 HTML/混合内容清洗为纯文本段落
+  ///
+  /// [hideTitle] 为 true 时不注入正文顶部的大标题段
+  /// （「更多设置 → 隐藏标题」），但下面第 3 步的「去掉与章节标题重复的
+  /// 首行」仍照常执行 —— 否则正文开头会冒出一句重复的标题文字。
   List<ReaderParagraph> _extractParagraphs(
     String content, {
     String? chapterTitle,
+    bool hideTitle = false,
   }) {
     // 0. 先把段评摘出来换成占位符，稍后再按段落归位。
     //
@@ -954,7 +978,7 @@ class PaginationEngine {
     // startPosition/endPosition 保持和以前完全一致，阅读进度不会跳。
     final paragraphs = <ReaderParagraph>[];
     var index = 0;
-    if (cleanTitle.isNotEmpty) {
+    if (cleanTitle.isNotEmpty && !hideTitle) {
       paragraphs.add(ReaderParagraph(
         index: index++,
         text: cleanTitle,
