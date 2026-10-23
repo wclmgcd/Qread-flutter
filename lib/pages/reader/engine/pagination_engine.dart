@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../../../services/chapter_markup.dart';
+import 'bubble_geometry.dart';
 import 'models.dart';
 
 /// 行级分页引擎 v6
@@ -337,9 +338,8 @@ class PaginationEngine {
     // 【段评气泡必须预留宽度 —— 但**只给段末行**预留】
     //
     // 分页时所有段评都挂在段末行（见本方法末尾的 `result.last = ...`），
-    // 渲染端则把气泡作为 `WidgetSpan` **追加在段末行文字后面**
-    // （见 ContentRenderer._buildTextLine）。但这里的 TextPainter 只有纯文本，
-    // 完全不知道气泡占了多宽。
+    // 渲染端则把气泡**追加在段末行文字后面**（见 ContentRenderer._buildTextLine）。
+    // 但这里的 TextPainter 只有纯文本，完全不知道气泡占了多宽。
     //
     // 后果：段末行本来刚好放得下，渲染时被气泡一挤就换行 → 整页凭空多出一行
     // → 页面底部溢出，最后一行被裁掉一半。
@@ -353,14 +353,20 @@ class PaginationEngine {
     // 「神评论」横幅（isBanner）是独立占一行的，不在这里预留。
     final inlineComments =
         paragraph.comments.where((c) => !c.isBanner).toList(growable: false);
+    // 宽度必须按**每个气泡自己的 SVG 包围盒**算（见 inlineCommentBubbleWidth），
+    // 不能用固定的「方框+尾巴」比例：各书源尾巴长短不同，旧版按兜底 SVG 的
+    // 1.25 预留，番茄/大灰狼系实际约 1.47 → 段末行放不下，气泡被挤到下一行，
+    // 而分页没为这一行算高度，整页溢出后底部一行被裁掉。
+    // 每条再留 2px，吸收浮点取整误差。
     final bubbleReserve = inlineComments.isEmpty
         ? 0.0
-        // CommentBubbleMetrics.width 与渲染端算出的 inkWidth 一致（见
-        // InlineCommentBubble），再加气泡左侧那截 0.3em 间距；末尾 2px 是
-        // 浮点取整的余量。
-        : CommentBubbleMetrics(effectiveFontSize).width +
-            effectiveFontSize * 0.30 +
-            2.0;
+        : inlineComments.fold<double>(
+            0.0,
+            (sum, c) =>
+                sum +
+                inlineCommentBubbleWidth(c.bubbleSvg, effectiveFontSize) +
+                2.0,
+          );
 
     final textStyle = TextStyle(
       fontSize: effectiveFontSize,
@@ -699,6 +705,35 @@ class PaginationEngine {
   /// 空白（含全角空格）
   static final RegExp _whitespace = RegExp(r'[\s\u3000]');
 
+  /// 会被文本引擎当成**强制换行**的字符（LS / PS / NEL / VT / FF）。
+  ///
+  /// 源站偶尔拿 U+2028 之类当段落分隔符；`split('\n')` 认不出来，它就会
+  /// 留在段落正文里。分页端按一个行框算高度，渲染端的 Text 却在那里真的
+  /// 换了一行 —— 行尾的段评气泡被顶到下一行（单独一行、贴左边），
+  /// 整页也多出一行、底部那行被裁掉。这里统一归一化成 `\n` 再分段。
+  static final RegExp _hardLineBreak =
+      RegExp(r'[\u000B\u000C\u0085\u2028\u2029]');
+
+  /// 不可见但**不算空白**的填充字符（Hangul Filler、盲文空白、零宽字符等）。
+  ///
+  /// 源站用它们给段落做视觉对齐。`trim()` 删不掉它们，行尾就会白白占掉
+  /// 几个字宽，把段评气泡挤到下一行（而且肉眼完全看不出原因）。
+  static final RegExp _invisiblePadding =
+      RegExp(r'[\u200B-\u200D\u2060\uFEFF\u2800\u3164\uFFA0]');
+
+  /// 去掉行首/行尾的不可见填充字符。
+  static String _trimInvisiblePadding(String line) {
+    var start = 0;
+    var end = line.length;
+    while (start < end && _invisiblePadding.hasMatch(line[start])) {
+      start++;
+    }
+    while (end > start && _invisiblePadding.hasMatch(line[end - 1])) {
+      end--;
+    }
+    return start == 0 && end == line.length ? line : line.substring(start, end);
+  }
+
   /// 常用命名实体
   static const Map<String, String> _namedEntities = {
     'nbsp': ' ',
@@ -875,19 +910,29 @@ class PaginationEngine {
     //    - <br> 与块级标签（开/闭）→ 换行，段落才切得开；
     //    - 其余标签直接删掉（不能换成空格，否则 "对<span>方</span>" 会变成 "对 方"）。
     final plain = _decodeEntities(withPlaceholders
-        .replaceAll(_brTag, '\n')
-        .replaceAll(_blockTag, '\n')
-        .replaceAll(_anyTag, '')
-        .replaceAll('\r', ''));
+            .replaceAll(_brTag, '\n')
+            .replaceAll(_blockTag, '\n')
+            .replaceAll(_anyTag, '')
+            .replaceAll('\r', ''))
+        // 实体解码之后再做：`&#8232;` 会变成 U+2028，必须在切段前归一化
+        .replaceAll(_hardLineBreak, '\n');
 
     // 2. 按行切段：一行一段，空行丢弃
     final lines = plain
         .split('\n')
-        .map((line) => line.replaceAll(_whitespace, ' ').trim())
+        .map((line) {
+          final cleaned = _trimInvisiblePadding(
+            line.replaceAll(_whitespace, ' ').trim(),
+          );
+          // 去掉填充字符后可能又露出空格，再 trim 一次
+          return cleaned.trim();
+        })
         .where((line) => line.isNotEmpty)
         .toList();
 
-    final cleanTitle = (chapterTitle ?? '').trim();
+    final cleanTitle = _trimInvisiblePadding(
+      (chapterTitle ?? '').replaceAll(_hardLineBreak, ' ').trim(),
+    );
 
     // 3. 去掉与章节标题重复的首行
     if (cleanTitle.isNotEmpty && lines.isNotEmpty) {

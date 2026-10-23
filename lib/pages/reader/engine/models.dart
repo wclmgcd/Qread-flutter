@@ -36,11 +36,12 @@ class CommentBubbleMetrics {
   /// 气泡整体占位高度——分页引擎按这个扣减可用高度
   double get totalHeight => topSpacing + side + bottomSpacing;
 
-  /// 方框左侧尾巴的宽度（书源 SVG：方框 x 16..48，尾巴最左到 x 8）
-  double get tailWidth => side * (8 / 32);
+  /// 行内气泡与前面文字的间距（官方约 0.3em）
+  double get inlineGap => fontSize * 0.30;
 
-  /// 气泡整体宽度 = 尾巴 + 方框
-  double get width => side + tailWidth;
+  /// 【不要再用固定宽度】气泡整体宽度取决于书源 SVG 的真实包围盒
+  /// （尾巴和方框的比例各源不同），必须用 `inlineCommentBubbleWidth()`
+  /// 计算，否则分页预留的宽度和渲染端画出来的对不上。
 
   /// 「神评论」横幅（书源 style=FULL）的高度。
   ///
