@@ -12,14 +12,14 @@ name: Build iOS IPA (unsigned)
 #   iOS 打包必须 Xcode，Windows / Linux 连 `flutter build ios` 都执行不了。
 #
 # 触发方式：
-#   1. 手动 (workflow_dispatch) —— 推荐，可指定 Flutter 版本重试
-#   2. push 到 main，且改动落在 ios/ 或本文件
+#   1. push 到 main，且改动落在 lib/ ios/ pubspec.yaml 或本文件 —— 自动出包。
+#      主力测试机是 iPhone，所以代码改动默认直接产出新 IPA。
+#   2. 手动 (workflow_dispatch) —— 可指定 Flutter 版本重试
 #
-# 为什么 push 不监听 lib/：
+# 成本提醒（就提这一次）：
 #   GitHub 对 macOS runner 的计费倍率是 Linux 的 10 倍。私有仓库每月 2000 分钟
-#   免费额度，换算到 macOS 只有 200 分钟 —— 一次 iOS 构建约 15 分钟，若监听
-#   lib/ 每次提交都跑，十几次就烧完了。要出包时手动点一下更划算。
-#   确实想每次 push 都出包的话，把下面 paths 里的 'lib/**' 和 'pubspec.yaml' 加回来。
+#   免费额度，换算到 macOS 只有 200 分钟，一次构建约 15 分钟。额度烧完或想省着用，
+#   把下面 push.paths 里的 'lib/**' 和 'pubspec.yaml' 删掉就回到纯手动。
 on:
   workflow_dispatch:
     inputs:
@@ -30,7 +30,9 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'lib/**'
       - 'ios/**'
+      - 'pubspec.yaml'
       - '.github/workflows/ios.yml'
 
 # 同一分支重复触发时取消前一次，别白烧 macOS 分钟数

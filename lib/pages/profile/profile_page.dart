@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -12,6 +11,7 @@ import '../../services/api_service.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reading_stats_service.dart';
 import '../../services/storage_service.dart';
+import '../../widgets/book_cover.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({Key? key}) : super(key: key);
@@ -1049,7 +1049,8 @@ class _HistoryBookTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final coverUrl = book.customCoverUrl ?? book.coverUrl;
+    final custom = book.customCoverUrl?.trim() ?? '';
+    final coverUrl = custom.isNotEmpty ? custom : (book.coverUrl?.trim() ?? '');
     final placeholder = Container(
       width: 72,
       height: 96,
@@ -1085,19 +1086,14 @@ class _HistoryBookTile extends StatelessWidget {
           ),
           child: Row(
             children: [
-              if (coverUrl != null && coverUrl.isNotEmpty)
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: CachedNetworkImage(
-                    imageUrl: ApiService.instance.getCoverProxyUrl(
-                      coverUrl,
-                      sourceUrl: book.origin,
-                    ),
-                    width: 72,
-                    height: 96,
-                    fit: BoxFit.cover,
-                    errorWidget: (_, __, ___) => placeholder,
-                  ),
+              if (coverUrl.isNotEmpty)
+                BookCover(
+                  url: coverUrl,
+                  sourceUrl: book.origin,
+                  width: 72,
+                  height: 96,
+                  radius: 12,
+                  placeholder: placeholder,
                 )
               else
                 placeholder,

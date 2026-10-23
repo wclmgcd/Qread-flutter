@@ -7,19 +7,27 @@ import 'package:flutter/services.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/bookmark.dart';
 import '../../models/chapter.dart';
+import '../../models/reader_launch_args.dart';
 import '../../models/tts_engine.dart';
+import '../../pages/bookshelf/book_info_page.dart';
 import '../../pages/bookshelf/book_source_switch_page.dart';
+import '../../pages/bookshelf/book_toc_sheet.dart';
+import '../../pages/login/source_login_page.dart';
+import '../../pages/login/webview_login_page.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/reader_provider.dart';
+import '../../providers/source_manage_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_log.dart';
 import '../../services/app_settings.dart';
+import '../../services/cookie_sync_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/browsing_history_service.dart';
 import '../../services/reader_ws_service.dart';
@@ -27,7 +35,9 @@ import '../../services/reading_stats_service.dart';
 import '../../services/replace_rule_store.dart';
 import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
+import '../../widgets/book_cover.dart';
 import 'engine/engine.dart';
+import 'book_text_search_page.dart';
 import 'paragraph_comment_page.dart';
 import 'reader_selection_menu.dart';
 import 'reader_state.dart';
@@ -133,12 +143,13 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   String? _token;
   String? _bookUrl;
 
-  List<Bookmark> _bookmarks = [];
-  Set<int> _bookmarkChapterIndices = {};
-  List<GlobalKey> _paragraphKeys = [];
+  // 目录/书签跳章时由 ReaderLaunchArgs 带进来的落点，只在首次开章用一次
+  int? _launchChapterIndex;
+  int _launchChapterPosition = 0;
+  bool _launchOpenAtEnd = false;
 
-  // 目录弹窗里「刷新目录」按钮的加载态（防止连点）
-  bool _chapterListRefreshing = false;
+  List<Bookmark> _bookmarks = [];
+  List<GlobalKey> _paragraphKeys = [];
 
   // 使用集中状态对象
   final ReaderState _state = ReaderState();
@@ -516,7 +527,16 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   // ============================================================
 
   void _initBook() {
-    final book = ModalRoute.of(context)?.settings.arguments as Book?;
+    final args = ModalRoute.of(context)?.settings.arguments;
+    Book? book;
+    if (args is ReaderLaunchArgs) {
+      book = args.book;
+      _launchChapterIndex = args.chapterIndex;
+      _launchChapterPosition = args.chapterPosition;
+      _launchOpenAtEnd = args.openAtEnd;
+    } else if (args is Book) {
+      book = args;
+    }
     if (book == null) return;
     ReadingStatsService.instance.startSession();
     _token = context.read<UserProvider>().token;
@@ -549,10 +569,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _bookmarks = marks;
-        _bookmarkChapterIndices = marks
-            .where((m) => m.chapterIndex != null)
-            .map((m) => m.chapterIndex!)
-            .toSet();
       });
     } catch (_) {}
   }
@@ -565,8 +581,19 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
         !provider.loadingChapters &&
         provider.chapters.isNotEmpty) {
       _state.initialChapterOpened = true;
-      final initialIndex = (provider.book?.durChapterIndex ?? 0)
+      final initialIndex = (_launchChapterIndex ??
+              provider.book?.durChapterIndex ??
+              0)
           .clamp(0, provider.chapters.length - 1);
+      // 明确指定了章节（目录/书签跳转）就按指定落点开，别再被上次进度拽回去
+      if (_launchChapterIndex != null) {
+        _openChapter(
+          initialIndex,
+          chapterPosition: _launchChapterPosition,
+          openAtEnd: _launchOpenAtEnd,
+        );
+        return;
+      }
       // 优先从本地读取页级进度
       _loadProgressLocalPos().then((localPos) {
         if (!mounted) return;
@@ -1591,37 +1618,26 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                     restartToken: _controllerRestartToken,
                     onAutoHide: _hideController,
                     data: ReaderControllerViewData(
-                      bookName: provider.book?.name ?? '',
-                      chapterTitle: _displayedChapter(provider)?.title ?? '',
-                      sourceName: provider.book?.originName ??
-                          provider.book?.origin ??
-                          '未知书源',
-                      hasBookmark: _hasBookmarkAtCurrent(provider),
-                      replaceRuleEnabled: provider.book?.useReplaceRule == true,
-                      themeName: _state.theme,
                       capsuleMode: _state.capsuleMode,
                       ttsState: _tts.state,
                       ttsRate: _tts.rate,
-                      autoPageInterval: _state.autoPageInterval,
                       chapterIndex: _state.displayedChapterIndex(
                           provider.book?.durChapterIndex ?? 0),
                       totalChapters: provider.chapters.length,
                       chapterSliderValue: _state.chapterSliderValue,
-                      ttsParagraphIndex: _state.ttsParagraphIndex,
-                      totalParagraphs: _state.paragraphs.length,
-                      inBookshelf: _isCurrentBookInShelf(provider),
                     ),
                     callbacks: ReaderControllerCallbacks(
                       onBack: () {
                         _saveProgress(pos: _getProgress());
                         Navigator.pop(context);
                       },
-                      onShowMore: () => _showMorePanel(provider),
+                      onBatchDownload: () => _showBatchDownloadSheet(provider),
+                      onChangeSource: () => _changeBookSource(provider),
                       onRefresh: _applyReplaceRules,
-                      onToggleBookmark: () => _toggleBookmark(provider),
+                      onShowMore: () => _showMorePanel(provider),
                       onStartAutoPage: _startAutoPageMode,
                       onStartTts: _startTts,
-                      onToggleTheme: _toggleReaderTheme,
+                      onToggleTheme: _toggleNightMode,
                       onPrevChapter: _goToPreviousChapter,
                       onNextChapter: _goToNextChapter,
                       onChapterSliderChanged: (value) {
@@ -1639,6 +1655,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       },
                       onShowChapterList: () => _showChapterList(provider),
                       onShowSettings: () => _showReadingSettingsSheet(provider),
+                      onShowBackground: _showBackgroundSheet,
+                      onShowMoreSettings: _showMoreSettingsPage,
                       onStopTts: _stopTts,
                       onPauseTts: _pauseTts,
                       onResumeTts: _resumeTts,
@@ -1653,16 +1671,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                         await _tts.setRate(v);
                         if (mounted) setState(() {});
                       },
-                      onStopAutoPage: _stopAutoPageMode,
-                      onDecreaseAutoPageInterval: () =>
-                          _changeAutoPageInterval(-1),
-                      onIncreaseAutoPageInterval: () =>
-                          _changeAutoPageInterval(1),
-                      onAddToBookshelf: () => _addCurrentBookToShelf(provider),
                     ),
                   ),
                 ],
                 if (_state.autoPageRunning && _state.showAutoPageControls)
+                  // 自动翻页条 —— 对齐轻阅时光：白色胶囊，
+                  // 「翻页时间 Ns」+ 滑杆 + 「■ 停止」灰胶囊。
                   Positioned(
                     left: 12,
                     right: 12,
@@ -1671,44 +1685,72 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       top: false,
                       child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 14, vertical: 12),
+                            horizontal: 16, vertical: 4),
                         decoration: BoxDecoration(
-                          color: const Color(0xD91A222B),
-                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(40),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.15),
+                              blurRadius: 12,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
                         ),
                         child: Row(
                           children: [
-                            IconButton(
-                              onPressed: () => _changeAutoPageInterval(-1),
-                              icon: const Icon(Icons.remove, color: Colors.white),
-                            ),
-                            Expanded(
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Text('自动翻页',
-                                      style: TextStyle(
-                                          color: Colors.white, fontSize: 13)),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${_state.autoPageInterval.toStringAsFixed(0)} 秒',
-                                    style: const TextStyle(
-                                        color: Colors.white70, fontSize: 11),
-                                  ),
-                                ],
+                            Text(
+                              '翻页时间 ${_state.autoPageInterval.toStringAsFixed(0)}s',
+                              style: const TextStyle(
+                                fontSize: 15,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF222222),
                               ),
                             ),
-                            IconButton(
-                              onPressed: () => _changeAutoPageInterval(1),
-                              icon: const Icon(Icons.add, color: Colors.white),
+                            Expanded(
+                              child: SliderTheme(
+                                data: SliderTheme.of(context).copyWith(
+                                  activeTrackColor: const Color(0xFF5EC8C0),
+                                  thumbColor: const Color(0xFF5EC8C0),
+                                  inactiveTrackColor:
+                                      const Color(0xFFE3E5E8),
+                                  trackHeight: 3,
+                                  thumbShape: const RoundSliderThumbShape(
+                                      enabledThumbRadius: 7),
+                                  overlayShape: const RoundSliderOverlayShape(
+                                      overlayRadius: 14),
+                                ),
+                                child: Slider(
+                                  value: _state.autoPageInterval
+                                      .clamp(3.0, 60.0),
+                                  min: 3,
+                                  max: 60,
+                                  onChanged: _setAutoPageInterval,
+                                ),
+                              ),
                             ),
-                            const SizedBox(width: 8),
-                            TextButton.icon(
-                              onPressed: _stopAutoPageMode,
-                              icon: const Icon(Icons.stop_circle_outlined),
-                              label: const Text('停止'),
-                              style: TextButton.styleFrom(
-                                  foregroundColor: Colors.white),
+                            GestureDetector(
+                              onTap: _stopAutoPageMode,
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                    horizontal: 14, vertical: 7),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF2F3F5),
+                                  borderRadius: BorderRadius.circular(18),
+                                ),
+                                child: const Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.stop,
+                                        size: 14, color: Color(0xFF333333)),
+                                    SizedBox(width: 4),
+                                    Text('停止',
+                                        style: TextStyle(
+                                            fontSize: 13,
+                                            color: Color(0xFF333333))),
+                                  ],
+                                ),
+                              ),
                             ),
                           ],
                         ),
@@ -2347,10 +2389,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   }
 
   void _changeAutoPageInterval(double delta) {
+    _setAutoPageInterval(_state.autoPageInterval + delta);
+  }
+
+  /// 直接设定自动翻页间隔（自动翻页条上的滑杆用）。
+  void _setAutoPageInterval(double value) {
     final provider = context.read<ReaderProvider>();
     setState(() {
-      _state.autoPageInterval =
-          (_state.autoPageInterval + delta).clamp(3.0, 60.0);
+      _state.autoPageInterval = value.clamp(3.0, 60.0);
     });
     if (_state.autoPageRunning) {
       _restartAutoPageTimer(provider);
@@ -2371,9 +2417,20 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     });
   }
 
-  void _toggleReaderTheme() {
+  /// 夜间切换：深色 ⇄ 切夜间之前的主题（对齐轻阅时光的「夜间」圆钮）。
+  /// 之前的循环换肤（`_toggleReaderTheme` 走 nextTheme）已随旧胶囊一起移除 ——
+  /// 换肤现在由「背景」面板里的色点负责。
+  String? _themeBeforeNight;
+
+  void _toggleNightMode() {
     setState(() {
-      _state.theme = ReaderTheme.nextTheme(_state.theme);
+      if (_state.theme == 'dark') {
+        _state.theme = _themeBeforeNight ?? 'green';
+        _themeBeforeNight = null;
+      } else {
+        _themeBeforeNight = _state.theme;
+        _state.theme = 'dark';
+      }
     });
     _saveSettings();
   }
@@ -2550,14 +2607,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   // 书签
   // ============================================================
 
-  bool _hasBookmarkAtCurrent(ReaderProvider provider) {
-    final currentIndex =
-        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
-    return _bookmarks.any(
-      (mark) => mark.chapterIndex == currentIndex && mark.chapterPos != null,
-    );
-  }
-
   Bookmark? _bookmarkAtCurrent(ReaderProvider provider) {
     final idx =
         _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
@@ -2611,290 +2660,58 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _deleteBookmark(Bookmark mark) async {
-    if (_token == null || mark.id == null) return;
-    try {
-      await ApiService.instance.deleteBookmark(_token!, mark.id!);
-      await _loadBookmarks();
-    } catch (_) {}
-  }
-
-  Future<void> _jumpToBookmark(Bookmark mark) async {
-    if (_token == null) return;
-    final provider = context.read<ReaderProvider>();
-    final targetChapter = mark.chapterIndex ??
-        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
-    Navigator.pop(context);
-    _saveProgress(pos: _getProgress());
-    await _openChapter(targetChapter,
-        chapterPosition: mark.chapterPos?.round() ?? 0);
-  }
-
   // ============================================================
   // 底部弹窗
   // ============================================================
 
-  /// 目录弹层首帧之后把列表滚到当前章。
+  /// 目录 / 书签 / 笔记弹层 —— 复用书籍详情页的 [BookTocSheet]（轻阅时光样式）。
   ///
-  /// 首帧时 controller 可能还没 attach（`hasClients == false`），所以按帧重试几次；
-  /// 仍然失败就放弃 —— 只是没定位，不该把页面搞崩。
-  void _jumpChapterListTo(
-    ScrollController controller,
-    double offset, {
-    int attempt = 0,
-  }) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!controller.hasClients) {
-        if (attempt < 5) {
-          _jumpChapterListTo(controller, offset, attempt: attempt + 1);
-        }
-        return;
-      }
-      final max = controller.position.maxScrollExtent;
-      controller.jumpTo(offset.clamp(0.0, max));
-    });
-  }
-
-  void _showChapterList(ReaderProvider provider) {
-    // 【打开目录要停在「正在读的这一章」】
-    // 之前列表从第 1 章开始列，用户得自己往下滑几百章才能找到当前位置。
-    //
-    // 定位靠 `index * 条目高度`，而 `ListView.builder` 在条目高度不一时算不准，
-    // 所以这里给 ListView 设**固定 itemExtent**（每个条目就是一行 14px 文字，
-    // Material 的 dense 单行 ListTile 正好 48），再用同一个常量算偏移 —— 精确。
-    //
-    // 【为什么要乘系统字号】`itemExtent` 会把条目压成**紧约束**，而 ListTile 的高度
-    // 会随系统「字体大小」变大。系统字号调到很大时，48 装不下 14px 文字就会出
-    // overflow 条纹。跟着放大只是留白变多，定位依然精确。
-    final textScale = MediaQuery.textScalerOf(context).scale(1.0);
-    final tileExtent = 48.0 * (textScale < 1.0 ? 1.0 : textScale);
-    final chapterCount = provider.chapters.length;
-    final currentIndex = chapterCount == 0
-        ? 0
-        : _state
-            .displayedChapterIndex(provider.book?.durChapterIndex ?? 0)
-            .clamp(0, chapterCount - 1);
-
-    // 只跳一次。sheet 因任何原因重建时不能再跳，否则用户手动滚一半会被弹回去。
-    var jumped = false;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.3,
-        maxChildSize: 0.9,
-        expand: false,
-        builder: (context, scrollController) {
-          if (!jumped) {
-            jumped = true;
-            _jumpChapterListTo(scrollController, currentIndex * tileExtent);
-          }
-          return StatefulBuilder(
-            builder: (context, setSheetState) => Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Row(
-                    children: [
-                      const Text('目录',
-                          style: TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold)),
-                      const Spacer(),
-                      Text('${provider.chapters.length} 章',
-                          style: const TextStyle(color: Colors.grey)),
-                      IconButton(
-                        tooltip: '刷新目录',
-                        icon: _chapterListRefreshing
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : const Icon(Icons.refresh, size: 20),
-                        onPressed: _chapterListRefreshing
-                            ? null
-                            : () => _refreshChapterList(
-                                provider, setSheetState),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView.builder(
-                    controller: scrollController,
-                    itemExtent: tileExtent,
-                    itemCount: provider.chapters.length,
-                    itemBuilder: (context, index) {
-                    final chapter = provider.chapters[index];
-                    final ci = _state.displayedChapterIndex(
-                        provider.book?.durChapterIndex ?? 0);
-                    final isCurrent = index == ci;
-                    final isRead = provider.readChapters.contains(index);
-                    final hasBookmark = _bookmarkChapterIndices.contains(index);
-                    return ListTile(
-                      dense: true,
-                      selected: isCurrent,
-                      selectedTileColor:
-                          const Color(0xFF00A88F).withValues(alpha: 0.10),
-                      leading: hasBookmark
-                          ? const Icon(Icons.bookmark,
-                              size: 16, color: Color(0xFF00A88F))
-                          : null,
-                      title: Text(
-                        chapter.title ?? '',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: isCurrent
-                              ? const Color(0xFF00A88F)
-                              : isRead
-                                  ? Colors.grey
-                                  : null,
-                          fontWeight:
-                              isCurrent ? FontWeight.bold : FontWeight.normal,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      trailing: isCurrent
-                          ? const Icon(Icons.play_arrow,
-                              size: 16, color: Color(0xFF00A88F))
-                          : null,
-                      onTap: () {
-                        Navigator.pop(context);
-                        _saveProgress(pos: _getProgress());
-                        _openChapter(index, chapterPosition: 0);
-                      },
-                    );
-                  },
-                ),
-              ),
-            ],
-          ),
-        );
-        },
-      ),
-    );
-  }
-
-  /// 目录弹窗里点「刷新」：强制从书源重新拉章节列表（绕过服务端缓存）。
-  ///
-  /// 只更新目录，不动当前阅读位置。新增了几章会弹提示，没变就说明已是最新。
-  Future<void> _refreshChapterList(
-      ReaderProvider provider,
-      void Function(void Function()) setSheetState) async {
+  /// 弹层点章节/书签会返回 [ReaderLaunchArgs]，这里转成跳章。
+  Future<void> _showChapterList(ReaderProvider provider) async {
+    final book = provider.book;
     final token = _token;
-    if (token == null) return;
-    setState(() => _chapterListRefreshing = true);
-    try {
-      final added = await provider.refreshChapters(token);
-      if (!mounted) return;
-      setSheetState(() {});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(added > 0 ? '目录已更新，新增 $added 章' : '目录已是最新'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('目录刷新失败，请稍后再试')),
-      );
-    } finally {
-      if (mounted) setState(() => _chapterListRefreshing = false);
-    }
-  }
-
-  void _showBookmarkList() {
-    showModalBottomSheet(
+    if (book == null || token == null) return;
+    _hideController();
+    final args = await showModalBottomSheet<ReaderLaunchArgs>(
       context: context,
       isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
-        minChildSize: 0.3,
-        maxChildSize: 0.8,
-        expand: false,
-        builder: (ctx, scrollController) {
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
-                  children: [
-                    const Text('书签',
-                        style: TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold)),
-                    const Spacer(),
-                    Text('${_bookmarks.length} 个',
-                        style: const TextStyle(color: Colors.grey)),
-                  ],
-                ),
-              ),
-              const Divider(height: 1),
-              Expanded(
-                child: _bookmarks.isEmpty
-                    ? const Center(child: Text('暂无书签'))
-                    : ListView.builder(
-                        controller: scrollController,
-                        itemCount: _bookmarks.length,
-                        itemBuilder: (context, index) {
-                          final mark = _bookmarks[index];
-                          final provider = context.read<ReaderProvider>();
-                          final isCurrentChapter = mark.chapterIndex ==
-                              _state.displayedChapterIndex(
-                                  provider.book?.durChapterIndex ?? 0);
-                          return ListTile(
-                            leading: const Icon(Icons.bookmark,
-                                color: Color(0xFF00A88F)),
-                            title: Text(
-                              mark.chapterName ?? '',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontWeight: isCurrentChapter
-                                    ? FontWeight.bold
-                                    : FontWeight.normal,
-                              ),
-                            ),
-                            subtitle: Text(
-                              mark.createTime ?? '',
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.grey),
-                            ),
-                            trailing: IconButton(
-                              icon: const Icon(Icons.delete_outline, size: 20),
-                              onPressed: () => _deleteBookmark(mark),
-                            ),
-                            onTap: () => _jumpToBookmark(mark),
-                          );
-                        },
-                      ),
-              ),
-            ],
-          );
-        },
-      ),
+      backgroundColor: Colors.transparent,
+      builder: (_) => BookTocSheet(book: book, token: token),
+    );
+    if (args == null || !mounted) return;
+    // 弹层的目录是它自己重新拉的，可能比 provider 里那份多几章；
+    // 先刷新 provider 的目录再跳，保证弹层给的下标不越界。
+    try {
+      await provider.refreshChapters(token);
+    } catch (_) {}
+    if (!mounted) return;
+    _saveProgress(pos: _getProgress());
+    await _openChapter(
+      args.chapterIndex ?? 0,
+      chapterPosition: args.chapterPosition,
+      openAtEnd: args.openAtEnd,
     );
   }
 
+
+  /// 界面设置 —— 对齐轻阅时光：字号行（－ 数值 ＋ 更多）+ 字体行 + 间距/翻页两个宽按钮。
+  ///
+  /// 亮度与背景色挪去了「背景设置」面板（[_showBackgroundSheet]），
+  /// 翻页动画列表挪去了「翻页设置」（[_showPageAnimSheet]），
+  /// 这个面板只留排版相关的入口。
   void _showReadingSettingsSheet(ReaderProvider provider) {
-    // 面板配色跟随阅读主题：官方客户端的面板底色就是正文背景色，
-    // 只在顶边压一条 1px 分隔线 + 一点向上的阴影，用来和正文区分开。
+    // 面板配色跟随阅读主题：面板底色就是正文背景色。
     final readerTheme = _state.currentTheme;
-    const accent = Color(0xFFFF9800); // 选中胶囊的橙色
-    const sliderAccent = Color(0xFF7CB7B2); // 亮度滑块的青色
+    // 轻阅时光的面板是纯白底 + 浅灰容器；深色主题下沿用主题底色，
+    // 容器色用「文字色的极淡版」，避免深色主题里出现一块刺眼的白。
+    final isDark = readerTheme.background.computeLuminance() < 0.5;
+    final cardBg = isDark
+        ? readerTheme.text.withValues(alpha: 0.08)
+        : const Color(0xFFF5F6F8);
+    final pillBg =
+        isDark ? readerTheme.text.withValues(alpha: 0.14) : Colors.white;
 
     // 官方客户端里，设置面板一出来，顶部/底部工具条就收起来了。
-    // 不收起的话那条半透明黑底会盖在正文上，正文透过来看着像「字体重叠」。
     _hideController();
 
     showModalBottomSheet(
@@ -2919,187 +2736,836 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
             return SafeArea(
               top: false,
-              child: SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // ---- 亮度 ----
-                      _SettingRow(
-                        label: '亮度',
-                        child: SliderTheme(
-                          data: SliderTheme.of(context).copyWith(
-                            activeTrackColor: sliderAccent,
-                            thumbColor: sliderAccent,
-                            inactiveTrackColor: readerTheme.divider,
-                            trackHeight: 5,
-                            thumbShape: const RoundSliderThumbShape(
-                                enabledThumbRadius: 11),
-                            overlayShape: const RoundSliderOverlayShape(
-                                overlayRadius: 20),
-                          ),
-                          child: Slider(
-                            value: _state.brightness.clamp(0.1, 1.0),
-                            min: 0.1,
-                            max: 1.0,
-                            divisions: 18,
-                            onChanged: (v) =>
-                                commit(() => _state.brightness = v),
-                          ),
-                        ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ---- 标题 ----
+                    Row(
+                      children: [
+                        Icon(Icons.tune, size: 20, color: readerTheme.text),
+                        const SizedBox(width: 8),
+                        Text('界面设置',
+                            style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: readerTheme.text)),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // ---- 字号 ----
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(12),
                       ),
-
-                      const SizedBox(height: 4),
-
-                      // ---- 字号 ----
-                      _chipRow('字号', [
-                        _ChoiceChip(
-                          'A-',
-                          false,
-                          () {
-                            final next =
-                                (_state.fontSize - 2).clamp(12.0, 40.0);
-                            commit(() => _state.fontSize = next,
-                                rebuildPages: true);
-                          },
-                          borderColor: readerTheme.divider,
-                          textColor: readerTheme.text,
-                          accentColor: accent,
-                        ),
-                        _ChoiceChip(
-                          'A+',
-                          false,
-                          () {
-                            final next =
-                                (_state.fontSize + 2).clamp(12.0, 40.0);
-                            commit(() => _state.fontSize = next,
-                                rebuildPages: true);
-                          },
-                          borderColor: readerTheme.divider,
-                          textColor: readerTheme.text,
-                          accentColor: accent,
-                        ),
-                        _ChoiceChip(
-                          _state.boldText ? '粗' : '细',
-                          _state.boldText,
-                          () => commit(() => _state.boldText = !_state.boldText,
-                              rebuildPages: true),
-                          borderColor: readerTheme.divider,
-                          textColor: readerTheme.text,
-                          accentColor: accent,
-                        ),
-                      ]),
-
-                      const SizedBox(height: 4),
-
-                      // ---- 字体 ----
-                      _chipRow('字体', [
-                        for (final font in ReaderFont.presets)
-                          _ChoiceChip(
-                            font.label,
-                            _state.fontFamily == font.id,
-                            () => commit(
-                                () => _state.fontFamily = font.id,
-                                rebuildPages: true),
-                            borderColor: readerTheme.divider,
-                            textColor: readerTheme.text,
-                            accentColor: accent,
-                          ),
-                      ]),
-
-                      const SizedBox(height: 4),
-
-                      // ---- 翻页 ----
-                      _chipRow('翻页', [
-                        for (final anim in PageAnimType.primaryChoices)
-                          _ChoiceChip(
-                            anim.label,
-                            _state.pageAnimType == anim,
-                            () => commit(() {
-                              _state.applyPageAnimType(anim);
-                            }, rebuildPages: true),
-                            borderColor: readerTheme.divider,
-                            textColor: readerTheme.text,
-                            accentColor: accent,
-                          ),
-                      ]),
-
-                      const SizedBox(height: 4),
-
-                      // ---- 背景主题 ----
-                      _chipRow('背景', [
-                        for (final preset in ReaderTheme.presets)
-                          _dot(
-                            label: ReaderTheme.displayName(preset.name),
-                            color: preset.background,
-                            selected: _state.theme == preset.name,
-                            borderColor: readerTheme.divider,
-                            onTap: () =>
-                                commit(() => _state.theme = preset.name),
-                          ),
-                        // 自定义颜色
-                        _dot(
-                          label: '自定义',
-                          color: _state.theme.startsWith('custom_')
-                              ? _state.currentTheme.background
-                              : Colors.grey.shade300,
-                          selected: _state.theme.startsWith('custom_'),
-                          borderColor: readerTheme.divider,
-                          isCustom: true,
-                          onTap: () async {
-                            final color = await _showColorPicker(
-                              _state.currentTheme.background,
-                            );
-                            if (color != null) {
-                              final theme = ReaderTheme.custom(color);
-                              commit(() => _state.theme = theme.name);
-                            }
-                          },
-                        ),
-                      ]),
-
-                      const SizedBox(height: 14),
-
-                      // ---- 间距设置 / 更多设置 ----
-                      Row(
+                      child: Row(
                         children: [
-                          Expanded(
-                            child: _panelButton(
-                              icon: Icons.format_line_spacing,
-                              label: '间距设置',
-                              textColor: readerTheme.text,
-                              borderColor: readerTheme.divider,
-                              onTap: () {
-                                Navigator.pop(sheetContext);
-                                _showSpacingSettingsSheet(provider);
-                              },
+                          Icon(Icons.text_fields,
+                              size: 18, color: readerTheme.text),
+                          const SizedBox(width: 6),
+                          Text('字号',
+                              style: TextStyle(
+                                  fontSize: 15, color: readerTheme.text)),
+                          const Spacer(),
+                          _uiSettingPill(
+                            pillBg: pillBg,
+                            textColor: readerTheme.text,
+                            onTap: () {
+                              final next =
+                                  (_state.fontSize - 2).clamp(12.0, 40.0);
+                              commit(() => _state.fontSize = next,
+                                  rebuildPages: true);
+                            },
+                            child: Icon(Icons.remove,
+                                size: 18, color: readerTheme.text),
+                          ),
+                          const SizedBox(width: 8),
+                          _uiSettingPill(
+                            pillBg: pillBg,
+                            textColor: readerTheme.text,
+                            child: Text(
+                              '${_state.fontSize.round()}',
+                              style: TextStyle(
+                                  fontSize: 15,
+                                  fontWeight: FontWeight.w600,
+                                  color: readerTheme.text),
                             ),
                           ),
-                          const SizedBox(width: 10),
+                          const SizedBox(width: 8),
+                          _uiSettingPill(
+                            pillBg: pillBg,
+                            textColor: readerTheme.text,
+                            onTap: () {
+                              final next =
+                                  (_state.fontSize + 2).clamp(12.0, 40.0);
+                              commit(() => _state.fontSize = next,
+                                  rebuildPages: true);
+                            },
+                            child: Icon(Icons.add,
+                                size: 18, color: readerTheme.text),
+                          ),
+                          const SizedBox(width: 8),
+                          _uiSettingPill(
+                            pillBg: pillBg,
+                            textColor: readerTheme.text,
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              _showFontSizeMoreSheet(provider);
+                            },
+                            child: Text('更多',
+                                style: TextStyle(
+                                    fontSize: 14, color: readerTheme.text)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // ---- 字体 ----
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 14, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: cardBg,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.font_download_outlined,
+                              size: 18, color: readerTheme.text),
+                          const SizedBox(width: 6),
+                          Text('字体',
+                              style: TextStyle(
+                                  fontSize: 15, color: readerTheme.text)),
+                          const SizedBox(width: 14),
                           Expanded(
-                            child: _panelButton(
-                              icon: Icons.more_horiz,
-                              label: '更多设置',
+                            child: _uiSettingPill(
+                              pillBg: pillBg,
                               textColor: readerTheme.text,
-                              borderColor: readerTheme.divider,
+                              height: 40,
                               onTap: () {
                                 Navigator.pop(sheetContext);
-                                _showMoreSettingsSheet(provider);
+                                _showFontPickerSheet(provider);
                               },
+                              child: Text(
+                                ReaderFont.byId(_state.fontFamily).label,
+                                style: TextStyle(
+                                    fontSize: 14, color: readerTheme.text),
+                              ),
                             ),
                           ),
                         ],
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // ---- 间距设置 / 翻页设置 ----
+                    Row(
+                      children: [
+                        Expanded(
+                          child: _panelButton(
+                            icon: Icons.format_line_spacing,
+                            label: '间距设置',
+                            textColor: readerTheme.text,
+                            borderColor: readerTheme.divider,
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              _showSpacingSettingsSheet(provider);
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: _panelButton(
+                            icon: Icons.auto_stories_outlined,
+                            label: '翻页设置',
+                            textColor: readerTheme.text,
+                            borderColor: readerTheme.divider,
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              _showPageAnimSheet(provider);
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ),
               ),
             );
           },
         );
       },
+    );
+  }
+
+  /// 界面设置面板里的小胶囊（－ / 数值 / ＋ / 更多 / 字体名）。
+  Widget _uiSettingPill({
+    required Color pillBg,
+    required Color textColor,
+    required Widget child,
+    VoidCallback? onTap,
+    double height = 34,
+  }) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: height,
+        constraints: const BoxConstraints(minWidth: 46),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: pillBg,
+          borderRadius: BorderRadius.circular(9),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  /// 「字号 → 更多」：首行缩进 / 行高 / 粗体。
+  ///
+  /// 轻阅时光这里还有「简繁转换」「全局下划线」「字间距」「字重」，Qread 的排版
+  /// 引擎没有这些管线，不放摆没反应的占位开关 —— 只留真生效的三项。
+  void _showFontSizeMoreSheet(ReaderProvider provider) {
+    final readerTheme = _state.currentTheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: readerTheme.background,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, sheetSetState) {
+            void commit(VoidCallback fn, {bool rebuildPages = false}) {
+              setState(fn);
+              sheetSetState(() {});
+              _saveSettings();
+              if (rebuildPages) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _rebuildPages(context.read<ReaderProvider>());
+                });
+              }
+            }
+
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('字号设置',
+                              style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  color: readerTheme.text)),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.close,
+                              size: 20, color: readerTheme.text),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    _SettingRow(
+                      label: '首行缩进',
+                      value: _state.firstLineIndent.round().toString(),
+                      child: Slider(
+                        value: _state.firstLineIndent,
+                        min: 0,
+                        max: 4,
+                        divisions: 4,
+                        label: _state.firstLineIndent.round().toString(),
+                        onChanged: (v) => commit(
+                            () => _state.firstLineIndent = v,
+                            rebuildPages: true),
+                      ),
+                    ),
+                    _SettingRow(
+                      label: '行高',
+                      value: _state.lineHeight.toStringAsFixed(1),
+                      child: Slider(
+                        value: _state.lineHeight,
+                        min: 1.2,
+                        max: 2.6,
+                        divisions: 14,
+                        label: _state.lineHeight.toStringAsFixed(1),
+                        onChanged: (v) => commit(() => _state.lineHeight = v,
+                            rebuildPages: true),
+                      ),
+                    ),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: Text('粗体',
+                          style: TextStyle(
+                              fontSize: 15, color: readerTheme.text)),
+                      value: _state.boldText,
+                      onChanged: (v) => commit(() => _state.boldText = v,
+                          rebuildPages: true),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 「字体 → 选择字体」：每种字体用它自己的字形渲染标签（对齐轻阅时光）。
+  void _showFontPickerSheet(ReaderProvider provider) {
+    final readerTheme = _state.currentTheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: readerTheme.background,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, sheetSetState) {
+            void pick(String id) {
+              setState(() => _state.fontFamily = id);
+              sheetSetState(() {});
+              _saveSettings();
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _rebuildPages(context.read<ReaderProvider>());
+              });
+            }
+
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text('选择字体',
+                              style: TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  color: readerTheme.text)),
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.close,
+                              size: 20, color: readerTheme.text),
+                          onPressed: () => Navigator.pop(sheetContext),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final font in ReaderFont.presets)
+                          _fontChoiceChip(
+                            font: font,
+                            selected: _state.fontFamily == font.id,
+                            theme: readerTheme,
+                            onTap: () => pick(font.id),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _fontChoiceChip({
+    required ReaderFont font,
+    required bool selected,
+    required ReaderTheme theme,
+    required VoidCallback onTap,
+  }) {
+    const accent = Color(0xFF55A0E8);
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected
+              ? accent.withValues(alpha: 0.15)
+              : theme.text.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Text(
+          font.label,
+          style: TextStyle(
+            fontSize: 16,
+            // 每个字体选项用自己的字族渲染，点之前就能看到长什么样。
+            fontFamily: font.family,
+            color: selected ? accent : theme.text,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// 「翻页设置」：翻页动画列表，选中项打勾（对齐轻阅时光的「翻页方式」）。
+  void _showPageAnimSheet(ReaderProvider provider) {
+    final readerTheme = _state.currentTheme;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: readerTheme.background,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          top: false,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 8, 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text('翻页方式',
+                          style: TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                              color: readerTheme.text)),
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.close,
+                          size: 20, color: readerTheme.text),
+                      onPressed: () => Navigator.pop(sheetContext),
+                    ),
+                  ],
+                ),
+              ),
+              for (final anim in PageAnimType.primaryChoices)
+                ListTile(
+                  title: Text(anim.label,
+                      style: TextStyle(fontSize: 15, color: readerTheme.text)),
+                  trailing: _state.pageAnimType == anim
+                      ? const Icon(Icons.check,
+                          size: 20, color: Color(0xFF55A0E8))
+                      : null,
+                  onTap: () {
+                    Navigator.pop(sheetContext);
+                    setState(() => _state.applyPageAnimType(anim));
+                    _saveSettings();
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        _rebuildPages(context.read<ReaderProvider>());
+                      }
+                    });
+                  },
+                ),
+              const SizedBox(height: 12),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 背景设置 —— 对齐轻阅时光：亮度滑条（太阳图标 + 眼睛图标）+ 主题色圆点行。
+  void _showBackgroundSheet() {
+    final readerTheme = _state.currentTheme;
+    const sliderAccent = Color(0xFF7CB7B2);
+
+    _hideController();
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: readerTheme.background,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, sheetSetState) {
+            void commit(VoidCallback fn) {
+              setState(fn);
+              sheetSetState(() {});
+              _saveSettings();
+            }
+
+            return SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(18, 14, 18, 20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // ---- 标题 ----
+                    Row(
+                      children: [
+                        Icon(Icons.palette_outlined,
+                            size: 20, color: readerTheme.text),
+                        const SizedBox(width: 8),
+                        Text('背景设置',
+                            style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: readerTheme.text)),
+                      ],
+                    ),
+                    const SizedBox(height: 14),
+
+                    // ---- 亮度 ----
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: readerTheme.text.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.wb_sunny_outlined,
+                              size: 20, color: readerTheme.secondaryText),
+                          Expanded(
+                            child: SliderTheme(
+                              data: SliderTheme.of(context).copyWith(
+                                activeTrackColor: sliderAccent,
+                                thumbColor: Colors.white,
+                                inactiveTrackColor: readerTheme.divider,
+                                trackHeight: 8,
+                                thumbShape: const RoundSliderThumbShape(
+                                    enabledThumbRadius: 10),
+                                overlayShape: const RoundSliderOverlayShape(
+                                    overlayRadius: 18),
+                              ),
+                              child: Slider(
+                                value: _state.brightness.clamp(0.1, 1.0),
+                                min: 0.1,
+                                max: 1.0,
+                                divisions: 18,
+                                onChanged: (v) =>
+                                    commit(() => _state.brightness = v),
+                              ),
+                            ),
+                          ),
+                          Icon(Icons.remove_red_eye_outlined,
+                              size: 20, color: readerTheme.secondaryText),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // ---- 主题色 ----
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 14),
+                      decoration: BoxDecoration(
+                        color: readerTheme.text.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceAround,
+                        children: [
+                          for (final preset in ReaderTheme.presets)
+                            _dot(
+                              label: ReaderTheme.displayName(preset.name),
+                              color: preset.background,
+                              selected: _state.theme == preset.name,
+                              borderColor: readerTheme.divider,
+                              onTap: () =>
+                                  commit(() => _state.theme = preset.name),
+                            ),
+                          // 自定义颜色
+                          _dot(
+                            label: '自定义',
+                            color: _state.theme.startsWith('custom_')
+                                ? _state.currentTheme.background
+                                : Colors.grey.shade300,
+                            selected: _state.theme.startsWith('custom_'),
+                            borderColor: readerTheme.divider,
+                            isCustom: true,
+                            onTap: () async {
+                              final color = await _showColorPicker(
+                                _state.currentTheme.background,
+                              );
+                              if (color != null) {
+                                final theme = ReaderTheme.custom(color);
+                                commit(() => _state.theme = theme.name);
+                              }
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// 更多设置 —— 对齐轻阅时光：整页（返回圆钮 + 居中标题 + 分组白卡）。
+  ///
+  /// 开关改动立即生效：显示类开关（顶栏/底栏/进度/段评）需要重排分页，
+  /// 其余只写存储。备份/恢复/更改类型复用 ⋮ 菜单里的同一套实现。
+  void _showMoreSettingsPage() {
+    _hideController();
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (pageContext) {
+          return StatefulBuilder(
+            builder: (pageContext, pageSetState) {
+              void commit(VoidCallback fn, {bool rebuildPages = false}) {
+                setState(fn);
+                pageSetState(() {});
+                _saveSettings();
+                if (rebuildPages) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) {
+                      _rebuildPages(context.read<ReaderProvider>());
+                    }
+                  });
+                }
+              }
+
+              Widget switchRow(
+                String label,
+                bool value,
+                ValueChanged<bool> onChanged,
+              ) {
+                return Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(label,
+                            style: const TextStyle(
+                                fontSize: 15, color: Color(0xFF222222))),
+                      ),
+                      Switch(value: value, onChanged: onChanged),
+                    ],
+                  ),
+                );
+              }
+
+              Widget entryRow(String label, VoidCallback onTap) {
+                return InkWell(
+                  onTap: onTap,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 13),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(label,
+                              style: const TextStyle(
+                                  fontSize: 15, color: Color(0xFF222222))),
+                        ),
+                        const Icon(Icons.chevron_right,
+                            size: 20, color: Color(0xFFAAAAAA)),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
+              Widget card(String title, List<Widget> children) {
+                return Container(
+                  margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF222222),
+                          ),
+                        ),
+                      ),
+                      ...children,
+                      const SizedBox(height: 8),
+                    ],
+                  ),
+                );
+              }
+
+              return Scaffold(
+                backgroundColor: const Color(0xFFF5F6F8),
+                body: SafeArea(
+                  child: Column(
+                    children: [
+                      // ---- 标题栏：返回圆钮 + 居中标题 ----
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
+                        child: Stack(
+                          alignment: Alignment.center,
+                          children: [
+                            Align(
+                              alignment: Alignment.centerLeft,
+                              child: Material(
+                                color: Colors.white,
+                                shape: const CircleBorder(),
+                                elevation: 1,
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: () => Navigator.pop(pageContext),
+                                  child: const SizedBox(
+                                    width: 40,
+                                    height: 40,
+                                    child: Icon(Icons.arrow_back_ios_new,
+                                        size: 18, color: Color(0xFF333333)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const Text(
+                              '更多设置',
+                              style: TextStyle(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF222222),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: ListView(
+                          padding: const EdgeInsets.only(bottom: 24),
+                          children: [
+                            card('显示设置', [
+                              switchRow(
+                                '顶部区域（章节名）',
+                                _state.showTopBar,
+                                (v) => commit(() => _state.showTopBar = v,
+                                    rebuildPages: true),
+                              ),
+                              switchRow(
+                                '底部区域（时间/电量/页码）',
+                                _state.showBottomBar,
+                                (v) => commit(() => _state.showBottomBar = v,
+                                    rebuildPages: true),
+                              ),
+                              switchRow(
+                                '显示进度',
+                                _state.showPageNumber,
+                                (v) => commit(() => _state.showPageNumber = v,
+                                    rebuildPages: true),
+                              ),
+                              switchRow(
+                                '显示段评',
+                                _state.showParagraphComment,
+                                (v) => commit(
+                                    () => _state.showParagraphComment = v,
+                                    rebuildPages: true),
+                              ),
+                            ]),
+                            card('翻页设置', [
+                              switchRow(
+                                '音量键翻页',
+                                _state.volumeKeyFlip,
+                                (v) =>
+                                    commit(() => _state.volumeKeyFlip = v),
+                              ),
+                              switchRow(
+                                '自动下一章',
+                                _state.autoNext,
+                                (v) => commit(() => _state.autoNext = v),
+                              ),
+                              if (!_state.isComic)
+                                Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 16),
+                                  child: Row(
+                                    children: [
+                                      const Text('翻页间隔',
+                                          style: TextStyle(
+                                              fontSize: 15,
+                                              color: Color(0xFF222222))),
+                                      Expanded(
+                                        child: Slider(
+                                          value: _state.autoPageInterval,
+                                          min: 3,
+                                          max: 60,
+                                          divisions: 57,
+                                          label:
+                                              '${_state.autoPageInterval.toStringAsFixed(0)}秒',
+                                          onChanged: (v) => commit(() =>
+                                              _state.autoPageInterval = v),
+                                        ),
+                                      ),
+                                      Text(
+                                        '${_state.autoPageInterval.toStringAsFixed(0)}秒',
+                                        style: const TextStyle(
+                                            fontSize: 13,
+                                            color: Color(0xFF888888)),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                            ]),
+                            card('其他', [
+                              switchRow(
+                                '屏幕常亮',
+                                _state.screenWakelock,
+                                (v) => commit(() {
+                                  _state.screenWakelock = v;
+                                  _applyWakelock();
+                                }),
+                              ),
+                              entryRow('备份设置', () {
+                                Navigator.pop(pageContext);
+                                _backupReaderSettings();
+                              }),
+                              entryRow('恢复设置', () {
+                                Navigator.pop(pageContext);
+                                _restoreReaderSettings();
+                              }),
+                              entryRow('更改类型', () {
+                                Navigator.pop(pageContext);
+                                _showChangeTypeDialog(
+                                    context.read<ReaderProvider>());
+                              }),
+                            ]),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 
@@ -3126,7 +3592,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     return selected ? _ThemeColorDotRing(child: dot) : dot;
   }
 
-  /// 面板底部的宽按钮（间距设置 / 更多设置）
+  /// 面板底部的宽按钮（间距设置 / 翻页设置）
   Widget _panelButton({
     required IconData icon,
     required String label,
@@ -3154,28 +3620,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  /// 「标签 + 一行可换行的胶囊按钮」布局
-  Widget _chipRow(String label, List<Widget> chips) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-            width: 52,
-            child: Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(label, style: const TextStyle(fontSize: 15)),
-            ),
-          ),
-          Expanded(
-            child: Wrap(spacing: 8, runSpacing: 6, children: chips),
-          ),
-        ],
       ),
     );
   }
@@ -3385,146 +3829,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 更多设置抽屉
-  void _showMoreSettingsSheet(ReaderProvider provider) {
-    final readerTheme = _state.currentTheme;
-
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: readerTheme.background,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (sheetContext, sheetSetState) {
-            void commit(VoidCallback fn, {bool rebuildPages = false}) {
-              setState(fn);
-              sheetSetState(() {});
-              _saveSettings();
-              if (rebuildPages) {
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) _rebuildPages(context.read<ReaderProvider>());
-                });
-              }
-            }
-
-            return SafeArea(
-              top: false,
-              child: SingleChildScrollView(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('更多设置',
-                          style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w600,
-                              color: readerTheme.text)),
-                      const SizedBox(height: 12),
-
-                    // 「字体」和「翻页」两行已挪回主设置面板 —— 那里才是完整的
-                    // 选项列表（含宋体 / 滚动 / 无）。这里不再重复渲染，
-                    // 否则同一个设置在两个地方各出现一次，看起来像重复项。
-                    // 「最大宽度」同理，已挪到「间距设置」面板（官方就在那儿）。
-
-                    // ---- 段评 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('显示段评'),
-                      subtitle: const Text('正文里内联的段评气泡',
-                          style: TextStyle(fontSize: 12)),
-                      value: _state.showParagraphComment,
-                      onChanged: (v) => commit(
-                          () => _state.showParagraphComment = v,
-                          rebuildPages: true),
-                    ),
-
-                    // ---- 屏幕常亮 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('屏幕常亮'),
-                      value: _state.screenWakelock,
-                      onChanged: (v) => commit(() {
-                        _state.screenWakelock = v;
-                        _applyWakelock();
-                      }),
-                    ),
-
-                    // ---- 显示进度 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('显示进度'),
-                      value: _state.showPageNumber,
-                      onChanged: (v) => commit(() => _state.showPageNumber = v,
-                          rebuildPages: true),
-                    ),
-
-                    // ---- 音量键翻页 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('音量键翻页'),
-                      value: _state.volumeKeyFlip,
-                      onChanged: (v) => commit(() => _state.volumeKeyFlip = v),
-                    ),
-
-                    // ---- 底部区域 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('底部区域'),
-                      subtitle: const Text('时间、电量、页码',
-                          style: TextStyle(fontSize: 12)),
-                      value: _state.showBottomBar,
-                      onChanged: (v) => commit(() => _state.showBottomBar = v,
-                          rebuildPages: true),
-                    ),
-
-                    // ---- 顶部区域 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('顶部区域'),
-                      subtitle:
-                          const Text('章节名', style: TextStyle(fontSize: 12)),
-                      value: _state.showTopBar,
-                      onChanged: (v) => commit(() => _state.showTopBar = v,
-                          rebuildPages: true),
-                    ),
-
-                    // ---- 自动下一章 ----
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('自动下一章'),
-                      value: _state.autoNext,
-                      onChanged: (v) => commit(() => _state.autoNext = v),
-                    ),
-
-                    // ---- 自动翻页间隔 ----
-                    if (!_state.isComic)
-                      _SettingRow(
-                        label: '翻页间隔',
-                        value: '${_state.autoPageInterval.toStringAsFixed(0)}秒',
-                        child: Slider(
-                          value: _state.autoPageInterval,
-                          min: 3,
-                          max: 60,
-                          divisions: 57,
-                          label: _state.autoPageInterval.toStringAsFixed(0),
-                          onChanged: (v) =>
-                              commit(() => _state.autoPageInterval = v),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      },
-    );
-  }
 
   /// 「听书设置」面板 —— 对齐 3.41：
   /// 三个开关（允许听书翻页 / 显示章节切换 / 延迟翻页）+ 一个「朗读引擎」入口卡片。
@@ -3974,94 +4278,594 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     });
   }
 
-  /// 更多面板——低频功能入口
+  /// ⋮ 更多菜单 —— 对齐轻阅时光：居中白色圆角卡片。
+  ///
+  /// 头部是「封面 + 书名 + 作者 + 详情胶囊」，下面 4×3 灰底宫格，
+  /// 最底部一个「关闭」。
   void _showMorePanel(ReaderProvider provider) {
-    showModalBottomSheet(
+    final book = provider.book;
+    if (book == null) return;
+    _hideController();
+    final inShelf = _isCurrentBookInShelf(provider);
+
+    showDialog<void>(
       context: context,
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (sheetContext) => SafeArea(
+      builder: (dialogContext) {
+        final tiles = <_MoreMenuItem>[
+          _MoreMenuItem(
+            icon: Icons.cloud_download_outlined,
+            label: '批量下载',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _showBatchDownloadSheet(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.login,
+            label: '书源登录',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _openSourceLogin(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.link,
+            label: '正文地址',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _copyChapterUrl(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.bookmark_border,
+            label: '添加书签',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _toggleBookmark(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.search,
+            label: '搜索正文',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _openBookSearch(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.close,
+            label: '替换净化',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              Navigator.pushNamed(context, AppRoutes.replaceRules);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.format_clear,
+            label: '起效净化',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _applyReplaceRules();
+            },
+          ),
+          // 轻阅时光这一格是「高亮规则」，Qread 没有高亮规则功能，
+          // 这一格放「更改类型」。
+          _MoreMenuItem(
+            icon: Icons.category_outlined,
+            label: '更改类型',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _showChangeTypeDialog(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.open_in_browser,
+            label: '用浏览器打开',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _openChapterInBrowser(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.swap_horiz,
+            label: '换源',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _changeBookSource(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.refresh,
+            label: '刷新',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _refreshCurrentChapter(provider);
+            },
+          ),
+          _MoreMenuItem(
+            icon: Icons.info_outline,
+            label: '显示日志',
+            onTap: () {
+              Navigator.pop(dialogContext);
+              _showAppLog();
+            },
+          ),
+        ];
+
+        return Dialog(
+          backgroundColor: Colors.white,
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 10),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // ---- 头部：封面 + 书名/作者 + 详情 ----
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    BookCover(
+                      url: book.customCoverUrl?.trim().isNotEmpty == true
+                          ? book.customCoverUrl
+                          : book.coverUrl,
+                      sourceUrl: book.origin,
+                      width: 58,
+                      height: 78,
+                      radius: 6,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            book.name ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF222222),
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            book.author ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF888888),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          Row(
+                            children: [
+                              _MoreHeaderPill(
+                                label: '详情',
+                                onTap: () {
+                                  Navigator.pop(dialogContext);
+                                  Navigator.pushNamed(
+                                    context,
+                                    AppRoutes.bookInfo,
+                                    arguments: BookInfoPageArgs(
+                                      book: book,
+                                      fromBookshelf: inShelf,
+                                    ),
+                                  );
+                                },
+                              ),
+                              if (!inShelf) ...[
+                                const SizedBox(width: 8),
+                                _MoreHeaderPill(
+                                  label: '+ 书架',
+                                  onTap: () {
+                                    Navigator.pop(dialogContext);
+                                    _addCurrentBookToShelf(provider);
+                                  },
+                                ),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 18),
+                // ---- 4×3 宫格 ----
+                GridView.count(
+                  crossAxisCount: 4,
+                  shrinkWrap: true,
+                  physics: const NeverScrollableScrollPhysics(),
+                  mainAxisSpacing: 12,
+                  crossAxisSpacing: 8,
+                  childAspectRatio: 0.74,
+                  children: tiles,
+                ),
+                const SizedBox(height: 6),
+                // ---- 关闭 ----
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF222222),
+                    minimumSize: const Size(120, 44),
+                  ),
+                  child: const Text('关闭', style: TextStyle(fontSize: 16)),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 批量下载 —— 对齐轻阅时光的「选择下载章节」弹窗：
+  /// 后20章 / 后50章 / 后100章 / 后面全部章节 + 自定义后多少章。
+  ///
+  /// 下载走的是 [ReaderProvider.cacheChapterRange]：逐章写进本地磁盘缓存，
+  /// 已在缓存里的章节会跳过，所以重复下载同一区间不会浪费流量。
+  void _showBatchDownloadSheet(ReaderProvider provider) {
+    final total = provider.chapters.length;
+    final current =
+        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
+    final remaining = total - current - 1;
+
+    Widget row(String label, VoidCallback onTap) {
+      return InkWell(
+        onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(8, 8, 8, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 15),
+          child: Row(
             children: [
-              ListTile(
-                leading: const Icon(Icons.bookmark_outline),
-                title: const Text('添加书签'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _showBookmarkList();
-                },
+              Expanded(
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 15, color: Color(0xFF222222))),
               ),
-              ListTile(
-                leading: const Icon(Icons.travel_explore_outlined),
-                title: const Text('更换书源'),
-                subtitle: Text(
-                  provider.book?.originName ?? '当前书源',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _changeBookSource(provider);
-                },
-              ),
-              ListTile(
-                leading: Icon(
-                  Icons.refresh,
-                  color: provider.book?.useReplaceRule == true
-                      ? const Color(0xFF00A88F)
-                      : null,
-                ),
-                title: const Text('净化规则'),
-                subtitle: Text(
-                  provider.book?.useReplaceRule == true ? '已启用' : '未启用',
-                  style: TextStyle(fontSize: 12, color: Colors.grey),
-                ),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _applyReplaceRules();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.category_outlined),
-                title: const Text('更改类型'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _showChangeTypeDialog(provider);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.backup_outlined),
-                title: const Text('备份设置'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _backupReaderSettings();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.restore_outlined),
-                title: const Text('恢复设置'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _restoreReaderSettings();
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.bug_report_outlined),
-                title: const Text('显示日志'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  _showAppLog();
-                },
-              ),
+              const Icon(Icons.chevron_right,
+                  size: 20, color: Color(0xFFAAAAAA)),
             ],
           ),
         ),
+      );
+    }
+
+    showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        void pick(int count) {
+          Navigator.pop(dialogContext);
+          _runBatchDownload(provider, count);
+        }
+
+        return Dialog(
+          backgroundColor: Colors.white,
+          insetPadding:
+              const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 20, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  '选择下载章节',
+                  style: TextStyle(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF222222),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF7F8FA),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      row('后20章', () => pick(20)),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      row('后50章', () => pick(50)),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      row('后100章', () => pick(100)),
+                      const Divider(height: 1, indent: 16, endIndent: 16),
+                      row('后面全部章节', () => pick(remaining)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF7F8FA),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: row('自定义后多少章', () async {
+                    Navigator.pop(dialogContext);
+                    final count = await _askDownloadCount();
+                    if (count != null && count > 0 && mounted) {
+                      _runBatchDownload(provider, count);
+                    }
+                  }),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  style: TextButton.styleFrom(
+                    foregroundColor: const Color(0xFF222222),
+                    minimumSize: const Size(120, 44),
+                  ),
+                  child: const Text('取消', style: TextStyle(fontSize: 16)),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// 「自定义后多少章」的数字输入框。
+  Future<int?> _askDownloadCount() {
+    final controller = TextEditingController();
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('自定义后多少章'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: '输入章节数，如 30',
+            isDense: true,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final n = int.tryParse(controller.text.trim());
+              Navigator.pop(ctx, n);
+            },
+            child: const Text('确定'),
+          ),
+        ],
       ),
     );
+  }
+
+  /// 跑批量下载：带进度条弹窗，可中途取消。
+  Future<void> _runBatchDownload(ReaderProvider provider, int count) async {
+    final token = _token;
+    if (token == null || token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    final current =
+        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
+    final total = provider.chapters.length;
+    final start = current + 1;
+    if (start >= total || count <= 0) {
+      _toast('后面没有章节了');
+      return;
+    }
+    final actual = (start + count) > total ? total - start : count;
+
+    var done = 0;
+    var cancelled = false;
+    StateSetter? progressSetState;
+
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          progressSetState = setState;
+          return AlertDialog(
+            title: const Text('批量下载'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                LinearProgressIndicator(
+                  value: actual == 0 ? 0 : done / actual,
+                ),
+                const SizedBox(height: 12),
+                Text('正在下载 $done/$actual 章'),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => cancelled = true,
+                child: const Text('取消'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+
+    int downloaded = 0;
+    try {
+      downloaded = await provider.cacheChapterRange(
+        token,
+        start,
+        actual,
+        onProgress: (d) {
+          done = d;
+          progressSetState?.call(() {});
+        },
+        isCancelled: () => cancelled,
+      );
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+    if (!mounted) return;
+    _toast(cancelled ? '已取消，新下载 $downloaded 章' : '下载完成，新下载 $downloaded 章');
+  }
+
+  /// 书源登录：取书源详情，按 loginUi / loginUrl 走 JS 登录或 WebView 登录，
+  /// 回来后把 cookie 同步给服务端。
+  Future<void> _openSourceLogin(ReaderProvider provider) async {
+    final book = provider.book;
+    final token = _token;
+    if (book == null) return;
+    if (token == null || token.isEmpty) {
+      _toast('请先登录');
+      return;
+    }
+    final sourceUrl = book.origin ?? '';
+    if (sourceUrl.isEmpty) {
+      _toast('当前书没有书源');
+      return;
+    }
+    final detail = await context
+        .read<SourceManageProvider>()
+        .getSourceDetail(token, sourceUrl);
+    if (!mounted) return;
+    final jsonStr = detail?['data']?['json']?.toString() ?? '';
+    Map<String, dynamic> json = {};
+    if (jsonStr.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(jsonStr);
+        if (decoded is Map) json = Map<String, dynamic>.from(decoded);
+      } catch (_) {}
+    }
+    String? strOf(String key) {
+      final v = json[key]?.toString().trim() ?? '';
+      return v.isEmpty ? null : v;
+    }
+
+    final loginUi = strOf('loginUi');
+    final loginUrl = strOf('loginUrl');
+    final sourceName = book.originName ?? '书源';
+
+    if (loginUi != null) {
+      await Navigator.pushNamed(
+        context,
+        AppRoutes.sourceLogin,
+        arguments: SourceLoginPageArgs(
+          sourceUrl: sourceUrl,
+          sourceName: sourceName,
+          type: 'bookSource',
+          loginUi: loginUi,
+          loginUrl: loginUrl,
+          variableComment: strOf('variableComment'),
+          header: strOf('header'),
+        ),
+      );
+    } else if (loginUrl != null) {
+      await Navigator.pushNamed(
+        context,
+        AppRoutes.sourceWebLogin,
+        arguments: WebViewLoginPageArgs(
+          sourceUrl: sourceUrl,
+          sourceName: sourceName,
+          type: 'bookSource',
+          loginUrl: loginUrl,
+          headers: SourceLoginPageArgs(
+            sourceUrl: sourceUrl,
+            sourceName: sourceName,
+            type: 'bookSource',
+            header: strOf('header'),
+          ).headerMap,
+        ),
+      );
+    } else {
+      _toast('该书源没有登录入口');
+      return;
+    }
+    if (!mounted) return;
+    // 登录回来后再同步一次（JS 登录那条路 cookie 在服务端，客户端不知情）。
+    unawaited(CookieSyncService.instance.syncOne(token, sourceUrl));
+  }
+
+  /// 当前章节的原始地址：优先章节的 resourceUrl，退到 tag，再退到书籍地址。
+  String _chapterRawUrl(ReaderProvider provider) {
+    final chapter = _displayedChapter(provider);
+    final resource = chapter?.resourceUrl?.trim() ?? '';
+    if (resource.isNotEmpty) return resource;
+    final tag = chapter?.tag?.trim() ?? '';
+    if (tag.isNotEmpty) return tag;
+    return provider.book?.bookUrl ?? '';
+  }
+
+  /// 正文地址：把当前章节的原始地址复制到剪贴板。
+  void _copyChapterUrl(ReaderProvider provider) {
+    final url = _chapterRawUrl(provider);
+    if (url.isEmpty) {
+      _toast('没有可复制的地址');
+      return;
+    }
+    Clipboard.setData(ClipboardData(text: url));
+    _toast('正文地址已复制');
+  }
+
+  /// 用浏览器打开当前章节的原始地址。
+  Future<void> _openChapterInBrowser(ReaderProvider provider) async {
+    final url = _chapterRawUrl(provider);
+    final uri = Uri.tryParse(url);
+    if (uri == null || !(uri.isScheme('http') || uri.isScheme('https'))) {
+      _toast('当前章节没有可在浏览器打开的地址');
+      return;
+    }
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok && mounted) _toast('打不开浏览器');
+  }
+
+  /// 书内全文搜索（不带关键词进入，直接在搜索页里输入）。
+  void _openBookSearch(ReaderProvider provider) {
+    final book = provider.book;
+    if (book == null) return;
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => BookTextSearchPage(
+          book: book,
+          accessToken: _token ?? '',
+          chapters: provider.chapters,
+          keyword: '',
+          loadChapterText: (index) =>
+              provider.peekChapterContent(_token ?? '', index),
+          onJumpToResult: _jumpToSearchResult,
+        ),
+      ),
+    );
+  }
+
+  /// 刷新当前章节：跳过内存/磁盘缓存直接回源，拿到后覆盖写盘再重排。
+  ///
+  /// 【为什么不能只 `_openChapter`】`_openChapter` 会优先吃预排版缓存
+  /// （`prefetchedNext/PrevLayout`），而那份是**旧正文**排出来的 ——
+  /// 必须先 `_invalidateLayoutCaches()` 把预排版作废，否则刷新完正文没变。
+  Future<void> _refreshCurrentChapter(ReaderProvider provider) async {
+    final token = _token;
+    if (token == null) return;
+    final current =
+        _state.displayedChapterIndex(provider.book?.durChapterIndex ?? 0);
+    try {
+      await provider.forceReloadChapter(token, current);
+    } catch (e) {
+      if (!mounted) return;
+      _toast('刷新失败：$e');
+      return;
+    }
+    if (!mounted) return;
+    _invalidateLayoutCaches();
+    setState(() {});
+    await _openChapter(current, chapterPosition: _state.chapterPosition);
+    if (!mounted) return;
+    _toast('已刷新当前章节');
   }
 
   /// 换源：跳到换源页，成功后重载当前章节
@@ -4229,11 +5033,14 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 当前书是否已在书架（决定中间胶囊要不要显示「+ 书架」）
+  /// 当前书是否已在书架（决定 ⋮ 菜单头部要不要显示「+ 书架」）。
+  ///
+  /// 【为什么用 read 不用 watch】这个方法现在是从对话框 builder / 点击回调里
+  /// 调的一次性读取，不是在 build 里订阅 —— watch 在非 build 时机调用会直接抛。
   bool _isCurrentBookInShelf(ReaderProvider provider) {
     final url = provider.book?.bookUrl;
     if (url == null || url.isEmpty) return true;
-    final books = context.watch<BookshelfProvider>().books;
+    final books = context.read<BookshelfProvider>().books;
     return books.any((b) => b.bookUrl == url);
   }
 
@@ -4401,6 +5208,79 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 }
 
 // ============================================================
+// ⋮ 菜单辅助组件
+// ============================================================
+
+/// ⋮ 菜单宫格里的一格：灰底圆角方块 + 图标 + 下方标签。
+class _MoreMenuItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+
+  const _MoreMenuItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF2F3F5),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 24, color: const Color(0xFF333333)),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            label,
+            maxLines: 2,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Color(0xFF333333)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// ⋮ 菜单头部的灰色胶囊按钮（详情 / + 书架）。
+class _MoreHeaderPill extends StatelessWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _MoreHeaderPill({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F3F5),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(fontSize: 12, color: Color(0xFF333333)),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
 // 设置面板辅助组件
 // ============================================================
 
@@ -4440,64 +5320,6 @@ class _SettingRow extends StatelessWidget {
               ),
             ),
         ],
-      ),
-    );
-  }
-}
-
-/// 选择胶囊
-///
-/// 外观照官方客户端的设置面板：透明底 + 细描边胶囊，同一行等宽；
-/// 选中态不是填充色块，而是换成橙色描边 + 橙色文字。
-class _ChoiceChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  /// 未选中时的描边色（跟随阅读主题）
-  final Color borderColor;
-
-  /// 未选中时的文字色
-  final Color textColor;
-
-  /// 选中态强调色
-  final Color accentColor;
-
-  /// 最小宽度——参考图里同一行的胶囊是等宽的
-  final double minWidth;
-
-  const _ChoiceChip(
-    this.label,
-    this.selected,
-    this.onTap, {
-    this.borderColor = const Color(0xFFC1D5C1),
-    this.textColor = const Color(0xFF1C1F1C),
-    this.accentColor = const Color(0xFFFF9800),
-    this.minWidth = 52,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final stroke = selected ? accentColor : borderColor;
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        constraints: BoxConstraints(minWidth: minWidth),
-        height: 30,
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(color: stroke, width: 1),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 15,
-            height: 1.1,
-            color: selected ? accentColor : textColor,
-          ),
-        ),
       ),
     );
   }

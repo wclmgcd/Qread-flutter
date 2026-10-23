@@ -1,11 +1,10 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../config/routes.dart';
 import '../models/book.dart';
 import '../pages/bookshelf/book_info_page.dart';
-import '../services/api_service.dart';
 import '../services/app_settings.dart';
+import 'book_cover.dart';
 
 enum BookCardDisplayMode {
   compact,
@@ -238,7 +237,8 @@ class BookCard extends StatelessWidget {
   }
 
   Widget _buildCover(BuildContext context, {required double radius}) {
-    final coverUrl = book.customCoverUrl ?? book.coverUrl;
+    final custom = book.customCoverUrl?.trim() ?? '';
+    final coverUrl = custom.isNotEmpty ? custom : (book.coverUrl?.trim() ?? '');
     final placeholder = Container(
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -257,21 +257,15 @@ class BookCard extends StatelessWidget {
     if (AppSettings.instance.useDefaultCover) {
       return placeholder;
     }
-    if (coverUrl == null || coverUrl.isEmpty) {
+    if (coverUrl.isEmpty) {
       return placeholder;
     }
 
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: CachedNetworkImage(
-        imageUrl: ApiService.instance.getCoverProxyUrl(
-          coverUrl,
-          sourceUrl: book.origin,
-        ),
-        fit: BoxFit.cover,
-        placeholder: (_, __) => placeholder,
-        errorWidget: (_, __, ___) => placeholder,
-      ),
+    return BookCover(
+      url: coverUrl,
+      sourceUrl: book.origin,
+      radius: radius,
+      placeholder: placeholder,
     );
   }
 

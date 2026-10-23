@@ -317,6 +317,75 @@ class ReaderProvider extends ChangeNotifier {
         : raw;
   }
 
+  /// 批量下载：把 [startIndex, startIndex+count) 的正文写进本地磁盘缓存。
+  ///
+  /// 不走 `_prefetchCache`（几百章全留在内存里会撑爆），逐章顺序拉取；
+  /// 已在磁盘缓存里的章节直接跳过。[onProgress] 每处理完一章回调一次；
+  /// [isCancelled] 返回 true 时立即停。返回实际新下载的章数。
+  Future<int> cacheChapterRange(
+    String accessToken,
+    int startIndex,
+    int count, {
+    void Function(int done)? onProgress,
+    bool Function()? isCancelled,
+  }) async {
+    if (_book == null || _chapters.isEmpty) return 0;
+    final start = startIndex.clamp(0, _chapters.length);
+    final end = (startIndex + count).clamp(0, _chapters.length);
+    var downloaded = 0;
+    var done = 0;
+    for (var i = start; i < end; i++) {
+      if (isCancelled?.call() == true) break;
+      try {
+        final cached = await _readCachedChapterContent(i);
+        if (cached == null) {
+          final text = await _fetchChapterFromNetwork(accessToken, i);
+          if (text.isNotEmpty) {
+            await _writeCachedChapterContent(i, text);
+            downloaded++;
+          }
+        }
+      } catch (_) {
+        // 单章失败不拖垮整批
+      }
+      done++;
+      onProgress?.call(done);
+    }
+    return downloaded;
+  }
+
+  /// 强制刷新某一章：跳过内存与磁盘缓存直接回源，拿到后覆盖写盘。
+  Future<void> forceReloadChapter(
+      String accessToken, int chapterIndex) async {
+    if (_book == null || chapterIndex < 0 || chapterIndex >= _chapters.length) {
+      return;
+    }
+    final text = await _fetchChapterFromNetwork(accessToken, chapterIndex);
+    _prefetchCache.remove(chapterIndex);
+    if (text.isEmpty) return;
+    await _writeCachedChapterContent(chapterIndex, text);
+  }
+
+  /// 回源拉一章正文（净化归属与 [getChapterContent] 相同），不写任何缓存。
+  Future<String> _fetchChapterFromNetwork(
+      String accessToken, int chapterIndex) async {
+    if (_book == null) return '';
+    final route = _replaceRoute;
+    final data = await ApiService.instance.getBookContentNew(
+      accessToken,
+      _book!.bookUrl ?? '',
+      chapterIndex,
+      _book!.origin ?? '',
+      bookname: _book!.name,
+      // 同 getChapterContent：只看 route，保证本地/服务端二选一。
+      useReplaceRule: route == _ReplaceRoute.server ? 1 : 0,
+    );
+    final raw = data['text']?.toString() ?? '';
+    return route == _ReplaceRoute.local
+        ? _purifyLocally(raw, forTitle: false)
+        : raw;
+  }
+
   /// 保证本地有一份可用规则（本地净化引擎要用）。
   ///
   /// 顺序是「先读本地副本 → 空了再问服务端」：副本命中就一个请求都不用发，

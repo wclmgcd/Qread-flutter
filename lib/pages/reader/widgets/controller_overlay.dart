@@ -5,78 +5,74 @@ import 'package:flutter/material.dart';
 import '../../../services/tts_service.dart';
 import 'reader_theme.dart';
 
-/// 阅读器控制面板覆盖层 v2
+/// 阅读器控制面板覆盖层 v3 —— 视觉对齐轻阅时光：
 ///
-/// 按 controller.md 文档拆为四层：
-/// - TopInfoBar：返回、书名/章节/来源、刷新、更多
-/// - FloatingCapsule：自动翻页/朗读/主题切换（普通/TTS/自动翻页三模式）
-/// - ProgressStrip：上一章、章节滑杆、下一章
-/// - BottomActionBar：目录、设置
+/// - 顶部：左侧白圆钮「返回」，右侧 4 个白圆钮（批量下载/换源/刷新/更多）
+/// - 右侧竖排 3 个白圆钮：自动阅读 / 朗读 / 夜间
+/// - 底部：章节滑杆 pill（‹ slider ›）+ 工具 pill（目录/字体/背景/更多）
+/// - TTS 模式：底部换成朗读控制卡；右侧竖排隐藏（播放控制都在卡片里）
+///
+/// 轻阅时光底部工具条中间的 AI 入口按用户要求不做。
 
 // ============================================================
 // 数据收口对象
 // ============================================================
 
-/// 胶囊模式枚举
+/// 底部模式枚举
 enum ControllerCapsuleMode { normal, tts, autoPage }
 
 /// 控制器视图数据——所有展示所需字段
 class ReaderControllerViewData {
-  final String bookName;
-  final String chapterTitle;
-  final String sourceName;
-  final bool hasBookmark;
-  final bool replaceRuleEnabled;
-  final String themeName;
   final ControllerCapsuleMode capsuleMode;
   final TtsState ttsState;
   final double ttsRate;
-  final double autoPageInterval;
   final int chapterIndex;
   final int totalChapters;
   final double? chapterSliderValue;
-  final int ttsParagraphIndex;
-  final int totalParagraphs;
-
-  /// 当前书是否已在书架。不在时中间胶囊会多一个「+ 书架」按钮
-  /// （对齐 3.41：点开控制栏能看到加号，已在书架的书就没有）。
-  final bool inBookshelf;
 
   const ReaderControllerViewData({
-    required this.bookName,
-    required this.chapterTitle,
-    required this.sourceName,
-    required this.hasBookmark,
-    required this.replaceRuleEnabled,
-    required this.themeName,
     required this.capsuleMode,
     required this.ttsState,
     required this.ttsRate,
-    required this.autoPageInterval,
     required this.chapterIndex,
     required this.totalChapters,
     this.chapterSliderValue,
-    this.ttsParagraphIndex = -1,
-    this.totalParagraphs = 0,
-    this.inBookshelf = true,
   });
 }
 
 /// 控制器回调——所有用户操作
 class ReaderControllerCallbacks {
+  // ---- 顶部 ----
   final VoidCallback onBack;
-  final VoidCallback onShowMore;
+  final VoidCallback onBatchDownload;
+  final VoidCallback onChangeSource;
   final VoidCallback onRefresh;
-  final VoidCallback onToggleBookmark;
+  final VoidCallback onShowMore;
+
+  // ---- 右侧竖排 ----
   final VoidCallback onStartAutoPage;
   final VoidCallback onStartTts;
   final VoidCallback onToggleTheme;
+
+  // ---- 章节滑杆 ----
   final VoidCallback onPrevChapter;
   final VoidCallback onNextChapter;
   final ValueChanged<double> onChapterSliderChanged;
   final ValueChanged<double> onChapterSliderEnd;
+
+  // ---- 底部工具 ----
   final VoidCallback onShowChapterList;
+
+  /// 「字体」—— 打开界面设置面板
   final VoidCallback onShowSettings;
+
+  /// 「背景」—— 打开背景设置面板
+  final VoidCallback onShowBackground;
+
+  /// 「更多」齿轮 —— 打开更多设置整页
+  final VoidCallback onShowMoreSettings;
+
+  // ---- TTS ----
   final VoidCallback onStopTts;
   final VoidCallback onPauseTts;
   final VoidCallback onResumeTts;
@@ -93,18 +89,13 @@ class ReaderControllerCallbacks {
 
   /// 朗读语速滑杆
   final ValueChanged<double> onTtsRateChanged;
-  final VoidCallback onStopAutoPage;
-  final VoidCallback onDecreaseAutoPageInterval;
-  final VoidCallback onIncreaseAutoPageInterval;
-
-  /// 点中间胶囊的「+ 书架」（书不在书架时才显示）
-  final VoidCallback onAddToBookshelf;
 
   const ReaderControllerCallbacks({
     required this.onBack,
-    required this.onShowMore,
+    required this.onBatchDownload,
+    required this.onChangeSource,
     required this.onRefresh,
-    required this.onToggleBookmark,
+    required this.onShowMore,
     required this.onStartAutoPage,
     required this.onStartTts,
     required this.onToggleTheme,
@@ -114,6 +105,8 @@ class ReaderControllerCallbacks {
     required this.onChapterSliderEnd,
     required this.onShowChapterList,
     required this.onShowSettings,
+    required this.onShowBackground,
+    required this.onShowMoreSettings,
     required this.onStopTts,
     required this.onPauseTts,
     required this.onResumeTts,
@@ -124,10 +117,6 @@ class ReaderControllerCallbacks {
     required this.onTtsPrevChapter,
     required this.onTtsNextChapter,
     required this.onTtsRateChanged,
-    required this.onStopAutoPage,
-    required this.onDecreaseAutoPageInterval,
-    required this.onIncreaseAutoPageInterval,
-    required this.onAddToBookshelf,
   });
 }
 
@@ -139,13 +128,7 @@ class ControllerOverlay extends StatefulWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
 
-  /// 阅读主题 —— 控制栏的底色与文字色全部跟随它。
-  ///
-  /// 【为什么必须跟随主题】原来顶部和底部用的是写死的黑色半透明
-  /// （0.45 / 0.88）。在护眼绿、羊皮纸这类浅色主题下，黑条会糊住正文，
-  /// 观感就是「有遮挡、颜色也不好」；而且色块和正文之间有一道硬分界，
-  /// 看起来像「上面和底部各留了一条空隙」。
-  /// 改成跟阅读背景同色之后，控制栏与正文融为一体，两个问题一起消失。
+  /// 阅读主题 —— 圆钮/pill 的底色与图标色按它的明暗切换。
   final ReaderTheme theme;
 
   /// 自动隐藏延时；传 null 表示不自动隐藏（自动翻页模式下控制栏常驻）。
@@ -223,206 +206,111 @@ class _ControllerOverlayState extends State<ControllerOverlay> {
     final data = widget.data;
     final callbacks = widget.callbacks;
     final theme = widget.theme;
+    final isTts = data.capsuleMode == ControllerCapsuleMode.tts;
     return Stack(
       children: [
-        // 顶部信息栏
+        // 顶部：返回 + 4 个功能圆钮
         Positioned(
           top: 0,
           left: 0,
           right: 0,
-          child: _TopInfoBar(data: data, callbacks: callbacks, theme: theme),
+          child: _TopBar(callbacks: callbacks, theme: theme),
         ),
 
-        // 底部整块：悬浮胶囊 + 进度条 + 功能栏
-        //
-        // 【为什么三者要一起从底边往上堆】
-        // 原来胶囊是独立的 `Positioned(bottom: 136)`，而 136 这个数字是拍脑袋
-        // 定的 —— 底部整块的实际高度是「手势条 + 进度条 + 功能栏」，
-        // 在 iOS/Android 上约 140px，于是胶囊正好压在「上一章/下一章」那一行上
-        // （反馈截图「自动/朗读/浅色」那排和滑杆重叠）。
-        // 现在把胶囊放进同一个 Column，它会自动排在面板**上方**，
-        // 不管手势条多高、字体多大都不会再重叠。
-        //
-        // Container 包在 SafeArea **外面** —— 这样系统手势条那一块也会铺上主题色。
-        // 反过来写（SafeArea 在外）的话，手势条区域是透明的，会透出下面的正文，
-        // 看起来就是「底部没铺满」。
+        // 右侧竖排：自动阅读 / 朗读 / 夜间（TTS 时播放控制都在底部卡片里，隐藏）
+        if (!isTts)
+          Positioned(
+            right: 10,
+            top: 0,
+            bottom: 0,
+            child: _SideColumn(callbacks: callbacks, theme: theme),
+          ),
+
+        // 底部：章节滑杆 pill + 工具 pill（或 TTS 控制卡）
         Positioned(
           left: 0,
           right: 0,
           bottom: 0,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // TTS 模式下播放控制已经在下面的面板里了，中间胶囊不再重复出现
-              if (data.capsuleMode != ControllerCapsuleMode.tts)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 14),
-                  child: _FloatingCapsule(
-                      data: data, callbacks: callbacks, theme: theme),
-                ),
-              Container(
-                color: theme.background,
-                child: SafeArea(
-                  top: false,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(height: 4),
-                      _ProgressStrip(
-                          data: data, callbacks: callbacks, theme: theme),
-                      const SizedBox(height: 2),
-                      _BottomActionBar(
-                          data: data, callbacks: callbacks, theme: theme),
-                      const SizedBox(height: 6),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ============================================================
-// 顶部信息栏
-// ============================================================
-
-class _TopInfoBar extends StatelessWidget {
-  final ReaderControllerViewData data;
-  final ReaderControllerCallbacks callbacks;
-  final ReaderTheme theme;
-
-  const _TopInfoBar({
-    required this.data,
-    required this.callbacks,
-    required this.theme,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // 深色主题下纯白按钮会刺眼，所以「更多」的底色也跟着主题走
-    final isDark = theme.background.computeLuminance() < 0.5;
-    final pillBg = isDark
-        ? Colors.white.withValues(alpha: 0.12)
-        : Colors.white.withValues(alpha: 0.72);
-
-    // Container 包在 SafeArea **外面**：底色要铺到状态栏区域。
-    // 原来是 SafeArea 在外、Container 在内，状态栏那块是透明的，
-    // 正文会从状态栏下面透出来 —— 观感就是「上面留了一条空隙」。
-    return Container(
-      color: theme.background,
-      child: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(4, 2, 8, 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // ---- 第一行：返回 + 书名 + 更多 ----
-              Row(
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    icon: Icon(Icons.arrow_back_ios_new,
-                        color: theme.text, size: 20),
-                    onPressed: callbacks.onBack,
-                    padding: const EdgeInsets.all(8),
-                    constraints:
-                        const BoxConstraints(minWidth: 40, minHeight: 40),
-                    tooltip: '返回',
-                  ),
-                  Expanded(
-                    child: Text(
-                      data.bookName,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: theme.text,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                  InkWell(
-                    onTap: callbacks.onShowMore,
-                    borderRadius: BorderRadius.circular(14),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: pillBg,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Text(
-                        '更多',
-                        style: TextStyle(color: theme.text, fontSize: 13),
-                      ),
-                    ),
-                  ),
+                  _SliderPill(data: data, callbacks: callbacks, theme: theme),
+                  const SizedBox(height: 10),
+                  if (isTts)
+                    _TtsBottomCard(
+                        data: data, callbacks: callbacks, theme: theme)
+                  else
+                    _ToolbarPill(callbacks: callbacks, theme: theme),
                 ],
               ),
-              const SizedBox(height: 2),
-              // ---- 第二行：章节 ----
-              Padding(
-                padding: const EdgeInsets.only(left: 12, right: 4),
-                child: Row(
-                  children: [
-                    Text('章节：',
-                        style: TextStyle(
-                            color: theme.secondaryText, fontSize: 12)),
-                    Expanded(
-                      child: Text(
-                        data.chapterTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 3),
-              // ---- 第三行：来源 + 刷新 ----
-              Padding(
-                padding: const EdgeInsets.only(left: 12, right: 4),
-                child: Row(
-                  children: [
-                    Text('来源：',
-                        style: TextStyle(
-                            color: theme.secondaryText, fontSize: 12)),
-                    Expanded(
-                      child: Text(
-                        data.sourceName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(color: theme.text, fontSize: 12),
-                      ),
-                    ),
-                    InkWell(
-                      onTap: callbacks.onRefresh,
-                      borderRadius: BorderRadius.circular(4),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 2),
-                        child: Text(
-                          '刷新',
-                          style: TextStyle(
-                            // 替换规则生效时高亮，提示「刷新会走净化」
-                            color: data.replaceRuleEnabled
-                                ? const Color(0xFF00A88F)
-                                : theme.secondaryText,
-                            fontSize: 12,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ============================================================
+// 主题相关的公共颜色
+// ============================================================
+
+/// 圆钮 / pill 的配色。浅色主题用白底深图标（对齐轻阅时光），
+/// 深色主题用深灰底浅图标，免得一颗白丸子糊在深色正文上。
+class _ChromeColors {
+  final Color pill;
+  final Color icon;
+  final Color sliderActive;
+  final Color sliderInactive;
+
+  _ChromeColors(ReaderTheme theme)
+      : pill = theme.background.computeLuminance() < 0.5
+            ? const Color(0xFF23272E)
+            : Colors.white,
+        icon = theme.background.computeLuminance() < 0.5
+            ? Colors.white70
+            : const Color(0xFF333333),
+        sliderActive = const Color(0xFF55A0E8),
+        sliderInactive = theme.background.computeLuminance() < 0.5
+            ? Colors.white24
+            : const Color(0xFFD8DCE2);
+}
+
+/// 圆形按钮（顶部 / 右侧竖排共用）
+class _CircleButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  final _ChromeColors colors;
+  final String? tooltip;
+
+  const _CircleButton({
+    required this.icon,
+    required this.onTap,
+    required this.colors,
+    this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip ?? '',
+      child: Material(
+        color: colors.pill,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        elevation: 2,
+        shadowColor: Colors.black.withValues(alpha: 0.2),
+        child: InkWell(
+          onTap: onTap,
+          customBorder: const CircleBorder(),
+          child: SizedBox(
+            width: 40,
+            height: 40,
+            child: Icon(icon, size: 20, color: colors.icon),
           ),
         ),
       ),
@@ -431,181 +319,119 @@ class _TopInfoBar extends StatelessWidget {
 }
 
 // ============================================================
-// 中部悬浮胶囊
+// 顶部按钮行
 // ============================================================
 
-class _FloatingCapsule extends StatelessWidget {
-  final ReaderControllerViewData data;
+class _TopBar extends StatelessWidget {
   final ReaderControllerCallbacks callbacks;
   final ReaderTheme theme;
 
-  const _FloatingCapsule({
-    required this.data,
-    required this.callbacks,
-    required this.theme,
-  });
+  const _TopBar({required this.callbacks, required this.theme});
 
   @override
   Widget build(BuildContext context) {
+    final colors = _ChromeColors(theme);
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+        child: Row(
+          children: [
+            _CircleButton(
+              icon: Icons.arrow_back_ios_new,
+              onTap: callbacks.onBack,
+              colors: colors,
+              tooltip: '返回',
+            ),
+            const Spacer(),
+            _CircleButton(
+              icon: Icons.file_download_outlined,
+              onTap: callbacks.onBatchDownload,
+              colors: colors,
+              tooltip: '批量下载',
+            ),
+            const SizedBox(width: 8),
+            _CircleButton(
+              icon: Icons.swap_horiz,
+              onTap: callbacks.onChangeSource,
+              colors: colors,
+              tooltip: '换源',
+            ),
+            const SizedBox(width: 8),
+            _CircleButton(
+              icon: Icons.refresh,
+              onTap: callbacks.onRefresh,
+              colors: colors,
+              tooltip: '刷新',
+            ),
+            const SizedBox(width: 8),
+            _CircleButton(
+              icon: Icons.more_vert,
+              onTap: callbacks.onShowMore,
+              colors: colors,
+              tooltip: '更多',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// 右侧竖排：自动阅读 / 朗读 / 夜间
+// ============================================================
+
+class _SideColumn extends StatelessWidget {
+  final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
+
+  const _SideColumn({required this.callbacks, required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = _ChromeColors(theme);
     final isDark = theme.background.computeLuminance() < 0.5;
     return Center(
-      child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        child: Container(
-          key: ValueKey(data.capsuleMode),
-          margin: const EdgeInsets.symmetric(horizontal: 48),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-          decoration: BoxDecoration(
-            // 浅色主题用白胶囊（对齐 3.41）；深色主题下纯白太刺眼，改成半透明白
-            color: isDark
-                ? Colors.white.withValues(alpha: 0.14)
-                : Colors.white.withValues(alpha: 0.92),
-            borderRadius: BorderRadius.circular(40),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.15),
-                blurRadius: 12,
-                offset: const Offset(0, 2),
-              ),
-            ],
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _CircleButton(
+            icon: Icons.auto_awesome_motion_outlined,
+            onTap: callbacks.onStartAutoPage,
+            colors: colors,
+            tooltip: '自动阅读',
           ),
-          // 胶囊里的图标和文字统一继承主题色，省得每个按钮各写一套颜色
-          child: IconTheme(
-            data: IconThemeData(color: theme.text),
-            child: DefaultTextStyle(
-              style: TextStyle(color: theme.text),
-              child: _buildCapsuleContent(),
-            ),
+          const SizedBox(height: 14),
+          _CircleButton(
+            icon: Icons.play_arrow,
+            onTap: callbacks.onStartTts,
+            colors: colors,
+            tooltip: '朗读',
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCapsuleContent() {
-    switch (data.capsuleMode) {
-      case ControllerCapsuleMode.tts:
-        return _buildTtsCapsule();
-      case ControllerCapsuleMode.autoPage:
-        return _buildAutoPageCapsule();
-      case ControllerCapsuleMode.normal:
-      return _buildNormalCapsule();
-    }
-  }
-
-  /// 普通模式：自动翻页 / 朗读 / 深浅切换
-  /// （书不在书架时，末尾多一个「+ 书架」）
-  Widget _buildNormalCapsule() {
-    final isLight = data.themeName == 'light';
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _CapsuleButton(
-          icon: Icons.auto_awesome_motion_outlined,
-          label: '自动',
-          onTap: callbacks.onStartAutoPage,
-        ),
-        _CapsuleDivider(),
-        _CapsuleButton(
-          icon: Icons.play_circle_outline,
-          label: '朗读',
-          onTap: callbacks.onStartTts,
-        ),
-        _CapsuleDivider(),
-        _CapsuleButton(
-          icon: isLight ? Icons.dark_mode_outlined : Icons.light_mode_outlined,
-          label: isLight ? '深色' : '浅色',
-          onTap: callbacks.onToggleTheme,
-        ),
-        // 已在书架的书不显示加号（对齐 3.41）
-        if (!data.inBookshelf) ...[
-          _CapsuleDivider(),
-          _CapsuleButton(
-            icon: Icons.add_circle_outline,
-            label: '书架',
-            onTap: callbacks.onAddToBookshelf,
+          const SizedBox(height: 14),
+          _CircleButton(
+            icon: isDark ? Icons.wb_sunny_outlined : Icons.dark_mode_outlined,
+            onTap: callbacks.onToggleTheme,
+            colors: colors,
+            tooltip: isDark ? '日间' : '夜间',
           ),
         ],
-      ],
-    );
-  }
-
-  /// TTS 模式：停止 / 暂停继续
-  Widget _buildTtsCapsule() {
-    final isPaused = data.ttsState == TtsState.paused;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _CapsuleButton(
-          icon: Icons.stop_circle_outlined,
-          label: '停止',
-          onTap: callbacks.onStopTts,
-        ),
-        _CapsuleDivider(),
-        _CapsuleButton(
-          icon: isPaused ? Icons.play_circle_filled : Icons.pause_circle_filled,
-          label: isPaused ? '继续' : '暂停',
-          onTap: isPaused ? callbacks.onResumeTts : callbacks.onPauseTts,
-        ),
-      ],
-    );
-  }
-
-  /// 自动翻页模式：减速 / 秒数 / 加速 / 停止
-  Widget _buildAutoPageCapsule() {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _CapsuleButton(
-          icon: Icons.remove,
-          label: '减速',
-          onTap: callbacks.onDecreaseAutoPageInterval,
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                '${data.autoPageInterval.toStringAsFixed(0)}',
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const Text(
-                '秒/页',
-                style: TextStyle(fontSize: 10),
-              ),
-            ],
-          ),
-        ),
-        _CapsuleButton(
-          icon: Icons.add,
-          label: '加速',
-          onTap: callbacks.onIncreaseAutoPageInterval,
-        ),
-        _CapsuleDivider(),
-        _CapsuleButton(
-          icon: Icons.stop_circle_outlined,
-          label: '停止',
-          onTap: callbacks.onStopAutoPage,
-        ),
-      ],
+      ),
     );
   }
 }
 
 // ============================================================
-// 进度条行
+// 底部章节滑杆 pill
 // ============================================================
 
-class _ProgressStrip extends StatelessWidget {
+class _SliderPill extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
   final ReaderTheme theme;
 
-  const _ProgressStrip({
+  const _SliderPill({
     required this.data,
     required this.callbacks,
     required this.theme,
@@ -613,42 +439,52 @@ class _ProgressStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 原来写死青绿 + 灰色轨道，在护眼绿/羊皮纸这些主题下很突兀；
-    // 改成跟着主题的正文色/次要色走。
-    final thumbColor = theme.text.withValues(alpha: 0.55);
-    final trackColor = theme.secondaryText.withValues(alpha: 0.35);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+    final colors = _ChromeColors(theme);
+    final canPrev = data.chapterIndex > 0;
+    final canNext = data.chapterIndex < data.totalChapters - 1;
+    return Container(
+      height: 48,
+      decoration: BoxDecoration(
+        color: colors.pill,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
       child: Row(
         children: [
-          // 上一章
-          SizedBox(
-            width: 56,
-            child: TextButton(
-              onPressed: data.chapterIndex > 0 ? callbacks.onPrevChapter : null,
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          InkWell(
+            onTap: canPrev ? callbacks.onPrevChapter : null,
+            borderRadius:
+                const BorderRadius.horizontal(left: Radius.circular(24)),
+            child: SizedBox(
+              width: 48,
+              height: 48,
+              child: Icon(
+                Icons.chevron_left,
+                color:
+                    canPrev ? colors.icon : colors.icon.withValues(alpha: 0.3),
               ),
-              child: Text('上一章',
-                  style: TextStyle(fontSize: 12, color: theme.text)),
             ),
           ),
-          // 滑杆
           Expanded(
             child: SliderTheme(
               data: SliderThemeData(
-                trackHeight: 2,
-                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                trackHeight: 3,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
                 overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-                activeTrackColor: thumbColor,
-                thumbColor: thumbColor,
-                inactiveTrackColor: trackColor,
+                activeTrackColor: colors.sliderActive,
+                thumbColor: colors.sliderActive,
+                inactiveTrackColor: colors.sliderInactive,
               ),
               child: Slider(
-                value: (data.chapterSliderValue ?? data.chapterIndex.toDouble())
-                    .clamp(0, (data.totalChapters - 1).toDouble()),
+                value:
+                    (data.chapterSliderValue ?? data.chapterIndex.toDouble())
+                        .clamp(0, (data.totalChapters - 1).toDouble()),
                 min: 0,
                 max: data.totalChapters <= 1
                     ? 1
@@ -658,20 +494,18 @@ class _ProgressStrip extends StatelessWidget {
               ),
             ),
           ),
-          // 下一章
-          SizedBox(
-            width: 56,
-            child: TextButton(
-              onPressed: data.chapterIndex < data.totalChapters - 1
-                  ? callbacks.onNextChapter
-                  : null,
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                minimumSize: Size.zero,
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          InkWell(
+            onTap: canNext ? callbacks.onNextChapter : null,
+            borderRadius:
+                const BorderRadius.horizontal(right: Radius.circular(24)),
+            child: SizedBox(
+              width: 48,
+              height: 48,
+              child: Icon(
+                Icons.chevron_right,
+                color:
+                    canNext ? colors.icon : colors.icon.withValues(alpha: 0.3),
               ),
-              child: Text('下一章',
-                  style: TextStyle(fontSize: 12, color: theme.text)),
             ),
           ),
         ],
@@ -681,15 +515,111 @@ class _ProgressStrip extends StatelessWidget {
 }
 
 // ============================================================
-// 底部功能栏
+// 底部工具 pill：目录 / 字体 / 背景 / 更多（轻阅时光中间的 AI 入口不做）
 // ============================================================
 
-class _BottomActionBar extends StatelessWidget {
+class _ToolbarPill extends StatelessWidget {
+  final ReaderControllerCallbacks callbacks;
+  final ReaderTheme theme;
+
+  const _ToolbarPill({required this.callbacks, required this.theme});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = _ChromeColors(theme);
+    return Container(
+      height: 56,
+      decoration: BoxDecoration(
+        color: colors.pill,
+        borderRadius: BorderRadius.circular(28),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+        children: [
+          _ToolbarEntry(
+            icon: Icons.menu_book_outlined,
+            tooltip: '目录',
+            colors: colors,
+            onTap: callbacks.onShowChapterList,
+          ),
+          _ToolbarEntry(
+            icon: Icons.text_fields,
+            tooltip: '字体',
+            colors: colors,
+            onTap: callbacks.onShowSettings,
+          ),
+          _ToolbarEntry(
+            icon: Icons.palette_outlined,
+            tooltip: '背景',
+            colors: colors,
+            onTap: callbacks.onShowBackground,
+          ),
+          _ToolbarEntry(
+            icon: Icons.settings_outlined,
+            tooltip: '更多',
+            colors: colors,
+            onTap: callbacks.onShowMoreSettings,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ToolbarEntry extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final _ChromeColors colors;
+  final VoidCallback onTap;
+
+  const _ToolbarEntry({
+    required this.icon,
+    required this.tooltip,
+    required this.colors,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(24),
+        child: SizedBox(
+          width: 64,
+          height: 56,
+          child: Icon(icon, size: 22, color: colors.icon),
+        ),
+      ),
+    );
+  }
+}
+
+// ============================================================
+// TTS 模式底部控制卡
+// ============================================================
+
+/// TTS 模式底部（三行）：
+///
+/// ```
+/// «  ⏮  ⏸/▶  ⏹  ⏭  »
+/// 朗读语速 0.5 ────────  [⏱ 定时]
+///      目录        听书设置
+/// ```
+class _TtsBottomCard extends StatelessWidget {
   final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
   final ReaderTheme theme;
 
-  const _BottomActionBar({
+  const _TtsBottomCard({
     required this.data,
     required this.callbacks,
     required this.theme,
@@ -697,50 +627,21 @@ class _BottomActionBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // TTS 模式下显示 TTS 专用底部
-    if (data.capsuleMode == ControllerCapsuleMode.tts) {
-      return _buildTtsBottom();
-    }
-    return _buildNormalBottom();
-  }
-
-  Widget _buildNormalBottom() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 24),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-        children: [
-          _BottomEntry(
-            icon: Icons.list_alt_outlined,
-            label: '目录',
-            theme: theme,
-            onTap: callbacks.onShowChapterList,
-          ),
-          _BottomEntry(
-            icon: Icons.tune_outlined,
-            label: '设置',
-            theme: theme,
-            onTap: callbacks.onShowSettings,
+    final colors = _ChromeColors(theme);
+    final isPaused = data.ttsState == TtsState.paused;
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.pill,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
-    );
-  }
-
-  /// TTS 模式底部（对齐 3.41 的朗读界面），三行：
-  ///
-  /// ```
-  /// «  ⏮  ⏸/▶  ⏹  ⏭  »
-  /// 朗读语速 0.5 ────────  [⏱ 定时]
-  ///      目录        设置
-  /// ```
-  ///
-  /// 原来只有「定时 / 目录 / 听书设置」三个入口，播放控制塞在中间那颗
-  /// 悬浮胶囊里（只有「停止/暂停」），切段、切章都得退出去。
-  Widget _buildTtsBottom() {
-    final isPaused = data.ttsState == TtsState.paused;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -751,37 +652,37 @@ class _BottomActionBar extends StatelessWidget {
               _TtsIconButton(
                 icon: Icons.keyboard_double_arrow_left,
                 size: 22,
-                color: theme.text,
+                color: colors.icon,
                 onTap: callbacks.onTtsPrevChapter,
               ),
               _TtsIconButton(
                 icon: Icons.skip_previous,
                 size: 24,
-                color: theme.text,
+                color: colors.icon,
                 onTap: callbacks.onTtsPrevParagraph,
               ),
               _TtsIconButton(
                 icon: isPaused ? Icons.play_arrow : Icons.pause,
                 size: 30,
-                color: theme.text,
+                color: colors.icon,
                 onTap: isPaused ? callbacks.onResumeTts : callbacks.onPauseTts,
               ),
               _TtsIconButton(
                 icon: Icons.stop,
                 size: 26,
-                color: theme.text,
+                color: colors.icon,
                 onTap: callbacks.onStopTts,
               ),
               _TtsIconButton(
                 icon: Icons.skip_next,
                 size: 24,
-                color: theme.text,
+                color: colors.icon,
                 onTap: callbacks.onTtsNextParagraph,
               ),
               _TtsIconButton(
                 icon: Icons.keyboard_double_arrow_right,
                 size: 22,
-                color: theme.text,
+                color: colors.icon,
                 onTap: callbacks.onTtsNextChapter,
               ),
             ],
@@ -790,10 +691,11 @@ class _BottomActionBar extends StatelessWidget {
           // ---- 第二行：语速 + 定时 ----
           Row(
             children: [
-              const SizedBox(width: 6),
+              const SizedBox(width: 10),
               Text(
                 '朗读语速 ${data.ttsRate.toStringAsFixed(1)}',
-                style: TextStyle(fontSize: 12, color: theme.secondaryText),
+                style: TextStyle(
+                    fontSize: 12, color: colors.icon.withValues(alpha: 0.6)),
               ),
               Expanded(
                 child: SliderTheme(
@@ -803,10 +705,9 @@ class _BottomActionBar extends StatelessWidget {
                         const RoundSliderThumbShape(enabledThumbRadius: 5),
                     overlayShape:
                         const RoundSliderOverlayShape(overlayRadius: 12),
-                    activeTrackColor: theme.text.withValues(alpha: 0.55),
-                    thumbColor: theme.text.withValues(alpha: 0.55),
-                    inactiveTrackColor:
-                        theme.secondaryText.withValues(alpha: 0.3),
+                    activeTrackColor: colors.sliderActive,
+                    thumbColor: colors.sliderActive,
+                    inactiveTrackColor: colors.sliderInactive,
                   ),
                   child: Slider(
                     value: data.ttsRate.clamp(0.1, 1.0),
@@ -824,38 +725,38 @@ class _BottomActionBar extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: theme.text.withValues(alpha: 0.08),
+                    color: colors.icon.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.timer_outlined, size: 14, color: theme.text),
+                      Icon(Icons.timer_outlined, size: 14, color: colors.icon),
                       const SizedBox(width: 4),
                       Text('定时',
-                          style: TextStyle(fontSize: 12, color: theme.text)),
+                          style: TextStyle(fontSize: 12, color: colors.icon)),
                     ],
                   ),
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 10),
             ],
           ),
           const SizedBox(height: 2),
-          // ---- 第三行：目录 / 设置 ----
+          // ---- 第三行：目录 / 听书设置 ----
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              _BottomEntry(
+              _TtsTextEntry(
                 icon: Icons.menu_book_outlined,
                 label: '目录',
-                theme: theme,
+                color: colors.icon,
                 onTap: callbacks.onShowChapterList,
               ),
-              _BottomEntry(
+              _TtsTextEntry(
                 icon: Icons.settings_outlined,
-                label: '设置',
-                theme: theme,
+                label: '听书设置',
+                color: colors.icon,
                 onTap: callbacks.onShowTtsSettings,
               ),
             ],
@@ -866,7 +767,7 @@ class _BottomActionBar extends StatelessWidget {
   }
 }
 
-/// 朗读控制栏上的图标按钮（颜色由调用方显式给，底部区域没有 IconTheme）
+/// 朗读控制卡上的图标按钮
 class _TtsIconButton extends StatelessWidget {
   final IconData icon;
   final double size;
@@ -894,77 +795,18 @@ class _TtsIconButton extends StatelessWidget {
   }
 }
 
-// ============================================================
-// 通用小组件
-// ============================================================
-
-/// 胶囊内按钮
-class _CapsuleButton extends StatelessWidget {
+/// 朗读控制卡第三行的图文入口
+class _TtsTextEntry extends StatelessWidget {
   final IconData icon;
   final String label;
+  final Color color;
   final VoidCallback onTap;
 
-  const _CapsuleButton({
+  const _TtsTextEntry({
     required this.icon,
     required this.label,
+    required this.color,
     required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    // 颜色不写死 —— 由 _FloatingCapsule 包在外面的 IconTheme 按当前阅读主题
-    // 注入，深色主题下才不会出现「浅底浅字」看不清的情况
-    final tint = IconTheme.of(context).color;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(20),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, color: tint, size: 20),
-            const SizedBox(height: 2),
-            Text(
-              label,
-              style: TextStyle(
-                color: tint?.withValues(alpha: 0.65),
-                fontSize: 10,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-/// 胶囊内分隔线
-class _CapsuleDivider extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    // 跟随外层 IconTheme（在 _FloatingCapsule 里按阅读主题注入）
-    return Container(
-      width: 1,
-      height: 24,
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      color: IconTheme.of(context).color?.withValues(alpha: 0.2),
-    );
-  }
-}
-
-/// 底部功能入口
-class _BottomEntry extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onTap;
-  final ReaderTheme theme;
-
-  const _BottomEntry({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    required this.theme,
   });
 
   @override
@@ -973,17 +815,13 @@ class _BottomEntry extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        child: Column(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // 原来是写死的白色 —— 在护眼绿这类浅色主题下基本看不见
-            Icon(icon, color: theme.text, size: 22),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: TextStyle(color: theme.secondaryText, fontSize: 11),
-            ),
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 6),
+            Text(label, style: TextStyle(color: color, fontSize: 12)),
           ],
         ),
       ),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import '../config/constants.dart';
 import '../models/book.dart';
@@ -12,6 +13,7 @@ import '../models/replace_rule.dart';
 import '../models/tts_engine.dart';
 // /getCookies、/saveCookies 的 cookie 载荷是 AES/CBC 加密的 hex（上游如此）
 import 'aes_codec.dart';
+import 'error_text.dart';
 import 'image_decode_url.dart';
 
 class ApiService {
@@ -1485,6 +1487,123 @@ class ApiService {
           'useReplaceRule': useReplaceRule,
         },
         data: book.toJson());
+    return resp.data;
+  }
+
+  /// 保存书籍信息（书名/作者/封面/简介）到书架记录。
+  ///
+  /// 与 `/saveBook` 不同，书架里已有的书也能改：后端写的是
+  /// `booklist.custom_cover_url` / `custom_intro`，再通知其它端刷新。
+  Future<Map<String, dynamic>> saveBookInfo(
+      String accessToken, Book book) async {
+    final resp = await _dio.post('/saveBookInfo',
+        queryParameters: {'accessToken': accessToken}, data: book.toJson());
+    return resp.data;
+  }
+
+  /// 上传封面图到服务端 `/uploadimage`（multipart，字段名 file）。
+  ///
+  /// 后端把字节按 md5 存成 `assets/images/<md5>.png`，返回的 `data` 是
+  /// 一个坏掉的相对地址 `http//assets/images/<md5>.png`，这里归一化成
+  /// `${apiBase}/assets/images/<md5>.png` 再交给上层保存。
+  /// 失败抛 [Exception]，message 可直接展示。
+  Future<String> uploadImage(String accessToken, Uint8List bytes,
+      {String filename = 'cover.png'}) async {
+    if (bytes.isEmpty) {
+      throw Exception('图片是空的');
+    }
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(bytes, filename: filename),
+    });
+    Response<dynamic> resp;
+    try {
+      resp = await _dio.post(
+        '/uploadimage',
+        queryParameters: {'accessToken': accessToken},
+        data: formData,
+        options: Options(
+          // 覆盖全局的 urlencoded，让 dio 自己拼 multipart boundary
+          contentType: Headers.multipartFormDataContentType,
+          responseType: ResponseType.json,
+          // 图片本身不大，但慢网络下 15s 写超时容易误伤，放宽到 60s
+          sendTimeout: kReceiveTimeout,
+        ),
+      );
+    } on DioException catch (e) {
+      throw Exception(friendlyError(e));
+    }
+    final data = resp.data;
+    if (data is! Map) {
+      throw Exception('服务器返回格式不对');
+    }
+    if (data['isSuccess'] == false) {
+      throw Exception(friendlyServerMessage(data['errorMsg']?.toString()));
+    }
+    final raw = data['data']?.toString() ?? '';
+    final url = _normalizeUploadImageUrl(raw);
+    if (url.isEmpty) {
+      throw Exception('服务器没返回图片地址');
+    }
+    return url;
+  }
+
+  /// 后端返回的地址可能是：
+  ///   - `http//assets/images/<md5>.png`（坏 scheme，最常见）
+  ///   - `/assets/images/<md5>.png` 或 `assets/images/<md5>.png`
+  ///   - 完整的 `https://.../assets/images/<md5>.png`
+  /// 统一规整成 `${apiBase}/assets/images/<md5>.png`。
+  String _normalizeUploadImageUrl(String raw) {
+    var s = raw.trim();
+    if (s.isEmpty) return '';
+    const marker = 'assets/images/';
+    final at = s.indexOf(marker);
+    if (at < 0) {
+      // 没认出是 assets/images 路径，如果是完整 http(s) 地址就原样用
+      if (s.startsWith('http://') || s.startsWith('https://')) return s;
+      return '';
+    }
+    final file = s.substring(at + marker.length);
+    if (file.isEmpty) return '';
+    return '${AppConstants.apiBase}/$marker$file';
+  }
+
+  /// 把书加入服务端缓存队列（书架菜单「缓存书本」，上限 5 本）
+  Future<Map<String, dynamic>> addCache(
+      String accessToken, String bookUrl) async {
+    final resp = await _dio.get('/addCache', queryParameters: {
+      'accessToken': accessToken,
+      'url': bookUrl,
+    });
+    return resp.data;
+  }
+
+  /// 清掉某本书的服务端缓存（目录 + 正文 + 缓存登记）
+  Future<Map<String, dynamic>> clearBookCache(
+      String accessToken, String bookUrl) async {
+    final resp = await _dio.get('/fetchBook', queryParameters: {
+      'accessToken': accessToken,
+      'url': bookUrl,
+    });
+    return resp.data;
+  }
+
+  /// 读取书籍变量（「书籍变量」菜单用的 JSON 文本）
+  Future<String> getBookVariable(
+      String accessToken, String bookUrl) async {
+    final resp = await _dio.get('/getbookVariable', queryParameters: {
+      'accessToken': accessToken,
+      'bookurl': bookUrl,
+    });
+    return resp.data['data']?.toString() ?? '';
+  }
+
+  Future<Map<String, dynamic>> setBookVariable(
+      String accessToken, String bookUrl, String info) async {
+    final resp = await _dio.post('/setbookVariable', queryParameters: {
+      'accessToken': accessToken,
+      'bookurl': bookUrl,
+      'info': info,
+    });
     return resp.data;
   }
 

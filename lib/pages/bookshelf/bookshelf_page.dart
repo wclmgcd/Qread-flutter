@@ -12,6 +12,7 @@ import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
 import '../../services/api_service.dart';
 import '../../services/app_settings.dart';
+import '../../services/book_update_prefs.dart';
 import '../../services/error_text.dart';
 import '../../services/export_delivery.dart';
 import '../../services/export_file_saver.dart';
@@ -268,7 +269,11 @@ class _BookshelfPageState extends State<BookshelfPage>
     if (before.isEmpty) return 0;
 
     const concurrency = 4;
-    final urls = before.keys.toList(growable: false);
+    // 「关闭更新」只存在本机，跳过后书架上既不清角标也不拉目录
+    final disabled = await BookUpdatePrefs.disabledUrls();
+    final urls = before.keys
+        .where((url) => !disabled.contains(url))
+        .toList(growable: false);
     for (var i = 0; i < urls.length; i += concurrency) {
       final end = i + concurrency > urls.length ? urls.length : i + concurrency;
       await Future.wait(urls.sublist(i, end).map((url) async {
@@ -297,10 +302,11 @@ class _BookshelfPageState extends State<BookshelfPage>
     final books = context.read<BookshelfProvider>().allBooks;
     if (token == null || books.isEmpty) return;
 
+    final disabled = await BookUpdatePrefs.disabledUrls();
     final refreshable = books
         .map((book) => book.bookUrl)
         .whereType<String>()
-        .where((url) => url.isNotEmpty)
+        .where((url) => url.isNotEmpty && !disabled.contains(url))
         .toList(growable: false);
     if (refreshable.isEmpty) return;
 

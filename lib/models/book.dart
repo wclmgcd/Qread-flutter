@@ -20,6 +20,12 @@ class Book {
   @JsonKey(name: 'intro')
   String? intro;
 
+  /// 用户改过的简介。后端 `/saveBookInfo` 写的是 `custom_intro` 列，
+  /// 书架接口会把它覆盖到 `intro` 上返回；这里保留原字段，
+  /// 详情页编辑后本地也能立刻显示新简介。
+  @JsonKey(name: 'customIntro')
+  String? customIntro;
+
   @JsonKey(name: 'customCoverUrl')
   String? customCoverUrl;
 
@@ -99,6 +105,7 @@ class Book {
     this.author,
     this.coverUrl,
     this.intro,
+    this.customIntro,
     this.customCoverUrl,
     this.tocUrl,
     this.origin,
@@ -129,6 +136,7 @@ class Book {
         author: toStringVal(json['author']),
         coverUrl: toStringVal(json['coverUrl']),
         intro: toStringVal(json['intro']),
+        customIntro: toStringVal(json['customIntro']),
         customCoverUrl: toStringVal(json['customCoverUrl']),
         tocUrl: toStringVal(json['tocUrl']),
         origin: toStringVal(json['origin']),

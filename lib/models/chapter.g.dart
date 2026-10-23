@@ -10,6 +10,8 @@ Chapter _$ChapterFromJson(Map<String, dynamic> json) => Chapter(
       isVip: json['isVip'] as bool?,
       resourceUrl: json['resourceUrl'] as String?,
       tag: json['tag'] as String?,
+      wordCount: json['wordCount'] as String?,
+      lastCheckTime: json['lastCheckTime'] as int?,
     );
 
 Map<String, dynamic> _$ChapterToJson(Chapter instance) => <String, dynamic>{
@@ -20,4 +22,6 @@ Map<String, dynamic> _$ChapterToJson(Chapter instance) => <String, dynamic>{
       'isVip': instance.isVip,
       'resourceUrl': instance.resourceUrl,
       'tag': instance.tag,
+      'wordCount': instance.wordCount,
+      'lastCheckTime': instance.lastCheckTime,
     };
