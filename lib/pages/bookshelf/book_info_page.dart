@@ -696,7 +696,7 @@ class _BookInfoPageState extends State<BookInfoPage> {
 
   // -------------------------------------------------------------- 标签文案
 
-  String _displayCover {
+  String get _displayCover {
     final custom = _book.customCoverUrl?.trim() ?? '';
     if (custom.isNotEmpty) return custom;
     return _book.coverUrl ?? '';
