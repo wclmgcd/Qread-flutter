@@ -55,6 +55,8 @@ class PagedReader extends StatefulWidget {
   final String timeLabel;
   final String batteryLabel;
   final ValueChanged<int> onPageChanged;
+  final VoidCallback? onNextChapter;
+  final VoidCallback? onPreviousChapter;
   final bool showTopBar;
   final bool showBottomBar;
   final bool showPageNumber;
@@ -111,6 +113,8 @@ class PagedReader extends StatefulWidget {
     required this.timeLabel,
     required this.batteryLabel,
     required this.onPageChanged,
+    this.onNextChapter,
+    this.onPreviousChapter,
     this.showTopBar = true,
     this.showBottomBar = true,
     this.showPageNumber = true,
@@ -157,6 +161,7 @@ class _PagedReaderState extends State<PagedReader>
   double _progress = 0.0;
   double _dragStartX = 0.0;
   bool _dragging = false;
+  bool _pageViewBoundaryTriggered = false;
   Offset _touchPoint = Offset.zero;
   Offset _animationTouchBegin = Offset.zero;
   Offset _animationTouchEnd = Offset.zero;
@@ -462,7 +467,7 @@ class _PagedReaderState extends State<PagedReader>
   }
 
   void _onHorizontalDragStart(DragStartDetails details) {
-    if (!_usesManualPaging || widget.pages.length <= 1) return;
+    if (!_usesManualPaging) return;
     _animationController.stop();
     _basePage = widget.currentPage;
     _dragStartX = details.localPosition.dx;
@@ -484,24 +489,22 @@ class _PagedReaderState extends State<PagedReader>
     if (_turnDirection == 0 && dx.abs() >= _dragTrigger) {
       final direction = dx < 0 ? 1 : -1;
       final targetPage = _basePage + direction;
-      if (targetPage < 0 || targetPage >= widget.pages.length) {
-        _dragging = false;
-        return;
-      }
       _turnDirection = direction;
-      _targetPage = targetPage;
-      if (widget.animType == PageAnimType.simulation) {
+      _targetPage = targetPage >= 0 && targetPage < widget.pages.length
+          ? targetPage
+          : null;
+      if (_targetPage != null && widget.animType == PageAnimType.simulation) {
         _touchPoint = _normalizeSimulationTouch(details.localPosition, size);
         _scheduleCaptureIfNeeded();
       }
     }
 
-    if (_turnDirection == 0 || _targetPage == null) return;
+    if (_turnDirection == 0) return;
 
     final rawProgress = _turnDirection > 0 ? -dx / width : dx / width;
     setState(() {
       _progress = rawProgress.clamp(0.0, 1.0);
-      if (widget.animType == PageAnimType.simulation) {
+      if (_targetPage != null && widget.animType == PageAnimType.simulation) {
         _touchPoint = _normalizeSimulationTouch(details.localPosition, size);
       }
     });
@@ -510,7 +513,7 @@ class _PagedReaderState extends State<PagedReader>
   void _onHorizontalDragEnd(DragEndDetails details) {
     if (!_dragging) return;
     _dragging = false;
-    if (_turnDirection == 0 || _targetPage == null) {
+    if (_turnDirection == 0) {
       _resetTurnState();
       return;
     }
@@ -520,6 +523,18 @@ class _PagedReaderState extends State<PagedReader>
         ? velocity < -_commitVelocity
         : velocity > _commitVelocity;
     final shouldCommit = velocityCommits || _progress >= _commitThreshold;
+    if (_targetPage == null) {
+      final direction = _turnDirection;
+      _resetTurnState();
+      if (shouldCommit) {
+        if (direction > 0) {
+          widget.onNextChapter?.call();
+        } else {
+          widget.onPreviousChapter?.call();
+        }
+      }
+      return;
+    }
     _startAnimation(shouldCommit ? 1.0 : 0.0, commit: shouldCommit);
   }
 
@@ -534,13 +549,39 @@ class _PagedReaderState extends State<PagedReader>
   }
 
   Widget _buildPageViewMode() {
-    return PageView.builder(
-      controller: widget.pageController,
-      scrollDirection: widget.animType.axis,
-      physics: const ClampingScrollPhysics(),
-      itemCount: widget.pages.length,
-      onPageChanged: widget.onPageChanged,
-      itemBuilder: (context, index) => _buildPageBody(index),
+    return NotificationListener<ScrollNotification>(
+      onNotification: (notification) {
+        if (notification is ScrollStartNotification) {
+          _pageViewBoundaryTriggered = false;
+          return false;
+        }
+        if (notification is! OverscrollNotification ||
+            _pageViewBoundaryTriggered) {
+          return false;
+        }
+        final atFirst = widget.currentPage <= 0;
+        final atLast = widget.currentPage >= widget.pages.length - 1;
+        if (notification.overscroll < -24 &&
+            atLast &&
+            widget.onNextChapter != null) {
+          _pageViewBoundaryTriggered = true;
+          widget.onNextChapter!();
+        } else if (notification.overscroll > 24 &&
+            atFirst &&
+            widget.onPreviousChapter != null) {
+          _pageViewBoundaryTriggered = true;
+          widget.onPreviousChapter!();
+        }
+        return false;
+      },
+      child: PageView.builder(
+        controller: widget.pageController,
+        scrollDirection: widget.animType.axis,
+        physics: const ClampingScrollPhysics(),
+        itemCount: widget.pages.length,
+        onPageChanged: widget.onPageChanged,
+        itemBuilder: (context, index) => _buildPageBody(index),
+      ),
     );
   }
 

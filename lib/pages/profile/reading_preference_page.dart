@@ -170,7 +170,7 @@ class _ReadingPreferencePageState extends State<ReadingPreferencePage> {
           ),
           _switchRow(
             icon: Icons.splitscreen_outlined,
-            title: '多屏设置',
+            title: '小屏设置',
             value: s.multiScreen,
             onChanged: s.setMultiScreen,
           ),

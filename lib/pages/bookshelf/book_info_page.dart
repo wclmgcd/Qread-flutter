@@ -54,12 +54,13 @@ class _BookInfoPageState extends State<BookInfoPage> {
 
   bool _busy = false;
   bool _updateDisabled = false;
+  bool _addedToShelf = false;
 
   static const _typeLabels = {0: '小说', 1: '有声书', 2: '漫画'};
 
   String get _token => context.read<UserProvider>().token ?? '';
 
-  bool get _inShelf => widget.args.fromBookshelf;
+  bool get _inShelf => _addedToShelf || widget.args.fromBookshelf;
 
   @override
   void initState() {
@@ -837,13 +838,18 @@ class _BookInfoPageState extends State<BookInfoPage> {
     }
     setState(() => _busy = true);
     try {
-      await ApiService.instance.saveBook(_token, _book);
+      final resp = await ApiService.instance.saveBook(_token, _book);
+      if (resp['isSuccess'] == false) {
+        _toast('加入失败：${friendlyServerMessage(resp['errorMsg']?.toString())}');
+        return;
+      }
       if (!mounted) return;
+      setState(() => _addedToShelf = true);
       await context
           .read<BookshelfProvider>()
           .loadBookshelf(_token, refresh: true);
+      if (!mounted) return;
       _toast('已加入书架');
-      Navigator.pop(context, true);
     } catch (e) {
       _toast('加入失败：${friendlyError(e)}');
     } finally {
@@ -867,7 +873,7 @@ class _BookInfoPageState extends State<BookInfoPage> {
     var tocUpdated = false;
     try {
       try {
-        final resp = await ApiService.instance.getBookInfoByUrl(token, bookUrl);
+        final resp = await ApiService.instance.getBookInfo(token, _book);
         if (resp['isSuccess'] == false) {
           detailError = friendlyServerMessage(resp['errorMsg']?.toString());
         } else {

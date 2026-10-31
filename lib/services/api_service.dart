@@ -226,12 +226,9 @@ class ApiService {
   // ============ 书籍 ============
 
   Future<Map<String, dynamic>> getBookInfo(
-      String accessToken, String bookUrl, String sourceUrl) async {
-    final resp = await _dio.get('/getBookinfo', queryParameters: {
-      'accessToken': accessToken,
-      'url': bookUrl,
-      'source': sourceUrl,
-    });
+      String accessToken, Book book) async {
+    final resp = await _dio.post('/getBookinfo',
+        queryParameters: {'accessToken': accessToken}, data: book.toJson());
     return resp.data;
   }
 
@@ -1691,19 +1688,6 @@ class ApiService {
       'bookUrl': bookUrl,
       'newUrl': newUrl,
       'bookSourceUrl': bookSourceUrl,
-    });
-    return resp.data;
-  }
-
-  /// 按 url 取书籍详情（后端 `/getBookinfo2`）
-  ///
-  /// 注意：另一个 `/getBookinfo` 要求把整个 SearchBook 作为 body 传，
-  /// 参数不全时后端直接抛 NOT_BANK，所以这里用按 url 的那个。
-  Future<Map<String, dynamic>> getBookInfoByUrl(
-      String accessToken, String url) async {
-    final resp = await _dio.get('/getBookinfo2', queryParameters: {
-      'accessToken': accessToken,
-      'url': url,
     });
     return resp.data;
   }

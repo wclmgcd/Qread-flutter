@@ -329,6 +329,23 @@ class _BookEditPageState extends State<BookEditPage> {
     }
   }
 
+  String _canonicalBookTitle(String value) {
+    const ignored = {
+      ' ', ',', '，', '.', '。', ':', '：', ';', '；', '!', '！', '?', '？',
+      '、', '·', '-', '—', '_', '~', '～', '《', '》', '〈', '〉', '【', '】',
+      '[', ']', '(', ')', '（', '）', '「', '」', '『', '』', '“', '”', '"',
+      '‘', '’', "'",
+    };
+    final result = StringBuffer();
+    for (var rune in value.runes) {
+      if (rune >= 0xFF01 && rune <= 0xFF5E) rune -= 0xFEE0;
+      final char = String.fromCharCode(rune).toLowerCase();
+      if (char.trim().isEmpty || ignored.contains(char)) continue;
+      result.write(char);
+    }
+    return result.toString();
+  }
+
   /// 用当前书源按书名搜一次，列出候选封面
   Future<void> _pickFromSource() async {
     final origin = widget.book.origin?.trim() ?? '';
@@ -354,9 +371,10 @@ class _BookEditPageState extends State<BookEditPage> {
       if (mounted) setState(() => _loadingSource = false);
     }
     if (!mounted || failed) return;
+    final canonicalKeyword = _canonicalBookTitle(keyword);
     final covers = results
         .where((r) =>
-            (r.name ?? '').trim() == keyword &&
+            _canonicalBookTitle(r.name ?? '') == canonicalKeyword &&
             (r.coverUrl ?? '').trim().isNotEmpty)
         .toList(growable: false);
     if (covers.isEmpty) {

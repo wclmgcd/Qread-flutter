@@ -1008,20 +1008,36 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       content = preContent;
       chapterTitle = preTitle;
     } else {
-      // 走完整的异步流程
-      content = await provider.getChapterContent(token, chapterIndex);
-      if (!mounted || requestSerial != _state.chapterRequestSerial) return;
+      final previousContent = _state.displayedContent;
+      setState(() {
+        _state.loadingDisplayedChapter = true;
+        _state.displayedContent = '';
+      });
+      try {
+        content = await provider.getChapterContent(token, chapterIndex);
+        if (!mounted || requestSerial != _state.chapterRequestSerial) return;
 
-      chapterTitle = chapterIndex < provider.chapters.length
-          ? provider.chapters[chapterIndex].title
-          : null;
+        chapterTitle = chapterIndex < provider.chapters.length
+            ? provider.chapters[chapterIndex].title
+            : null;
 
-      layout = _layoutChapter(
-        content: content,
-        chapterTitle: chapterTitle,
-        chapterIndex: chapterIndex,
-        targetPosition: 0,
-      );
+        layout = _layoutChapter(
+          content: content,
+          chapterTitle: chapterTitle,
+          chapterIndex: chapterIndex,
+          targetPosition: 0,
+        );
+      } catch (e) {
+        if (!mounted || requestSerial != _state.chapterRequestSerial) return;
+        setState(() {
+          _state.loadingDisplayedChapter = false;
+          _state.displayedContent = previousContent;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('章节加载失败：$e')),
+        );
+        return;
+      }
     }
 
     // 解析目标位置
@@ -2113,6 +2129,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             totalChapters: provider.chapters.length,
             imageUrlBuilder: _buildImageUrl,
             onImageTap: _openImageViewer,
+            onNextChapter: () => _nextPage(provider),
+            onPreviousChapter: () => _previousPage(provider),
             onPageChanged: (page) {
               final position =
                   _state.pages.isEmpty ? 0 : _state.pages[page].startPosition;
@@ -2897,6 +2915,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       // 顺手把 provider 的目录刷齐（下一章预取、滑杆总章数都吃这份），
       // 但不挡跳章。
       unawaited(provider.refreshChapters(token).catchError((_) => 0));
+    }
+    if (index < 0 || index >= provider.chapters.length) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('目录已变化，请重新打开目录后再选章节')),
+      );
+      return;
     }
     await _openChapter(
       index,
