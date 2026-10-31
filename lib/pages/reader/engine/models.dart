@@ -252,8 +252,6 @@ class PageSlice {
     required this.startPosition,
     required this.endPosition,
     required this.chapterIndex,
-    this.contentHeight = 0,
-    this.isLastPageOfChapter = false,
   });
 
   /// 页面内所有行
@@ -267,24 +265,6 @@ class PageSlice {
 
   /// 所属章节索引
   final int chapterIndex;
-
-  /// 本页内容在分页时累计的高度（行高+段距，含安全余量前的净值）。
-  ///
-  /// 「底部对齐」靠它：末页内容不满一页时，渲染端在顶部补
-  /// `可用高度 - contentHeight` 的空隙，文字就贴到底部。
-  final double contentHeight;
-
-  /// 是否本章最后一页（分页结束时回填，见 PaginationEngine.paginate）。
-  final bool isLastPageOfChapter;
-
-  PageSlice copyWith({bool? isLastPageOfChapter}) => PageSlice(
-        lines: lines,
-        startPosition: startPosition,
-        endPosition: endPosition,
-        chapterIndex: chapterIndex,
-        contentHeight: contentHeight,
-        isLastPageOfChapter: isLastPageOfChapter ?? this.isLastPageOfChapter,
-      );
 
   /// 段落 → 首次出现的页码 映射（用于 TTS 定位等）
   Map<int, int> buildParagraphLookup() {

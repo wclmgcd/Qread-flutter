@@ -170,9 +170,6 @@ class ReaderState with ChangeNotifier {
   /// 页脚右侧的电量。
   bool showFooterBattery = true;
 
-  /// 本章最后一页内容不满一页时，顶部补空隙让文字贴底（轻阅时光「底部对齐」）。
-  bool bottomAlignLastPage = false;
-
   // ---- 更多设置·系统 ----
 
   /// 阅读页内隐藏系统状态栏。

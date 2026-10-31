@@ -213,7 +213,6 @@ class PaginationEngine {
         startPosition: startPos,
         endPosition: endPos,
         chapterIndex: chapterIndex,
-        contentHeight: currentHeight,
       ));
 
       for (final line in currentLines) {
@@ -274,13 +273,6 @@ class PaginationEngine {
     }
 
     commitPage();
-
-    // 回填「本章最后一页」标记 —— 渲染端「底部对齐」只垫末页，
-    // 中间页垫了会出现半页空白。
-    if (pages.isNotEmpty) {
-      pages[pages.length - 1] =
-          pages.last.copyWith(isLastPageOfChapter: true);
-    }
 
     return ChapterLayout(
       paragraphs: paragraphs,

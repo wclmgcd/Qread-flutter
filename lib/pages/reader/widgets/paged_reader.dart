@@ -81,9 +81,6 @@ class PagedReader extends StatefulWidget {
   final bool showFooterTime;
   final bool showFooterBattery;
 
-  /// 本章末页内容不满一页时贴底（顶部补空隙）。
-  final bool bottomAlignLastPage;
-
   /// 页脚「显示进度」四档（0 关/1 本章/2 全书/3 本章+全书）
   /// 及算全书百分比所需的章节位置。
   final int progressMode;
@@ -130,7 +127,6 @@ class PagedReader extends StatefulWidget {
     this.showHeaderFooterDivider = false,
     this.showFooterTime = true,
     this.showFooterBattery = true,
-    this.bottomAlignLastPage = false,
     this.progressMode = 1,
     this.chapterIndex = 0,
     this.totalChapters = 0,
@@ -261,7 +257,6 @@ class _PagedReaderState extends State<PagedReader>
       widget.showHeaderFooterDivider,
       widget.showFooterTime,
       widget.showFooterBattery,
-      widget.bottomAlignLastPage,
       widget.progressMode,
       widget.chapterIndex,
       widget.totalChapters,
@@ -460,7 +455,6 @@ class _PagedReaderState extends State<PagedReader>
         showHeaderFooterDivider: widget.showHeaderFooterDivider,
         showFooterTime: widget.showFooterTime,
         showFooterBattery: widget.showFooterBattery,
-        bottomAlignLastPage: widget.bottomAlignLastPage,
         imageUrlBuilder: widget.imageUrlBuilder,
         onImageTap: widget.onImageTap,
       ),

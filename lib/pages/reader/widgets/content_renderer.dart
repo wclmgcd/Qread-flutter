@@ -316,8 +316,6 @@ class ContentRenderer {
     /// 页脚左/右两侧的时间与电量。
     bool showFooterTime = true,
     bool showFooterBattery = true,
-    /// 本章末页内容不满一页时贴底（顶部补空隙）。
-    bool bottomAlignLastPage = false,
   }) {
     return Padding(
       padding: EdgeInsets.fromLTRB(
@@ -342,65 +340,49 @@ class ContentRenderer {
           // 使用 Expanded 限制文字区域高度，内部用 ClipRect 裁剪
           Expanded(
             child: ClipRect(
-              // 「底部对齐」用 LayoutBuilder 量真实剩余高度，顶部补
-              // 「剩余 − 分页时累计的内容高度」的空隙 —— 不信引擎的预算值，
-              // 两边算法天然一致（详见 PageSlice.contentHeight）。
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final topPad = (bottomAlignLastPage &&
-                          page.isLastPageOfChapter &&
-                          page.contentHeight > 0)
-                      ? (constraints.maxHeight - page.contentHeight)
-                          .clamp(0.0, double.infinity)
-                      : 0.0;
-                  return SingleChildScrollView(
-                    physics: const NeverScrollableScrollPhysics(),
-                    child: Padding(
-                      padding: EdgeInsets.only(top: topPad),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          for (final line in page.lines) ...[
-                            _buildTextLine(
-                              line: line,
-                              theme: theme,
-                              fontSize: fontSize,
-                              lineHeight: lineHeight,
-                              ttsParagraphIndex: ttsParagraphIndex,
-                              paragraphSpacing: paragraphSpacing,
-                              firstLineIndent: firstLineIndent,
-                              fontFamily: fontFamily,
-                              fontWeight: fontWeight,
-                              onCommentTap: onCommentTap,
-                              imageUrlBuilder: imageUrlBuilder,
-                              onImageTap: onImageTap,
-                              titleAlign: titleAlign,
-                            ),
-                            // 小气泡已经嵌在文字行内（见 _buildTextLine），
-                            // 这里只把「神评论」横幅单独排在行下方。
-                            for (final comment
-                                in line.comments.where((c) => c.isBanner))
-                              CommentBubble(
-                                comment: comment,
-                                theme: theme,
-                                fontSize: fontSize,
-                                onTap: onCommentTap == null
-                                    ? null
-                                    : () => onCommentTap(comment),
-                              ),
-                            // 有横幅时，间距排在横幅**下面**（见分页引擎里的同款注释），
-                            // 否则横幅会比官方客户端低一个段间距
-                            if (line.comments.any((c) => c.isBanner))
-                              SizedBox(
-                                  height: line.isLastLineOfParagraph
-                                      ? paragraphSpacing
-                                      : 1.0),
-                          ],
-                        ],
+              child: SingleChildScrollView(
+                physics: const NeverScrollableScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final line in page.lines) ...[
+                      _buildTextLine(
+                        line: line,
+                        theme: theme,
+                        fontSize: fontSize,
+                        lineHeight: lineHeight,
+                        ttsParagraphIndex: ttsParagraphIndex,
+                        paragraphSpacing: paragraphSpacing,
+                        firstLineIndent: firstLineIndent,
+                        fontFamily: fontFamily,
+                        fontWeight: fontWeight,
+                        onCommentTap: onCommentTap,
+                        imageUrlBuilder: imageUrlBuilder,
+                        onImageTap: onImageTap,
+                        titleAlign: titleAlign,
                       ),
-                    ),
-                  );
-                },
+                      // 小气泡已经嵌在文字行内（见 _buildTextLine），
+                      // 这里只把「神评论」横幅单独排在行下方。
+                      for (final comment
+                          in line.comments.where((c) => c.isBanner))
+                        CommentBubble(
+                          comment: comment,
+                          theme: theme,
+                          fontSize: fontSize,
+                          onTap: onCommentTap == null
+                              ? null
+                              : () => onCommentTap(comment),
+                        ),
+                      // 有横幅时，间距排在横幅**下面**（见分页引擎里的同款注释），
+                      // 否则横幅会比官方客户端低一个段间距
+                      if (line.comments.any((c) => c.isBanner))
+                        SizedBox(
+                            height: line.isLastLineOfParagraph
+                                ? paragraphSpacing
+                                : 1.0),
+                    ],
+                  ],
+                ),
               ),
             ),
           ),

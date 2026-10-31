@@ -62,6 +62,11 @@ class _BookTocSheetState extends State<BookTocSheet> {
   Set<int> _readIndices = {};
   Set<int> _cachedIndices = {};
   bool _bookmarksLoaded = false;
+  bool _didInitialJump = false;
+  bool _showLocateCurrent = false;
+
+  static const _rowHeight = 76.0;
+  static const _listTopPadding = 4.0;
 
   final _searchCtl = TextEditingController();
   final _scrollController = ScrollController();
@@ -69,10 +74,12 @@ class _BookTocSheetState extends State<BookTocSheet> {
   @override
   void initState() {
     super.initState();
+    _scrollController.addListener(_updateLocateButton);
     final initial = widget.initialChapters;
     if (initial != null && initial.isNotEmpty) {
       _chapters = List.of(initial);
       _loading = false;
+      _jumpToCurrent();
     }
     unawaited(_loadCachedIndices());
     unawaited(_load());
@@ -80,6 +87,7 @@ class _BookTocSheetState extends State<BookTocSheet> {
 
   @override
   void dispose() {
+    _scrollController.removeListener(_updateLocateButton);
     _searchCtl.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -191,20 +199,57 @@ class _BookTocSheetState extends State<BookTocSheet> {
     }
   }
 
-  void _jumpToCurrent() {
-    if (_scrollController.hasClients || _chapters.isEmpty) return;
-    final current = widget.book.durChapterIndex ?? 0;
-    if (current <= 0) return;
+  void _jumpToCurrent({bool force = false}) {
+    if (_chapters.isEmpty) return;
+    if (!force && _didInitialJump) {
+      _scheduleLocateUpdate();
+      return;
+    }
+    if (!force) _didInitialJump = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollController.hasClients) return;
-      const rowHeight = 76.0;
-      final target = (current - 1).clamp(0, _chapters.length - 1) * rowHeight;
+      if (!mounted || !_scrollController.hasClients) {
+        if (!force) _didInitialJump = false;
+        return;
+      }
+      final current = widget.book.durChapterIndex ?? 0;
+      final position = _visibleChapters().indexOf(current);
+      if (position < 0) {
+        _updateLocateButton();
+        return;
+      }
+      final target = _listTopPadding + position * _rowHeight;
       _scrollController.jumpTo(
         target
             .clamp(0.0, _scrollController.position.maxScrollExtent)
             .toDouble(),
       );
+      _updateLocateButton();
     });
+  }
+
+  void _scheduleLocateUpdate() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _updateLocateButton();
+    });
+  }
+
+  void _updateLocateButton() {
+    var show = false;
+    if (_scrollController.hasClients && _chapters.isNotEmpty) {
+      final current = widget.book.durChapterIndex ?? 0;
+      final position = _visibleChapters().indexOf(current);
+      if (position >= 0) {
+        final rowTop = _listTopPadding + position * _rowHeight;
+        final rowBottom = rowTop + _rowHeight;
+        final scroll = _scrollController.position;
+        final viewportTop = scroll.pixels;
+        final viewportBottom = viewportTop + scroll.viewportDimension;
+        show = rowTop < viewportTop || rowBottom > viewportBottom;
+      }
+    }
+    if (mounted && show != _showLocateCurrent) {
+      setState(() => _showLocateCurrent = show);
+    }
   }
 
   // ---------------------------------------------------------------- 结构
@@ -492,6 +537,7 @@ class _BookTocSheetState extends State<BookTocSheet> {
                 onTap: () {
                   setState(() => _ascending = !_ascending);
                   widget.onOrderChanged?.call(_ascending);
+                  _jumpToCurrent(force: true);
                 },
                 child: Container(
                   padding:
@@ -537,9 +583,26 @@ class _BookTocSheetState extends State<BookTocSheet> {
                 ListView.builder(
                   controller: _scrollController,
                   padding: const EdgeInsets.fromLTRB(22, 4, 18, 86),
+                  itemExtent: _rowHeight,
                   itemCount: visible.length,
                   itemBuilder: (_, i) =>
                       _buildChapterRow(visible[i], i),
+                ),
+              if (_showLocateCurrent)
+                Positioned(
+                  right: 20,
+                  bottom: 76,
+                  child: FloatingActionButton.small(
+                    onPressed: () => _jumpToCurrent(force: true),
+                    tooltip: '回到当前章节',
+                    backgroundColor:
+                        BookDetailStyle.accent.withValues(alpha: 0.16),
+                    foregroundColor: BookDetailStyle.accent,
+                    elevation: 0,
+                    highlightElevation: 0,
+                    shape: const CircleBorder(),
+                    child: const Icon(Icons.my_location),
+                  ),
                 ),
               Positioned(
                 left: 16,
@@ -669,7 +732,10 @@ class _BookTocSheetState extends State<BookTocSheet> {
       ),
       child: TextField(
         controller: _searchCtl,
-        onChanged: (v) => setState(() => _query = v.trim()),
+        onChanged: (v) {
+          setState(() => _query = v.trim());
+          _scheduleLocateUpdate();
+        },
         style: TextStyle(
           fontSize: 16,
           color: BookDetailStyle.text(context),

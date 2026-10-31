@@ -91,7 +91,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   static const _keyProgressMode = 'reader_progress_mode';
   static const _keyShowFooterTime = 'reader_show_footer_time';
   static const _keyShowFooterBattery = 'reader_show_footer_battery';
-  static const _keyBottomAlignLast = 'reader_bottom_align_last';
   static const _keyHideStatusBar = 'reader_hide_status_bar';
   static const _keyLockOrientation = 'reader_lock_orientation';
   static const _keyWakelockMinutes = 'reader_wakelock_minutes';
@@ -157,6 +156,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
 
   /// 「屏幕常亮」档位（5/10 分钟）的倒计时；到点自动放屏，翻页/点击会刷新。
   Timer? _wakelockTimer;
+
+  bool _addedToShelf = false;
+  bool _addingToShelf = false;
+  bool _shelfPromptShowing = false;
+  bool _exitInProgress = false;
 
   /// 自动翻页控制条自动隐藏延时。
   static const Duration _autoPageBarHideDelay = Duration(seconds: 4);
@@ -507,7 +511,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
           prefs.getBool(_keyShowHfDivider) ?? false;
       _state.showFooterTime = prefs.getBool(_keyShowFooterTime) ?? true;
       _state.showFooterBattery = prefs.getBool(_keyShowFooterBattery) ?? true;
-      _state.bottomAlignLastPage = prefs.getBool(_keyBottomAlignLast) ?? false;
       _state.hideStatusBar = prefs.getBool(_keyHideStatusBar) ?? false;
       _state.lockOrientation = prefs.getBool(_keyLockOrientation) ?? false;
       _state.sliderByPage = prefs.getBool(_keySliderByPage) ?? false;
@@ -579,7 +582,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     await prefs.setBool(_keyShowHfDivider, _state.showHeaderFooterDivider);
     await prefs.setBool(_keyShowFooterTime, _state.showFooterTime);
     await prefs.setBool(_keyShowFooterBattery, _state.showFooterBattery);
-    await prefs.setBool(_keyBottomAlignLast, _state.bottomAlignLastPage);
     await prefs.setBool(_keyHideStatusBar, _state.hideStatusBar);
     await prefs.setBool(_keyLockOrientation, _state.lockOrientation);
     await prefs.setBool(_keySliderByPage, _state.sliderByPage);
@@ -1243,9 +1245,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     final velocity = details.primaryVelocity ?? 0;
     _refreshWakelockTimer();
     if (velocity <= -400 && _state.swipeUpExit) {
-      // 和点控制栏「返回」同一条路径：先存进度再退出
-      _saveProgress(pos: _getProgress());
-      Navigator.pop(context);
+      unawaited(_requestExit());
       return;
     }
     if (velocity >= 400 && _state.swipeDownBookmark) {
@@ -1658,7 +1658,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       // 在阅读页顶层把它归零，渲染端和分页端的度量就完全一致了。
       DefaultTextStyle.merge(
         style: const TextStyle(letterSpacing: 0),
-        child: Scaffold(
+        child: PopScope<void>(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, result) {
+            if (!didPop) unawaited(_requestExit());
+          },
+          child: Scaffold(
           backgroundColor: _state.currentTheme.background,
           body: Consumer<ReaderProvider>(
             builder: (context, provider, _) {
@@ -1764,12 +1769,10 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       currentPage: _state.currentPage,
                       totalPages: _state.pages.length,
                       pageSliderValue: _state.pageSliderValue,
+                      showAddToShelf: !_isCurrentBookInShelf(provider),
                     ),
                     callbacks: ReaderControllerCallbacks(
-                      onBack: () {
-                        _saveProgress(pos: _getProgress());
-                        Navigator.pop(context);
-                      },
+                      onBack: () => unawaited(_requestExit()),
                       onBatchDownload: () => _showBatchDownloadSheet(provider),
                       onChangeSource: () => _changeBookSource(provider),
                       onRefresh: _applyReplaceRules,
@@ -1777,6 +1780,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                       onStartAutoPage: _startAutoPageMode,
                       onStartTts: _startTts,
                       onToggleTheme: _toggleNightMode,
+                      onAddToShelf: () =>
+                          unawaited(_promptAddCurrentBookToShelf(provider)),
                       onPrevChapter: _goToPreviousChapter,
                       onNextChapter: _goToNextChapter,
                       onChapterSliderChanged: (value) {
@@ -1916,6 +1921,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             ),
           ),
         ),
+      ),
       );
   }
 
@@ -2102,7 +2108,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
             showHeaderFooterDivider: _state.showHeaderFooterDivider,
             showFooterTime: _state.showFooterTime,
             showFooterBattery: _state.showFooterBattery,
-            bottomAlignLastPage: _state.bottomAlignLastPage,
             progressMode: _state.progressMode,
             chapterIndex: _state.laidOutChapterIndex,
             totalChapters: provider.chapters.length,
@@ -3890,12 +3895,6 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                 (v) =>
                                     commit(() => _state.swipeDownBookmark = v),
                               ),
-                              switchRow(
-                                '底部对齐',
-                                _state.bottomAlignLastPage,
-                                (v) => commit(
-                                    () => _state.bottomAlignLastPage = v),
-                              ),
                               choiceRow(
                                 '菜单滑动条',
                                 _state.sliderByPage ? '按分页' : '按章节',
@@ -4899,7 +4898,8 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
                                   label: '+ 书架',
                                   onTap: () {
                                     Navigator.pop(dialogContext);
-                                    _addCurrentBookToShelf(provider);
+                                    unawaited(_promptAddCurrentBookToShelf(
+                                        provider));
                                   },
                                 ),
                               ],
@@ -5202,34 +5202,107 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     );
   }
 
-  /// 当前书是否已在书架（决定 ⋮ 菜单头部要不要显示「+ 书架」）。
-  ///
-  /// 【为什么用 read 不用 watch】这个方法现在是从对话框 builder / 点击回调里
-  /// 调的一次性读取，不是在 build 里订阅 —— watch 在非 build 时机调用会直接抛。
+  /// 当前书是否已在书架（决定阅读控制栏和 ⋮ 菜单是否显示加入入口）。
   bool _isCurrentBookInShelf(ReaderProvider provider) {
+    if (_addedToShelf) return true;
     final url = provider.book?.bookUrl;
     if (url == null || url.isEmpty) return true;
-    final books = context.read<BookshelfProvider>().books;
+    final books = context.read<BookshelfProvider>().allBooks;
     return books.any((b) => b.bookUrl == url);
   }
 
-  /// 把当前正在读的书加入书架（对齐 3.41 中间胶囊的加号）
-  Future<void> _addCurrentBookToShelf(ReaderProvider provider) async {
+  Future<bool> _confirmAddToShelf(Book book) async {
+    if (_shelfPromptShowing) return false;
+    _shelfPromptShowing = true;
+    final name = book.name?.trim() ?? '';
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('加入书架'),
+        content: Text(name.isEmpty ? '确定要将当前书籍加入书架吗？' : '确定要将《$name》加入书架吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    _shelfPromptShowing = false;
+    return confirmed ?? false;
+  }
+
+  Future<void> _promptAddCurrentBookToShelf(ReaderProvider provider) async {
+    if (_isCurrentBookInShelf(provider)) return;
+    final book = provider.book;
+    if (book == null) return;
+    final confirmed = await _confirmAddToShelf(book);
+    if (!confirmed || !mounted || _isCurrentBookInShelf(provider)) return;
+    await _addCurrentBookToShelf(provider);
+  }
+
+  /// 未入架时，所有退出路径都先询问是否加架；取消则不加并直接退出。
+  Future<void> _requestExit() async {
+    if (_exitInProgress) return;
+    final provider = _readerProvider;
+    if (provider == null) {
+      if (mounted) Navigator.pop(context);
+      return;
+    }
+    _exitInProgress = true;
+    try {
+      if (!_isCurrentBookInShelf(provider)) {
+        final book = provider.book;
+        if (book != null) {
+          final add = await _confirmAddToShelf(book);
+          if (!mounted) return;
+          if (add) {
+            final saved = await _addCurrentBookToShelf(provider);
+            if (!saved || !mounted) return;
+          }
+        }
+      }
+      if (!mounted) return;
+      _saveProgress(pos: _getProgress());
+      Navigator.pop(context);
+    } finally {
+      if (mounted) _exitInProgress = false;
+    }
+  }
+
+  /// 把当前正在读的书加入书架；成功标记立即生效，避免刷新期间加号复现。
+  Future<bool> _addCurrentBookToShelf(ReaderProvider provider) async {
+    if (_isCurrentBookInShelf(provider)) return true;
+    if (_addingToShelf) return false;
     final book = provider.book;
     final token = _token;
     if (book == null || token == null || token.isEmpty) {
       _toast('请先登录');
-      return;
+      return false;
     }
+    _addingToShelf = true;
     try {
-      await ApiService.instance.saveBook(token, book);
-      if (!mounted) return;
-      await context
-          .read<BookshelfProvider>()
-          .loadBookshelf(token, refresh: true);
+      final resp = await ApiService.instance.saveBook(token, book);
+      if (resp['isSuccess'] == false) {
+        _toast('加入失败：${resp['errorMsg']?.toString() ?? '服务器返回失败'}');
+        return false;
+      }
+      if (!mounted) return false;
+      setState(() => _addedToShelf = true);
       _toast('已加入书架');
+      unawaited(context
+          .read<BookshelfProvider>()
+          .loadBookshelf(token, refresh: true));
+      return true;
     } catch (e) {
       _toast('加入失败：$e');
+      return false;
+    } finally {
+      _addingToShelf = false;
     }
   }
 

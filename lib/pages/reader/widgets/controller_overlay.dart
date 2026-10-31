@@ -36,6 +36,9 @@ class ReaderControllerViewData {
   final int totalPages;
   final double? pageSliderValue;
 
+  /// 未加入书架时，在右侧按钮组末尾显示「+」。
+  final bool showAddToShelf;
+
   const ReaderControllerViewData({
     required this.capsuleMode,
     required this.ttsState,
@@ -47,6 +50,7 @@ class ReaderControllerViewData {
     this.currentPage = 0,
     this.totalPages = 0,
     this.pageSliderValue,
+    this.showAddToShelf = false,
   });
 }
 
@@ -63,6 +67,7 @@ class ReaderControllerCallbacks {
   final VoidCallback onStartAutoPage;
   final VoidCallback onStartTts;
   final VoidCallback onToggleTheme;
+  final VoidCallback onAddToShelf;
 
   // ---- 章节滑杆 ----
   final VoidCallback onPrevChapter;
@@ -114,6 +119,7 @@ class ReaderControllerCallbacks {
     required this.onStartAutoPage,
     required this.onStartTts,
     required this.onToggleTheme,
+    required this.onAddToShelf,
     required this.onPrevChapter,
     required this.onNextChapter,
     required this.onChapterSliderChanged,
@@ -240,7 +246,7 @@ class _ControllerOverlayState extends State<ControllerOverlay> {
             right: 10,
             top: 0,
             bottom: 0,
-            child: _SideColumn(callbacks: callbacks, theme: theme),
+            child: _SideColumn(data: data, callbacks: callbacks, theme: theme),
           ),
 
         // 底部：章节滑杆 pill + 工具 pill（或 TTS 控制卡）
@@ -400,10 +406,15 @@ class _TopBar extends StatelessWidget {
 // ============================================================
 
 class _SideColumn extends StatelessWidget {
+  final ReaderControllerViewData data;
   final ReaderControllerCallbacks callbacks;
   final ReaderTheme theme;
 
-  const _SideColumn({required this.callbacks, required this.theme});
+  const _SideColumn({
+    required this.data,
+    required this.callbacks,
+    required this.theme,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -433,6 +444,15 @@ class _SideColumn extends StatelessWidget {
             colors: colors,
             tooltip: isDark ? '日间' : '夜间',
           ),
+          if (data.showAddToShelf) ...[
+            const SizedBox(height: 14),
+            _CircleButton(
+              icon: Icons.add,
+              onTap: callbacks.onAddToShelf,
+              colors: colors,
+              tooltip: '加入书架',
+            ),
+          ],
         ],
       ),
     );

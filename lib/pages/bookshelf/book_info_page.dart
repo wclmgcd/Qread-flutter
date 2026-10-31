@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -63,6 +64,11 @@ class _BookInfoPageState extends State<BookInfoPage> {
   void initState() {
     super.initState();
     _loadUpdateState();
+    if (!_inShelf) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_refreshInfo(silent: true));
+      });
+    }
   }
 
   Future<void> _loadUpdateState() async {
@@ -98,6 +104,11 @@ class _BookInfoPageState extends State<BookInfoPage> {
             child: Column(
               children: [
                 _buildTopBar(),
+                if (_busy)
+                  const LinearProgressIndicator(
+                    minHeight: 2,
+                    color: BookDetailStyle.accent,
+                  ),
                 Expanded(
                   child: ListView(
                     padding: const EdgeInsets.only(bottom: 110),
@@ -716,6 +727,7 @@ class _BookInfoPageState extends State<BookInfoPage> {
   }
 
   String _latestLabel(Book book) {
+    if (_busy) return '加载中';
     final t = book.latestChapterTitle?.trim() ?? '';
     return t.isEmpty ? '暂无' : t;
   }
@@ -838,29 +850,102 @@ class _BookInfoPageState extends State<BookInfoPage> {
     }
   }
 
-  /// 从后端重新拉一次书籍信息（补齐字数/标签/最新章节等）
-  Future<void> _refreshInfo() async {
-    final bookUrl = _book.bookUrl;
-    if (bookUrl == null || bookUrl.isEmpty) {
-      _toast('这本书没有 bookUrl，无法刷新');
+  /// 从后端重新拉书籍详情和目录；发现 / 搜索进入时也用同一套逻辑自动补齐。
+  Future<void> _refreshInfo({bool silent = false}) async {
+    if (_busy) return;
+    final bookUrl = _book.bookUrl?.trim() ?? '';
+    final token = _token;
+    if (bookUrl.isEmpty || token.isEmpty) {
+      if (!silent) _toast(bookUrl.isEmpty ? '这本书没有 bookUrl，无法刷新' : '请先登录');
       return;
     }
     setState(() => _busy = true);
+    Book? fresh;
+    String? detailError;
+    String? tocError;
+    var tocUpdated = false;
     try {
-      final resp = await ApiService.instance.getBookInfoByUrl(_token, bookUrl);
-      final data = resp['data'];
-      if (data is Map) {
-        final fresh = Book.fromJson(Map<String, dynamic>.from(data));
-        if (!mounted) return;
-        setState(() {
-          _copyInto(_book, fresh);
-        });
-        _toast('已刷新');
-      } else {
-        _toast('刷新失败：${friendlyServerMessage(resp['errorMsg']?.toString())}');
+      try {
+        final resp = await ApiService.instance.getBookInfoByUrl(token, bookUrl);
+        if (resp['isSuccess'] == false) {
+          detailError = friendlyServerMessage(resp['errorMsg']?.toString());
+        } else {
+          var data = resp['data'];
+          if (data is String) {
+            try {
+              data = jsonDecode(data);
+            } catch (_) {}
+          }
+          if (data is Map) {
+            fresh = Book.fromJson(Map<String, dynamic>.from(data));
+          } else {
+            detailError = '服务器未返回有效的书籍详情';
+          }
+        }
+      } catch (e) {
+        detailError = friendlyError(e);
       }
-    } catch (e) {
-      _toast('刷新失败：${friendlyError(e)}');
+
+      final origin = _book.origin?.trim() ?? '';
+      if (origin.isEmpty) {
+        tocError = '缺少书源地址';
+      } else {
+        try {
+          final chapters = await ApiService.instance.getChapterListNew(
+            token,
+            bookUrl,
+            origin,
+            bookname: _book.name,
+            needRefresh: 1,
+          );
+          if (chapters.isEmpty) {
+            tocError = '书源返回了空目录';
+          } else {
+            Chapter? latest;
+            for (final chapter in chapters.reversed) {
+              if (chapter.isVolume != true &&
+                  (chapter.title?.trim().isNotEmpty ?? false)) {
+                latest = chapter;
+                break;
+              }
+            }
+            if (!mounted) return;
+            setState(() {
+              _book.totalChapterNum = chapters.length;
+              if (latest != null) {
+                _book.latestChapterTitle = latest!.title;
+                _book.latestChapterTime = latest!.lastCheckTime;
+              }
+            });
+            tocUpdated = true;
+            unawaited(LocalCacheService.instance.writeChapterToc(
+              bookUrl,
+              [for (final chapter in chapters) chapter.toJson()],
+            ));
+          }
+        } catch (e) {
+          tocError = friendlyError(e);
+        }
+      }
+
+      if (!mounted) return;
+      if (fresh != null) {
+        setState(() => _copyInto(_book, fresh!));
+      }
+      if ((fresh != null || tocUpdated) && _inShelf) {
+        context.read<BookshelfProvider>().applySort();
+      }
+      if (!silent) {
+        if (fresh != null && tocUpdated) {
+          _toast('已刷新');
+        } else if (fresh != null) {
+          _toast('详情已更新，目录刷新失败：${tocError ?? '未知错误'}');
+        } else if (tocUpdated) {
+          _toast('目录已更新，详情刷新失败：${detailError ?? '未知错误'}');
+        } else {
+          _toast('刷新失败：${detailError ?? tocError ?? '未知错误'}');
+        }
+      }
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -880,10 +965,6 @@ class _BookInfoPageState extends State<BookInfoPage> {
     dst.latestChapterTime = src.latestChapterTime ?? dst.latestChapterTime;
     dst.totalChapterNum = src.totalChapterNum ?? dst.totalChapterNum;
     dst.lastCheckTime = src.lastCheckTime ?? dst.lastCheckTime;
-    dst.durChapterTitle = src.durChapterTitle ?? dst.durChapterTitle;
-    dst.durChapterIndex = src.durChapterIndex ?? dst.durChapterIndex;
-    dst.durChapterPos = src.durChapterPos ?? dst.durChapterPos;
-    dst.durChapterTime = src.durChapterTime ?? dst.durChapterTime;
   }
 
   Future<void> _changeSource() async {

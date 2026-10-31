@@ -355,10 +355,12 @@ class _BookEditPageState extends State<BookEditPage> {
     }
     if (!mounted || failed) return;
     final covers = results
-        .where((r) => (r.coverUrl ?? '').trim().isNotEmpty)
+        .where((r) =>
+            (r.name ?? '').trim() == keyword &&
+            (r.coverUrl ?? '').trim().isNotEmpty)
         .toList(growable: false);
     if (covers.isEmpty) {
-      _toast('书源里没有搜到带封面的结果');
+      _toast('书源里没有搜到同名且带封面的结果');
       return;
     }
     final picked = await showModalBottomSheet<String>(
