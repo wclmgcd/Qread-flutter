@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../config/routes.dart';
 import '../../models/book.dart';
 import '../../models/book_group.dart';
+import '../../models/chapter.dart';
 import '../../models/reader_launch_args.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/reader_provider.dart';
