@@ -1,5 +1,26 @@
 // ignore_for_file: unused_element
 
+// 缺失类型保留 null，避免详情刷新覆盖原类型。
+int? normalizeBookType(dynamic value) {
+  if (value == null) return null;
+  switch (value is String ? int.tryParse(value) : value) {
+    case 1:
+    case 32:
+      return 1;
+    case 2:
+    case 64:
+      return 2;
+    case 3:
+      return 3;
+    default:
+      return 0;
+  }
+}
+
+int? bookTypeFromSource(int? value) {
+  return value != null && value >= 0 && value <= 3 ? value : null;
+}
+
 int? toInt(dynamic v) {
   if (v == null) return null;
   if (v is int) return v;

@@ -231,20 +231,8 @@ class _DiscoverPageState extends State<DiscoverPage>
   }
 
   /// 书源返回的书 → 书籍信息页要的 Book。
-  Book _toBook(SearchResult r) => Book(
-        bookUrl: r.bookUrl,
-        name: r.name,
-        author: r.author,
-        coverUrl: r.coverUrl,
-        intro: r.intro,
-        kind: r.kind,
-        latestChapterTitle: r.latestChapterTitle,
-        tocUrl: r.tocUrl,
-        origin: r.origin,
-        originName: r.originName,
-        wordCount: r.wordCount,
-        type: 0,
-        group: 0,
+  Book _toBook(SearchResult r) => r.toBook(
+        source: context.read<DiscoverProvider>().currentSource,
       );
 
   /// 右上角人像 → 书源登录。

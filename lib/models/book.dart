@@ -38,7 +38,7 @@ class Book {
   @JsonKey(name: 'originName')
   String? originName;
 
-  @JsonKey(name: 'type')
+  @JsonKey(name: 'type', fromJson: normalizeBookType)
   int? type;
 
   @JsonKey(name: 'group')
@@ -141,7 +141,7 @@ class Book {
         tocUrl: toStringVal(json['tocUrl']),
         origin: toStringVal(json['origin']),
         originName: toStringVal(json['originName']),
-        type: toInt(json['type']),
+        type: normalizeBookType(json['type']),
         group: toInt(json['group']),
         latestChapterTitle: toStringVal(json['latestChapterTitle']),
         latestChapterTime: toInt(json['latestChapterTime']),

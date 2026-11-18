@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../../models/book.dart';
 import '../../models/search_result.dart';
 import '../../providers/bookshelf_provider.dart';
 import '../../providers/user_provider.dart';
@@ -176,18 +175,7 @@ class _ExploreBooksPageState extends State<ExploreBooksPage> {
     try {
       await ApiService.instance.saveBook(
         token,
-        Book(
-          bookUrl: result.bookUrl,
-          name: result.name,
-          author: result.author,
-          coverUrl: result.coverUrl,
-          intro: result.intro,
-          tocUrl: result.tocUrl,
-          origin: result.origin,
-          originName: result.originName,
-          type: 0,
-          group: 0,
-        ),
+        result.toBook(),
       );
       if (!mounted) return;
       await bookshelfProvider.loadBookshelf(token, refresh: true);

@@ -1,4 +1,6 @@
 import 'package:json_annotation/json_annotation.dart';
+import 'book.dart';
+import 'book_source.dart';
 import 'json_helpers.dart';
 
 part 'search_result.g.dart';
@@ -38,6 +40,9 @@ class SearchResult {
   @JsonKey(name: 'wordCount')
   String? wordCount;
 
+  @JsonKey(name: 'type', fromJson: normalizeBookType)
+  int? type;
+
   SearchResult({
     this.bookUrl,
     this.name,
@@ -50,6 +55,7 @@ class SearchResult {
     this.origin,
     this.originName,
     this.wordCount,
+    this.type,
   });
 
   factory SearchResult.fromJson(Map<String, dynamic> json) => SearchResult(
@@ -64,7 +70,33 @@ class SearchResult {
         origin: toStringVal(json['origin']),
         originName: toStringVal(json['originName']),
         wordCount: toStringVal(json['wordCount']),
+        type: normalizeBookType(json['type']),
       );
+
+  /// 搜索/发现共用转换；仅在结果缺失类型且来源不冲突时使用已知书源。
+  Book toBook({BookSource? source}) {
+    final sourceUrl = source?.bookSourceUrl;
+    final canUseSource = sourceUrl != null &&
+        sourceUrl.isNotEmpty &&
+        ((origin ?? '').isEmpty || origin == sourceUrl);
+    return Book(
+      bookUrl: bookUrl,
+      name: name,
+      author: author,
+      coverUrl: coverUrl,
+      intro: intro,
+      kind: kind,
+      latestChapterTitle: latestChapterTitle,
+      tocUrl: tocUrl,
+      origin: origin,
+      originName: originName,
+      wordCount: wordCount,
+      type: normalizeBookType(type) ??
+          (canUseSource ? bookTypeFromSource(source?.bookSourceType) : null) ??
+          0,
+      group: 0,
+    );
+  }
 
   Map<String, dynamic> toJson() => _$SearchResultToJson(this);
 }

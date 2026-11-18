@@ -14,6 +14,7 @@ SearchResult _$SearchResultFromJson(Map<String, dynamic> json) => SearchResult(
       origin: json['origin'] as String?,
       originName: json['originName'] as String?,
       wordCount: json['wordCount'] as String?,
+      type: normalizeBookType(json['type']),
     );
 
 Map<String, dynamic> _$SearchResultToJson(SearchResult instance) => <String, dynamic>{
@@ -28,4 +29,5 @@ Map<String, dynamic> _$SearchResultToJson(SearchResult instance) => <String, dyn
       'origin': instance.origin,
       'originName': instance.originName,
       'wordCount': instance.wordCount,
+      'type': instance.type,
     };

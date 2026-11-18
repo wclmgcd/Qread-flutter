@@ -968,6 +968,7 @@ class _BookInfoPageState extends State<BookInfoPage> {
     dst.customIntro = src.customIntro ?? dst.customIntro;
     dst.kind = src.kind ?? dst.kind;
     dst.wordCount = src.wordCount ?? dst.wordCount;
+    if (src.type != null) dst.type = src.type;
     dst.latestChapterTitle = src.latestChapterTitle ?? dst.latestChapterTitle;
     dst.latestChapterTime = src.latestChapterTime ?? dst.latestChapterTime;
     dst.totalChapterNum = src.totalChapterNum ?? dst.totalChapterNum;

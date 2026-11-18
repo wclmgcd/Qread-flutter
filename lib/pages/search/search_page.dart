@@ -703,18 +703,7 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  Book _toBook(SearchResult r) => Book(
-        bookUrl: r.bookUrl,
-        name: r.name,
-        author: r.author,
-        coverUrl: r.coverUrl,
-        intro: r.intro,
-        tocUrl: r.tocUrl,
-        origin: r.origin,
-        originName: r.originName,
-        type: 0,
-        group: 0,
-      );
+  Book _toBook(SearchResult r) => r.toBook();
 
   Future<void> _addToBookshelf(SearchResult result) async {
     final token = context.read<UserProvider>().token;

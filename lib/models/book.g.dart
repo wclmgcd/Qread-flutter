@@ -17,7 +17,7 @@ Book _$BookFromJson(Map<String, dynamic> json) => Book(
       tocUrl: json['tocUrl'] as String?,
       origin: json['origin'] as String?,
       originName: json['originName'] as String?,
-      type: json['type'] as int?,
+      type: normalizeBookType(json['type']),
       group: json['group'] as int?,
       latestChapterTitle: json['latestChapterTitle'] as String?,
       latestChapterTime: json['latestChapterTime'] as int?,
