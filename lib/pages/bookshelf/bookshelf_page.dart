@@ -247,11 +247,17 @@ class _BookshelfPageState extends State<BookshelfPage>
     // 下拉刷新顺带「看有没有更新」：逐本让服务端重新抓取章节数，
     // 刷新前后对比 totalChapterNum，变大即判定有更新（卡片上的未读角标随之刷新）。
     final updated = await _checkBookUpdates(token);
-    _addLog(updated > 0 ? '书架刷新完成，$updated 本有更新' : '书架刷新完成，暂无更新');
     if (!mounted) return;
+    final error = context.read<BookshelfProvider>().error;
+    final message = error != null
+        ? '书架刷新失败：$error'
+        : updated > 0
+            ? '书架刷新完成，$updated 本有更新'
+            : '书架刷新完成';
+    _addLog(message);
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(updated > 0 ? '检查完成：$updated 本有更新' : '检查完成：暂无更新'),
+        content: Text(message),
         duration: const Duration(seconds: 2),
       ),
     );
@@ -266,7 +272,10 @@ class _BookshelfPageState extends State<BookshelfPage>
       for (final b in context.read<BookshelfProvider>().allBooks)
         if ((b.bookUrl ?? '').isNotEmpty) b.bookUrl!: b.totalChapterNum ?? 0,
     };
-    if (before.isEmpty) return 0;
+    if (before.isEmpty) {
+      await _loadData(refresh: true);
+      return 0;
+    }
 
     const concurrency = 4;
     // 「关闭更新」只存在本机，跳过后书架上既不清角标也不拉目录
@@ -300,7 +309,11 @@ class _BookshelfPageState extends State<BookshelfPage>
   Future<void> _refreshAllBooks() async {
     final token = context.read<UserProvider>().token;
     final books = context.read<BookshelfProvider>().allBooks;
-    if (token == null || books.isEmpty) return;
+    if (token == null) return;
+    if (books.isEmpty) {
+      await _refreshBookshelf();
+      return;
+    }
 
     final disabled = await BookUpdatePrefs.disabledUrls();
     final refreshable = books
@@ -1102,7 +1115,7 @@ class _BookshelfPageState extends State<BookshelfPage>
             Text(provider.error!, style: const TextStyle(color: Colors.red)),
             const SizedBox(height: 16),
             ElevatedButton(
-              onPressed: _refreshBookshelf,
+              onPressed: () => _loadData(refresh: true),
               child: const Text('重试'),
             ),
           ],
@@ -1115,6 +1128,7 @@ class _BookshelfPageState extends State<BookshelfPage>
       return RefreshIndicator(
         onRefresh: _refreshBookshelf,
         child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           children: const [
             SizedBox(height: 120),
             Icon(Icons.collections_bookmark_outlined,

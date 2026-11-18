@@ -162,7 +162,14 @@ class ApiService {
     final resp = await _dio.get('/getBookshelfPage', queryParameters: {
       'accessToken': accessToken,
     });
-    return resp.data;
+    final result = resp.data;
+    if (result is! Map) {
+      throw const FormatException('服务器未返回有效的书架分页信息');
+    }
+    if (result['isSuccess'] == false) {
+      throw Exception(friendlyServerMessage(result['errorMsg']?.toString()));
+    }
+    return Map<String, dynamic>.from(result);
   }
 
   Future<List<Book>> getBookshelfNew(String accessToken,
@@ -173,11 +180,18 @@ class ApiService {
     };
     if (md5 != null) params['md5'] = md5;
     final resp = await _dio.get('/getBookshelfNew', queryParameters: params);
-    final data = resp.data['data'];
-    if (data is List) {
-      return data.map((e) => Book.fromJson(e as Map<String, dynamic>)).toList();
+    final result = resp.data;
+    if (result is! Map) {
+      throw const FormatException('服务器未返回有效的书架列表');
     }
-    return [];
+    if (result['isSuccess'] == false) {
+      throw Exception(friendlyServerMessage(result['errorMsg']?.toString()));
+    }
+    final data = result['data'];
+    if (data is! List) {
+      throw const FormatException('服务器未返回有效的书架列表');
+    }
+    return data.map((e) => Book.fromJson(e as Map<String, dynamic>)).toList();
   }
 
   Future<Map<String, dynamic>> saveBookProgress(
