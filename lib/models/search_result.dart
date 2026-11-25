@@ -91,9 +91,11 @@ class SearchResult {
       origin: origin,
       originName: originName,
       wordCount: wordCount,
-      type: normalizeBookType(type) ??
-          (canUseSource ? bookTypeFromSource(source?.bookSourceType) : null) ??
-          0,
+      type: inferBookType(
+        type,
+        sourceType: canUseSource ? source?.bookSourceType : null,
+        sourceName: canUseSource ? source?.bookSourceName : null,
+      ),
       group: 0,
     );
   }

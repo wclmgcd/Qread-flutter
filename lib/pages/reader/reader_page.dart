@@ -36,6 +36,7 @@ import '../../services/reading_stats_service.dart';
 import '../../services/replace_rule_store.dart';
 import '../../services/system_ui_service.dart';
 import '../../services/tts_service.dart';
+import '../../models/json_helpers.dart';
 import '../../widgets/batch_download_dialog.dart';
 import '../../widgets/book_cover.dart';
 import 'engine/engine.dart';
@@ -1053,7 +1054,11 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       }
     }
 
-    final media = ChapterMedia.parse(content, bookType: provider.book?.type);
+    final media = ChapterMedia.parse(
+      content,
+      bookType: inferBookType(provider.book?.type,
+          sourceName: provider.book?.originName),
+    );
     if (media.isMedia) {
       if (_state.ttsReading) await _stopTts();
       if (!mounted || requestSerial != _state.chapterRequestSerial) return;
@@ -1079,7 +1084,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       });
       _state.consumePendingPosition();
       _invalidateLayoutCaches();
-      unawaited(SystemUiService.setVolumeKeyActive(_state.volumeKeyFlip && !media.isAudio));
+      _applySystemUiSettings();
       provider.book?.durChapterIndex = chapterIndex;
       provider.book?.durChapterTitle = chapterTitle ?? '';
       return;
@@ -1088,7 +1093,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     _state.isComic = false;
     _audioPlaying = false;
     _audioAutoPlay = false;
-    unawaited(SystemUiService.setVolumeKeyActive(_state.volumeKeyFlip));
+    _applySystemUiSettings();
 
     // 解析目标位置
     final targetPosition = _state.resolveTargetChapterPosition(
@@ -1165,7 +1170,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     required int chapterIndex,
     int targetPosition = 0,
   }) {
-    if (ChapterMedia.parse(content, bookType: _readerProvider?.book?.type).isMedia) {
+    if (ChapterMedia.parse(content, bookType: inferBookType(_readerProvider?.book?.type, sourceName: _readerProvider?.book?.originName)).isMedia) {
       return ChapterLayout(paragraphs: const [], pages: const [],
         paragraphPageLookup: const {}, chapterIndex: chapterIndex,
         contentHash: content.hashCode);
@@ -1249,7 +1254,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     try {
       final content = await provider.getChapterContent(token, nextIndex);
       if (!mounted || _state.laidOutChapterIndex != chapterIndex ||
-          ChapterMedia.parse(content, bookType: provider.book?.type).isMedia) return;
+          ChapterMedia.parse(content, bookType: inferBookType(provider.book?.type, sourceName: provider.book?.originName)).isMedia) return;
 
       final chapterTitle = nextIndex < provider.chapters.length
           ? provider.chapters[nextIndex].title
@@ -1283,7 +1288,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     try {
       final content = await provider.getChapterContent(token, prevIndex);
       if (!mounted || _state.laidOutChapterIndex != chapterIndex ||
-          ChapterMedia.parse(content, bookType: provider.book?.type).isMedia) return;
+          ChapterMedia.parse(content, bookType: inferBookType(provider.book?.type, sourceName: provider.book?.originName)).isMedia) return;
 
       final chapterTitle = prevIndex < provider.chapters.length
           ? provider.chapters[prevIndex].title
@@ -2029,10 +2034,12 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     if (_state.loadingDisplayedChapter) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_media.isAudio) return SafeArea(child: _buildChapterAudio(provider));
+    if (_media.isAudio) return _buildChapterAudio(provider);
     if (_state.isComic) {
       final index = _state.laidOutChapterIndex;
-      return SafeArea(bottom: false, left: false, right: false,
+      return MediaQuery.removePadding(
+        context: context,
+        removeTop: true,
         child: ComicReader(
           key: ValueKey('comic|$index|${_state.displayedContent.hashCode}'),
           images: _media.images,
@@ -2379,7 +2386,17 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       key: key,
       url: audio.playbackUrl(_token ?? '', bookSourceUrl: provider.book?.origin),
       title: _displayedChapter(provider)?.title ?? '',
-      textColor: _state.currentTheme.text,
+      bookName: provider.book?.name ?? '',
+      coverUrl: (provider.book?.customCoverUrl?.isNotEmpty ?? false)
+          ? provider.book?.customCoverUrl : provider.book?.coverUrl,
+      inBookshelf: _isCurrentBookInShelf(provider),
+      onBack: () => unawaited(_requestExit()),
+      onRefresh: () => unawaited(_refreshMediaChapter(provider)),
+      onTimer: _showTtsTimerSheet,
+      timerLabel: _state.ttsSleepMinutes == null
+          ? '定时' : '${_state.ttsSleepMinutes} 分钟',
+      onAddToShelf: () => unawaited(_promptAddCurrentBookToShelf(provider)),
+      onMore: () => _showMorePanel(provider),
       canSeek: audio.canSeek,
       autoPlay: _audioAutoPlay,
       initialPosition: Duration(milliseconds: (_mediaInitialPosition * 1000).round()),
@@ -4782,6 +4799,34 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
     });
   }
 
+  /// 播放器上的「刷新」：重抓当前章正文。
+  ///
+  /// 有声书靠书源规则从正文里解析音频；书源更新过、或服务端刚给书补了
+  /// `type` 时，重新解析一次正文才会走到播放器。同样的地址不重新进播放器
+  /// （key 不变），所以这里顺带把详情拉一次，拿回服务端补正过的 type。
+  Future<void> _refreshMediaChapter(ReaderProvider provider) async {
+    await _refreshCurrentChapter(provider);
+    if (!mounted || _media.isAudio) return;
+    final token = _token;
+    final book = provider.book;
+    if (token == null || book == null) return;
+    try {
+      final resp = await ApiService.instance.getBookInfo(token, book);
+      if (!mounted || _media.isAudio) return;
+      var data = resp['data'];
+      if (data is String) {
+        try {
+          data = jsonDecode(data);
+        } catch (_) {}
+      }
+      if (data is! Map) return;
+      final fresh = Book.fromJson(Map<String, dynamic>.from(data));
+      if (fresh.type == null || fresh.type == book.type) return;
+      book.type = fresh.type;
+      setState(() {});
+    } catch (_) {}
+  }
+
   /// ⋮ 更多菜单 —— 对齐轻阅时光：居中白色圆角卡片。
   ///
   /// 头部是「封面 + 书名 + 作者 + 详情胶囊」，下面 4×3 灰底宫格，
@@ -5493,7 +5538,7 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
   /// 把「更多设置」里的系统类开关一次性应用到原生侧。
   /// 设置载入完成时、以及相关开关被改动后调用。
   void _applySystemUiSettings() {
-    unawaited(SystemUiService.setStatusBarHidden(_state.hideStatusBar));
+    unawaited(SystemUiService.setStatusBarHidden(_media.isComic || _state.hideStatusBar));
     unawaited(SystemUiService.setVolumeKeyActive(_state.volumeKeyFlip && !_media.isAudio));
     if (_state.lockOrientation) {
       // 锁定竖屏（SystemChrome 是 Flutter 内置能力，不用动原生）

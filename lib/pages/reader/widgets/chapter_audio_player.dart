@@ -4,13 +4,13 @@ import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/material.dart';
 
 import '../../../services/app_settings.dart';
+import '../../../widgets/book_cover.dart';
 
 class ChapterAudioPlayer extends StatefulWidget {
   const ChapterAudioPlayer({
     super.key,
     required this.url,
     required this.title,
-    required this.textColor,
     this.canSeek = true,
     this.autoPlay = false,
     this.initialPosition = Duration.zero,
@@ -21,11 +21,19 @@ class ChapterAudioPlayer extends StatefulWidget {
     this.onNext,
     required this.onShowChapters,
     this.unavailableReason,
+    this.bookName = '',
+    this.coverUrl,
+    this.onBack,
+    this.onRefresh,
+    this.onTimer,
+    this.onAddToShelf,
+    this.onMore,
+    this.inBookshelf = false,
+    this.timerLabel = '定时',
   });
 
   final String url;
   final String title;
-  final Color textColor;
   final bool canSeek;
   final bool autoPlay;
   final Duration initialPosition;
@@ -36,6 +44,15 @@ class ChapterAudioPlayer extends StatefulWidget {
   final VoidCallback? onNext;
   final VoidCallback onShowChapters;
   final String? unavailableReason;
+  final String bookName;
+  final String? coverUrl;
+  final VoidCallback? onBack;
+  final VoidCallback? onRefresh;
+  final VoidCallback? onTimer;
+  final VoidCallback? onAddToShelf;
+  final VoidCallback? onMore;
+  final bool inBookshelf;
+  final String timerLabel;
 
   @override
   ChapterAudioPlayerState createState() => ChapterAudioPlayerState();
@@ -372,17 +389,244 @@ class ChapterAudioPlayerState extends State<ChapterAudioPlayer>
 
   String _formatTime(Duration duration) {
     final seconds = duration.inSeconds;
+    final hours = (seconds ~/ 3600).toString().padLeft(2, '0');
     final minutes = (seconds ~/ 60).remainder(60).toString().padLeft(2, '0');
     final remainder = seconds.remainder(60).toString().padLeft(2, '0');
-    if (seconds >= 3600) return '${seconds ~/ 3600}:$minutes:$remainder';
-    return '${seconds ~/ 60}:$remainder';
+    return '$hours:$minutes:$remainder';
+  }
+
+  Widget _roundButton({
+    required String tooltip,
+    required IconData icon,
+    required double size,
+    required double iconSize,
+    required VoidCallback? onPressed,
+    bool filled = false,
+  }) {
+    return SizedBox.square(
+      dimension: size,
+      child: Material(
+        color: filled ? Colors.white : Colors.transparent,
+        shape: CircleBorder(
+          side: filled
+              ? BorderSide.none
+              : const BorderSide(color: Colors.white38),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: IconButton(
+          tooltip: tooltip,
+          padding: EdgeInsets.zero,
+          color: filled ? const Color(0xFF29232E) : Colors.white,
+          disabledColor: filled ? Colors.black38 : Colors.white38,
+          iconSize: iconSize,
+          icon: Icon(icon),
+          onPressed: onPressed,
+        ),
+      ),
+    );
+  }
+
+  Widget _action({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onPressed,
+  }) {
+    return Expanded(
+      child: TextButton(
+        style: TextButton.styleFrom(
+          foregroundColor: Colors.white70,
+          disabledForegroundColor: Colors.white38,
+          padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 8),
+          minimumSize: const Size(0, 48),
+        ),
+        onPressed: onPressed,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 24),
+            const SizedBox(height: 6),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(label, maxLines: 1, style: const TextStyle(fontSize: 14)),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final hasAudio = _hasAudio;
-    final seekEnabled = hasAudio &&
-        widget.canSeek &&
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [Color(0xFF4F4250), Color(0xFF3B3140), Color(0xFF2E2732)],
+        ),
+      ),
+      child: SafeArea(
+        child: LayoutBuilder(builder: (context, constraints) {
+          final compact = constraints.maxHeight < 600;
+          final coverSize = (constraints.maxWidth * 0.56)
+              .clamp(88.0, compact ? 170.0 : 260.0)
+              .toDouble();
+          return SingleChildScrollView(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: constraints.maxHeight),
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 560),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(
+                        horizontal: 20, vertical: compact ? 8 : 12),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _buildTopBar(),
+                        SizedBox(height: compact ? 8 : 16),
+                        _buildCover(coverSize),
+                        SizedBox(height: compact ? 8 : 16),
+                        _buildTitles(),
+                        SizedBox(height: compact ? 8 : 16),
+                        if (!_hasAudio)
+                          _buildUnavailable()
+                        else
+                          _buildProgress(),
+                        SizedBox(height: compact ? 10 : 20),
+                        _buildActions(),
+                        SizedBox(height: compact ? 6 : 14),
+                        _buildTransport(),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+
+  Widget _buildTopBar() {
+    return Row(
+      children: [
+        _circleIcon('返回', Icons.arrow_back, widget.onBack),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            widget.bookName.isEmpty ? widget.title : widget.bookName,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        _circleIcon('刷新', Icons.refresh, widget.onRefresh),
+      ],
+    );
+  }
+
+  Widget _circleIcon(String tooltip, IconData icon, VoidCallback? onPressed) {
+    return SizedBox.square(
+      dimension: 40,
+      child: Material(
+        color: Colors.white,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: IconButton(
+          tooltip: tooltip,
+          padding: EdgeInsets.zero,
+          iconSize: 22,
+          color: const Color(0xFF3B3140),
+          icon: Icon(icon),
+          onPressed: onPressed,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCover(double size) {
+    return Center(
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.35),
+              blurRadius: 24,
+              offset: const Offset(0, 12),
+            ),
+          ],
+        ),
+        child: BookCover(
+          url: widget.coverUrl,
+          radius: 18,
+          placeholder: const ColoredBox(
+            color: Color(0xFF6A5C6C),
+            child: Icon(Icons.menu_book, color: Colors.white54, size: 48),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTitles() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          widget.title,
+          textAlign: TextAlign.center,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        if (widget.bookName.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            widget.bookName,
+            textAlign: TextAlign.center,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white54, fontSize: 15),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildUnavailable() {
+    final reason = widget.unavailableReason?.trim();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Icon(Icons.headphones, size: 40, color: Colors.white54),
+        const SizedBox(height: 8),
+        Text(
+          reason != null && reason.isNotEmpty ? reason : '本章暂无可播放音频',
+          textAlign: TextAlign.center,
+          style: const TextStyle(color: Colors.white70),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProgress() {
+    final seekEnabled = widget.canSeek &&
         _prepared &&
         !_loading &&
         !_failed &&
@@ -396,166 +640,133 @@ class ChapterAudioPlayerState extends State<ChapterAudioPlayer>
     final displayPosition = _dragPosition == null
         ? _position
         : Duration(milliseconds: _dragPosition!.round());
-    final reason = widget.unavailableReason?.trim();
-    final textStyle = TextStyle(color: widget.textColor);
-
-    return LayoutBuilder(
-      builder: (context, constraints) => SingleChildScrollView(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(
-            minHeight: constraints.hasBoundedHeight ? constraints.maxHeight : 0,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: Colors.white,
+            inactiveTrackColor: Colors.white24,
+            thumbColor: Colors.white,
+            trackHeight: 3,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
           ),
-          child: Center(
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 560),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
-                child: DefaultTextStyle.merge(
-                  style: textStyle,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Icon(Icons.headphones, size: 48, color: widget.textColor),
-                      const SizedBox(height: 16),
-                      Text(
-                        widget.title,
-                        textAlign: TextAlign.center,
-                        style: textStyle.copyWith(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      if (!hasAudio)
-                        Text(
-                          reason != null && reason.isNotEmpty
-                              ? reason
-                              : '本章暂无可播放音频',
-                          textAlign: TextAlign.center,
-                        )
-                      else ...[
-                        if (_loading) ...[
-                          Center(
-                            child: SizedBox(
-                              width: 24,
-                              height: 24,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 2,
-                                color: widget.textColor,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 8),
-                          const Text('正在加载音频', textAlign: TextAlign.center),
-                        ],
-                        if (_failed) ...[
-                          const Text(
-                            '音频加载失败，请重试或换源',
-                            textAlign: TextAlign.center,
-                          ),
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              foregroundColor: widget.textColor,
-                            ),
-                            onPressed: () => unawaited(toggle()),
-                            child: const Text('重试'),
-                          ),
-                        ],
-                        Slider(
-                          value: progress,
-                          max: maximum,
-                          activeColor: widget.textColor,
-                          semanticFormatterCallback: (value) =>
-                              _formatTime(Duration(milliseconds: value.round())),
-                          onChanged: seekEnabled
-                              ? (value) {
-                                  if (_active) {
-                                    setState(() => _dragPosition = value);
-                                  }
-                                }
-                              : null,
-                          onChangeEnd: seekEnabled
-                              ? (value) {
-                                  if (!_active) return;
-                                  setState(() => _dragPosition = null);
-                                  unawaited(_seek(value));
-                                }
-                              : null,
-                        ),
-                        Text(
-                          '${_formatTime(displayPosition)} / ${_formatTime(_duration)}',
-                          textAlign: TextAlign.center,
-                        ),
-                        if (!widget.canSeek) ...[
-                          const SizedBox(height: 8),
-                          const Text(
-                            '当前音频不支持拖动进度',
-                            textAlign: TextAlign.center,
-                          ),
-                        ],
-                        const SizedBox(height: 12),
-                        Wrap(
-                          alignment: WrapAlignment.center,
-                          spacing: 16,
-                          runSpacing: 8,
-                          crossAxisAlignment: WrapCrossAlignment.center,
-                          children: [
-                            IconButton(
-                              tooltip: _wantsToPlay ? '暂停' : '播放',
-                              color: widget.textColor,
-                              iconSize: 40,
-                              icon: Icon(_wantsToPlay
-                                  ? Icons.pause_circle_outline
-                                  : Icons.play_circle_outline),
-                              onPressed: () => unawaited(toggle()),
-                            ),
-                            IconButton(
-                              tooltip: '停止',
-                              color: widget.textColor,
-                              icon: const Icon(Icons.stop_rounded),
-                              onPressed: () => unawaited(stop()),
-                            ),
-                          ],
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      Wrap(
-                        alignment: WrapAlignment.center,
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: [
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              foregroundColor: widget.textColor,
-                            ),
-                            onPressed: widget.onPrevious,
-                            child: const Text('上一章'),
-                          ),
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              foregroundColor: widget.textColor,
-                            ),
-                            onPressed: widget.onShowChapters,
-                            child: const Text('目录'),
-                          ),
-                          TextButton(
-                            style: TextButton.styleFrom(
-                              foregroundColor: widget.textColor,
-                            ),
-                            onPressed: widget.onNext,
-                            child: const Text('下一章'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          child: Slider(
+            value: progress,
+            max: maximum,
+            semanticFormatterCallback: (value) =>
+                _formatTime(Duration(milliseconds: value.round())),
+            onChanged: seekEnabled
+                ? (value) {
+                    if (_active) setState(() => _dragPosition = value);
+                  }
+                : null,
+            onChangeEnd: seekEnabled
+                ? (value) {
+                    if (!_active) return;
+                    setState(() => _dragPosition = null);
+                    unawaited(_seek(value));
+                  }
+                : null,
           ),
         ),
-      ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(_formatTime(displayPosition),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+              if (_loading)
+                const SizedBox(
+                  width: 14,
+                  height: 14,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: Colors.white70),
+                )
+              else if (_failed)
+                TextButton(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size(0, 28),
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  onPressed: () => unawaited(toggle()),
+                  child: const Text('加载失败，重试'),
+                )
+              else if (!widget.canSeek)
+                const Text('不支持拖动进度',
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+              Text(_formatTime(_duration),
+                  style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildActions() {
+    return Row(
+      children: [
+        _action(
+          icon: Icons.timer_outlined,
+          label: widget.timerLabel,
+          onPressed: widget.onTimer,
+        ),
+        _action(
+          icon: Icons.list_alt,
+          label: '目录',
+          onPressed: widget.onShowChapters,
+        ),
+        _action(
+          icon: widget.inBookshelf
+              ? Icons.check_circle_outline
+              : Icons.add_circle_outline,
+          label: widget.inBookshelf ? '已在书架' : '加入书架',
+          onPressed: widget.inBookshelf ? null : widget.onAddToShelf,
+        ),
+        _action(
+          icon: Icons.more_horiz,
+          label: '更多',
+          onPressed: widget.onMore,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTransport() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        _roundButton(
+          tooltip: '上一章',
+          icon: Icons.skip_previous_rounded,
+          size: 52,
+          iconSize: 26,
+          onPressed: widget.onPrevious,
+        ),
+        const SizedBox(width: 32),
+        _roundButton(
+          tooltip: _wantsToPlay ? '暂停' : '播放',
+          icon: _wantsToPlay ? Icons.pause_rounded : Icons.play_arrow_rounded,
+          size: 72,
+          iconSize: 40,
+          filled: true,
+          onPressed: _hasAudio ? () => unawaited(toggle()) : null,
+        ),
+        const SizedBox(width: 32),
+        _roundButton(
+          tooltip: '下一章',
+          icon: Icons.skip_next_rounded,
+          size: 52,
+          iconSize: 26,
+          onPressed: widget.onNext,
+        ),
+      ],
     );
   }
 }

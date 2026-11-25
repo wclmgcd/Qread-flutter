@@ -34,6 +34,9 @@ class AdaptiveWebView extends StatefulWidget {
   /// 体积 —— 官方就是把整页 HTML 随回执一起交给后端的。
   final void Function(String html)? onPageHtml;
 
+  /// 控制器就绪后回调，调用方可据此在关闭前主动执行 JS / 取 DOM。
+  final void Function(WebViewController controller)? onController;
+
   const AdaptiveWebView({
     Key? key,
     required this.url,
@@ -42,6 +45,7 @@ class AdaptiveWebView extends StatefulWidget {
     this.headers = const {},
     this.onCustomScheme,
     this.onPageHtml,
+    this.onController,
   }) : super(key: key);
 
   @override
@@ -112,7 +116,9 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
 
       _mobileController = controller;
       await _load(controller, widget.url, widget.headers);
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      widget.onController?.call(controller);
+      setState(() {});
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -141,9 +147,15 @@ class _AdaptiveWebViewState extends State<AdaptiveWebView> {
     try {
       await controller.loadRequest(Uri.parse(url), headers: headers);
     } catch (_) {
+      // data: 地址先自己解成 HTML 再渲染：Android 上 loadRequest 对它**不抛错**
+      // 而是静默失败（页面空白），只靠 catch 兜不住。
       final html = _decodeDataUrl(url);
       if (html == null) rethrow;
-      await controller.loadHtmlString(html);
+      try {
+        await controller.loadHtmlString(html, baseUrl: 'about:blank');
+      } catch (_) {
+        await controller.loadRequest(Uri.parse(url), headers: headers);
+      }
     }
   }
 

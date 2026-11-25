@@ -73,6 +73,19 @@ void main() {
       expect(ChapterMedia.parse('https://books.test/chapter/12').isAudio, isFalse);
     });
 
+    test('无扩展名音频按查询串 MIME 自动识别，覆盖书籍默认文本类型', () {
+      for (final mime in ['audio_mpeg', 'audio%2Fmpeg', 'audio%2Fmp4']) {
+        final url = 'https://audio.test/video/chapter/?mime_type=$mime&sign=test';
+        final media = ChapterMedia.parse(url, bookType: 0);
+        expect(media.isAudio, isTrue);
+        expect(media.audio!.url, url);
+      }
+      expect(ChapterMedia.parse('https://audio.test/play?content-type=audio%2Faac').isAudio, isTrue);
+      expect(ChapterMedia.parse('https://video.test/play?mime_type=video_mp4').isAudio, isFalse);
+      expect(ChapterMedia.parse('https://books.test/page?title=audio_mpeg').isAudio, isFalse);
+      expect(ChapterMedia.parse('正文 https://audio.test/play?mime_type=audio_mpeg').isAudio, isFalse);
+    });
+
     test('音频标签支持source及转义查询串', () {
       final media = ChapterMedia.parse('<audio controls><source src="https://audio.test/play?a=1&amp;b=2"></audio>');
       expect(media.audio!.url, 'https://audio.test/play?a=1&b=2');

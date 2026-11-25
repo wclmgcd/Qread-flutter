@@ -52,7 +52,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(240, 240));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     await tester.pumpWidget(MaterialApp(home: Scaffold(body: ChapterAudioPlayer(
-      url: '', title: '未返回音频的章节', textColor: Colors.black,
+      url: '', title: '未返回音频的章节',
       unavailableReason: '书源未返回音频直链',
       onPosition: (_) => fail('不应播放'),
       onPlaying: (_) => fail('不应播放'),
@@ -64,6 +64,61 @@ void main() {
     await tester.ensureVisible(find.text('目录'));
     await tester.tap(find.text('目录'));
     expect(opened, isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('有声书整页布局包含封面区、四个动作和播放控制', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final tapped = <String>[];
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ChapterAudioPlayer(
+      // 有地址但解析失败：进度区仍在，顶栏/封面/标题/动作全都画得出来
+      url: 'https://audio.test/a.mp3', title: '第001集 出门即是江湖',
+      bookName: '我做老千的那些年', unavailableReason: '音频加载失败',
+      onBack: () => tapped.add('back'),
+      onRefresh: () => tapped.add('refresh'),
+      onTimer: () => tapped.add('timer'),
+      onAddToShelf: () => tapped.add('shelf'),
+      onMore: () => tapped.add('more'),
+      onPosition: (_) {}, onPlaying: (_) {}, onComplete: () {},
+      onShowChapters: () => tapped.add('chapters'),
+    ))));
+    expect(find.text('我做老千的那些年'), findsNWidgets(2));
+    expect(find.text('第001集 出门即是江湖'), findsOneWidget);
+    expect(find.text('定时'), findsOneWidget);
+    expect(find.text('加入书架'), findsOneWidget);
+    expect(find.text('更多'), findsOneWidget);
+    expect(find.byType(Slider), findsOneWidget);
+    // 测试里没有原生播放器，prepare 会失败，播放键停在「重试」态
+    expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+    for (final entry in {
+      Icons.arrow_back: 'back',
+      Icons.refresh: 'refresh',
+      Icons.timer_outlined: 'timer',
+      Icons.more_horiz: 'more',
+    }.entries) {
+      await tester.tap(find.byIcon(entry.key));
+      expect(tapped, contains(entry.value));
+    }
+    await tester.ensureVisible(find.text('目录'));
+    await tester.tap(find.text('目录'));
+    expect(tapped, contains('chapters'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(const SizedBox());
+    // 播放器销毁里有一串 await（取消订阅、等串行队列），等它跑完再结束用例
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('小屏有声书布局不溢出', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(240, 240));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(MaterialApp(home: Scaffold(body: ChapterAudioPlayer(
+      url: '', title: '章节', unavailableReason: '无音频',
+      onPosition: (_) {}, onPlaying: (_) {}, onComplete: () {},
+      onShowChapters: () {},
+    ))));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
   });

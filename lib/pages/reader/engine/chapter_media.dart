@@ -55,7 +55,7 @@ class ChapterMedia {
     final raw = (audioSrc ?? document.text ?? '').trim();
     final audio = _parseAudio(raw);
     if (bookType == 1 || audioElement != null ||
-        (audio != null && _audioExtension.hasMatch(Uri.parse(audio.url).path))) {
+        (audio != null && _isAudioUrl(Uri.parse(audio.url)))) {
       return ChapterMedia(audio: audio ?? const ChapterAudio('',
         error: '书源未返回可播放的音频直链，请刷新章节或更换书源'));
     }
@@ -86,6 +86,17 @@ class ChapterMedia {
     final comic = bookType == 2 || (images.isNotEmpty &&
         (textLength == 0 || (images.length >= 2 && textLength <= 80)));
     return ChapterMedia(isComic: comic, images: List.unmodifiable(images));
+  }
+
+  static bool _isAudioUrl(Uri uri) {
+    if (_audioExtension.hasMatch(uri.path)) return true;
+    for (final entry in uri.queryParameters.entries) {
+      if (!const {'mime_type', 'mime', 'content-type', 'content_type'}
+          .contains(entry.key.toLowerCase())) continue;
+      final mime = entry.value.toLowerCase().split(';').first.trim();
+      if (RegExp(r'^audio[/_][a-z0-9.+-]+$').hasMatch(mime)) return true;
+    }
+    return false;
   }
 
   static String _urlPart(String value) {

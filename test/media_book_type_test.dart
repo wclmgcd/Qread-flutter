@@ -136,6 +136,29 @@ void main() {
       }
     });
 
+    test('audio-only sources are detected by name when the type is text', () {
+      for (final name in ['听书大全', '有声书聚合']) {
+        final source = BookSource(
+          bookSourceUrl: 'https://books.test',
+          bookSourceName: name,
+        );
+        final result = SearchResult(origin: source.bookSourceUrl);
+        expect(result.toBook(source: source).type, 1);
+        expect(
+          SearchResult(type: 2, origin: source.bookSourceUrl)
+              .toBook(source: source)
+              .type,
+          2,
+        );
+        expect(SearchResult().toBook().type, 0);
+      }
+      final novel = BookSource(
+        bookSourceUrl: 'https://books.test',
+        bookSourceName: '书香小说',
+      );
+      expect(SearchResult().toBook(source: novel).type, 0);
+    });
+
     test('missing and unknown source types do not invent a media type', () {
       for (final type in <int?>[null, -1, 4, 32, 64, 128]) {
         final source = BookSource(

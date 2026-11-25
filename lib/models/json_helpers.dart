@@ -21,6 +21,17 @@ int? bookTypeFromSource(int? value) {
   return value != null && value >= 0 && value <= 3 ? value : null;
 }
 
+/// 有声书源经常把书存成普通文本，此时按书源声明的类型纠正：
+/// 用户/内置书源类型为音频，或书源名明显是有声书（「听书」「有声」）。
+int? inferBookType(int? value, {int? sourceType, String? sourceName}) {
+  final type = normalizeBookType(value) ?? 0;
+  if (type != 0) return type;
+  if (bookTypeFromSource(sourceType) == 1) return 1;
+  final name = sourceName ?? '';
+  if (name.contains('听书') || name.contains('有声')) return 1;
+  return type;
+}
+
 int? toInt(dynamic v) {
   if (v == null) return null;
   if (v is int) return v;
