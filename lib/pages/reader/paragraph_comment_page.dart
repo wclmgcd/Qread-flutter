@@ -78,7 +78,9 @@ class _ParagraphCommentPageState extends State<ParagraphCommentPage> {
     try {
       // 脚本返回 Promise，webview_flutter 4.x 会等它落定再回值。
       final raw = await controller.runJavaScriptReturningResult(kSyncSettingsJs);
-      clicked = raw == true || raw == 'true';
+      clicked = raw == true ||
+          raw == 'true' ||
+          (raw is String && raw.replaceAll('"', '') == 'true');
     } catch (_) {}
     // 结果节点没写内容时同步不会报错，只能等超时回 false；先把 DOM 取回来，
     // 结果节点里只要有配置就按成功处理（部分书源只更新节点、不重写 cookie）。
@@ -292,69 +294,72 @@ class _ParagraphCommentPageState extends State<ParagraphCommentPage> {
 }
 
 /// 点一下书源设置页自己的保存控件（右上角的 ✓ / 「保存」），让页面**自己**把
-/// 当前控件状态写进 [`source-settings-result`] / [`source-settings-final-result`]
+/// 当前控件状态写进 source-settings-result / source-settings-final-result 两个结果节点
 /// 和 `source_settings_result` cookie（远端页 `syncResult()` 的写法）。
 ///
 /// 远端页的状态锁在闭包里，外部拿不到 `state`；页面自己不动手的话，结果节点
 /// 还是打开时的初始配置 —— 这正是「选了但保存不上」的原因。
 ///
-/// 查找顺序：先按文字（✓ / 保存配置 / 保存设置 / 保存），再按图标 class
+/// 查找顺序：先按文字（✓ / ✔ / 保存配置 / 保存设置 / 保存），再按图标 class
 /// （`check` / `save` 一类）；都没有时退回 `window.syncResult()`。点了控件就
 /// 不再补调 `syncResult`，否则会把页面刚写好的结果再覆盖回去。
 ///
 /// 返回 Promise<bool>：保存逻辑可能是异步的，等两个结果节点里出现内容（或超时）
 /// 再让调用方去取 DOM。
-const kSyncSettingsJs = r'''
-(function () {
-  function pick() {
-    var labels = ['✓', '✔', '保存配置', '保存设置', '保存'];
-    var nodes = document.querySelectorAll(
-      'button, a, [role="button"], .btn, [class*="save"], [class*="check"], [class*="confirm"]');
-    for (var i = 0; i < nodes.length; i++) {
-      var text = (nodes[i].textContent || '').replace(/\s/g, '');
-      for (var j = 0; j < labels.length; j++) {
-        if (text === labels[j]) return nodes[i];
-      }
-    }
-    for (var k = 0; k < nodes.length; k++) {
-      var cls = ' ' + (nodes[k].className || '') + ' ';
-      if (/[ _-](save|check)/i.test(cls)) return nodes[k];
-    }
-    return null;
-  }
-  function settled() {
-    var ids = ['source-settings-result', 'source-settings-final-result'];
-    for (var i = 0; i < ids.length; i++) {
-      var el = document.getElementById(ids[i]);
-      if (el && el.textContent) return true;
-    }
-    return false;
-  }
-  try {
-    var target = pick();
-    if (target) {
-      target.click();
-    } else if (typeof window.syncResult === 'function') {
-      window.syncResult();
-    } else {
-      return false;
-    }
-    return new Promise(function (resolve) {
-      if (settled()) return resolve(true);
-      var tries = 0;
-      var timer = setInterval(function () {
-        if (settled()) {
-          clearInterval(timer);
-          return resolve(true);
-        }
-        if (++tries > 30) {
-          clearInterval(timer);
-          resolve(false);
-        }
-      }, 100);
-    });
-  } catch (e) {
-    return false;
-  }
-})();
-'''
+///
+/// 逐行组成一条 JS，不再套多行字面量：analyzer 对未终止的多行字面量只报
+/// 「Expected to find ';'」并指向字面量开头，看不出问题在哪一行。
+final kSyncSettingsJs = <String>[
+  '(function () {',
+  '  function pick() {',
+  "    var labels = ['✓', '✔', '保存配置', '保存设置', '保存'];",
+  '    var nodes = document.querySelectorAll(',
+  "      'button, a, [role="button"], .btn, [class*="save"], [class*="check"], [class*="confirm"]');",
+  '    for (var i = 0; i < nodes.length; i++) {',
+  "      var text = (nodes[i].textContent || '').replace(/\\s/g, '');",
+  '      for (var j = 0; j < labels.length; j++) {',
+  '        if (text === labels[j]) return nodes[i];',
+  '      }',
+  '    }',
+  '    for (var k = 0; k < nodes.length; k++) {',
+  "      var cls = ' ' + (nodes[k].className || '') + ' ';",
+  '      if (/[ _-](save|check)/i.test(cls)) return nodes[k];',
+  '    }',
+  '    return null;',
+  '  }',
+  '  function settled() {',
+  "    var ids = ['source-settings-result', 'source-settings-final-result'];",
+  '    for (var i = 0; i < ids.length; i++) {',
+  '      var el = document.getElementById(ids[i]);',
+  '      if (el && el.textContent) return true;',
+  '    }',
+  '    return false;',
+  '  }',
+  '  try {',
+  '    var target = pick();',
+  '    if (target) {',
+  '      target.click();',
+  "    } else if (typeof window.syncResult === 'function') {",
+  '      window.syncResult();',
+  '    } else {',
+  '      return false;',
+  '    }',
+  '    return new Promise(function (resolve) {',
+  '      if (settled()) return resolve(true);',
+  '      var tries = 0;',
+  '      var timer = setInterval(function () {',
+  '        if (settled()) {',
+  '          clearInterval(timer);',
+  '          return resolve(true);',
+  '        }',
+  '        if (++tries > 30) {',
+  '          clearInterval(timer);',
+  '          resolve(false);',
+  '        }',
+  '      }, 100);',
+  '    });',
+  '  } catch (e) {',
+  '    return false;',
+  '  }',
+  '})();',
+].join("\n");
