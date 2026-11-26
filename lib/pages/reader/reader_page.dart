@@ -2388,13 +2388,15 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       title: _displayedChapter(provider)?.title ?? '',
       bookName: provider.book?.name ?? '',
       coverUrl: (provider.book?.customCoverUrl?.isNotEmpty ?? false)
-          ? provider.book?.customCoverUrl : provider.book?.coverUrl,
+          ? provider.book!.customCoverUrl
+          : provider.book?.coverUrl,
       inBookshelf: _isCurrentBookInShelf(provider),
       onBack: () => unawaited(_requestExit()),
       onRefresh: () => unawaited(_refreshMediaChapter(provider)),
       onTimer: _showTtsTimerSheet,
       timerLabel: _state.ttsSleepMinutes == null
-          ? '定时' : '${_state.ttsSleepMinutes} 分钟',
+          ? '定时'
+          : '${_state.ttsSleepMinutes} 分钟',
       onAddToShelf: () => unawaited(_promptAddCurrentBookToShelf(provider)),
       onMore: () => _showMorePanel(provider),
       canSeek: audio.canSeek,
@@ -4821,9 +4823,9 @@ class _ReaderPageState extends State<ReaderPage> with WidgetsBindingObserver {
       }
       if (data is! Map) return;
       final fresh = Book.fromJson(Map<String, dynamic>.from(data));
-      if (fresh.type == null || fresh.type == book.type) return;
-      book.type = fresh.type;
-      setState(() {});
+      final type = fresh.type;
+      if (type == null || type == book.type) return;
+      setState(() => book.type = type);
     } catch (_) {}
   }
 

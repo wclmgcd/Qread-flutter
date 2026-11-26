@@ -90,9 +90,8 @@ void main() {
     expect(find.text('加入书架'), findsOneWidget);
     expect(find.text('更多'), findsOneWidget);
     expect(find.byType(Slider), findsOneWidget);
-    // 测试里没有原生播放器，prepare 会失败，播放键停在「重试」态
+    // 测试环境没有原生播放器实现，别等 prepare，直接拆页面
     expect(find.byIcon(Icons.play_arrow_rounded), findsOneWidget);
-    await tester.pump(const Duration(seconds: 1));
     for (final entry in {
       Icons.arrow_back: 'back',
       Icons.refresh: 'refresh',
@@ -107,8 +106,6 @@ void main() {
     expect(tapped, contains('chapters'));
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox());
-    // 播放器销毁里有一串 await（取消订阅、等串行队列），等它跑完再结束用例
-    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('小屏有声书布局不溢出', (tester) async {

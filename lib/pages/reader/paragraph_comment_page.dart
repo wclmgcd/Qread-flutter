@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 import '../../providers/rss_manage_provider.dart';
 import '../../providers/source_manage_provider.dart';
@@ -230,15 +231,15 @@ class _ParagraphCommentPageState extends State<ParagraphCommentPage> {
       }
       final result = type == 'booksource'
           ? await sourceProvider.importSources(token, content)
-          : await _importRss(token, content);
+          : await _importRss(context, token, content);
       messenger.showSnackBar(SnackBar(content: Text(result ?? '导入失败')));
     } catch (e) {
       messenger.showSnackBar(SnackBar(content: Text('导入失败: $e')));
     }
   }
 
-  Future<String?> _importRss(String token, String content) async {
-    if (!mounted) return null;
+  Future<String?> _importRss(
+      BuildContext context, String token, String content) async {
     try {
       final rss = context.read<RssManageProvider>();
       return await rss.importSources(token, content);
